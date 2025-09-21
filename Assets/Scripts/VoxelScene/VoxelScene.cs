@@ -5,7 +5,7 @@ using UnityEngine;
 
 public class VoxelScene
 {
-    Cascade[] cascades = new Cascade[8];
+    Cascade[] cascades = new Cascade[4];
     List<Vector3> verticesList = new List<Vector3>();
     List<int> indicesList = new List<int>();
 
