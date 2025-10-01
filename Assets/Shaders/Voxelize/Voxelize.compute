@@ -1,0 +1,184 @@
+#include "Voxelize.hlsl"
+
+#pragma kernel Voxelize
+
+StructuredBuffer<int> _IndicesBuffer;
+StructuredBuffer<float3> _VerticesBuffer;
+
+RWStructuredBuffer<VoxelizeCounter> _VoxelizeCounter;
+RWStructuredBuffer<int> _BrickMap;
+RWStructuredBuffer<int> _AllocateFailBuffer;
+RWStructuredBuffer<float3> _TriangleData;
+RWStructuredBuffer<int> _RefCounter;
+RWStructuredBuffer<TriangleRef> _References;
+
+groupshared uint gs_ItemsRefCount[256];
+groupshared uint gs_ItemsTriangleIdSwapOffsets[256];
+groupshared Item gs_Items[256];
+groupshared uint gs_ItemCounter;
+groupshared uint gs_RefCounter;
+groupshared uint gs_RefOffset;
+groupshared uint gs_TriangleOffsetGlobal;
+groupshared uint gs_TriangleOffset;
+groupshared bool gs_HasSpace;
+
+void AddReferenceOrMarkVoxelFailed(uint voxelIdx, uint triangleId)
+{
+    if (_BrickMap[VoxelOffset3DTo1D(voxelIdx, 3)] != UNINITIALIZED_BRICK)
+    {
+        return;
+    }
+
+    uint localRefIdx;
+    InterlockedAdd(_RefCounter[voxelIdx], 1, localRefIdx);
+    TriangleRef ref;
+    ref.voxelId = voxelIdx;
+    ref.triangleId = triangleId;
+    ref.localRefId = localRefIdx;
+    uint coarseRefOffset;
+    InterlockedAdd(_VoxelizeCounter[0].referenceCount, 1, coarseRefOffset);
+    uint maxReferences = _VoxelizeCounter[0].maxReference;
+    if (coarseRefOffset < maxReferences)
+    {
+        _References[coarseRefOffset] = ref;
+    }
+    else
+    {
+        _AllocateFailBuffer[voxelIdx] = 1;
+    }
+}
+
+[numthreads(256,1,1)]
+void Voxelize(uint gtid : SV_GroupThreadID, uint tid : SV_DispatchThreadID)
+{
+    
+    Triangle tri;
+    int index1 = _IndicesBuffer[3 * tid + 0], index2 = _IndicesBuffer[3 * tid + 1], index3 = _IndicesBuffer[3 * tid + 2];
+    tri.id = tid;
+    tri.v0 = _VerticesBuffer[index1] - _CascadeMin;
+    tri.v1 = _VerticesBuffer[index2] - _CascadeMin;
+    tri.v2 = _VerticesBuffer[index3] - _CascadeMin;
+    
+    if (gtid == 0)
+    {
+        gs_ItemCounter = 0;
+        gs_RefCounter = 0;
+        gs_RefOffset = 0;
+        gs_TriangleOffsetGlobal = 0;
+        gs_TriangleOffset = 0;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    
+    TriangleBound triBound;
+    bool collide = GetTriangleBounds(tri, triBound);
+
+    uint itemOffset;
+
+    if (collide)
+    {
+        InterlockedAdd(gs_ItemCounter, 1, itemOffset);
+
+        Item item;
+        item.boundMin = triBound.uboundMin;
+        item.boundMax = triBound.uboundMax;
+        gs_Items[itemOffset] = item;
+
+        uint3 dim = triBound.uboundMin - triBound.uboundMax;
+        
+        uint refCount = dim.x * dim.y * dim.z;
+        
+        InterlockedAdd(gs_RefCounter, refCount);
+        gs_ItemsRefCount[itemOffset] = refCount;
+        gs_ItemsTriangleIdSwapOffsets[itemOffset] = 0;
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    if (gs_ItemCounter == 0)
+        return;
+    
+    GroupMemoryBarrierWithGroupSync();
+
+    const uint MAX_STORAGE = _VoxelizeCounter[0].maxTriangleSize;
+
+    float3 boundDim = triBound.boundMax - triBound.boundMin;
+    float aabbMaxDim = max(boundDim.x, max(boundDim.y, boundDim.z));
+    float voxelSizeRatio = aabbMaxDim / _VoxelSize;
+    bool smallTriangle = voxelSizeRatio < 0.1f; // 1/10th of a brick is small enough for the point approximation
+
+    uint triangleDataSize = 0;
+    if (smallTriangle)
+        triangleDataSize = 12;
+    else
+        triangleDataSize = 24;
+    
+    uint localTriangleSwapOffset;
+
+    if (collide)
+        InterlockedAdd(gs_TriangleOffset, triangleDataSize, localTriangleSwapOffset);
+
+    GroupMemoryBarrierWithGroupSync();
+
+    if (gtid == 0)
+    {
+        InterlockedAdd(_VoxelizeCounter[0].triangleSizeCount, gs_TriangleOffset, gs_TriangleOffsetGlobal);
+        // Check that there's enough swap space for the triangles
+        gs_HasSpace = gs_TriangleOffsetGlobal + gs_TriangleOffset <= MAX_STORAGE;
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // Swap only triangles that have enough resources to get voxelized
+    if (collide && gs_HasSpace)
+    {
+        uint triangleIdSwapOffset = localTriangleSwapOffset + gs_TriangleOffsetGlobal;
+        if (smallTriangle)
+        {
+            _TriangleData[triangleIdSwapOffset] = (tri.v0 + tri.v1 + tri.v2) / 3.0f;
+            triangleIdSwapOffset |= 1 << 31;
+        }
+        else
+        {
+            _TriangleData[triangleIdSwapOffset + 0] = tri.v0;
+            _TriangleData[triangleIdSwapOffset + 1] = tri.v1;
+            _TriangleData[triangleIdSwapOffset + 2] = tri.v2;
+        }
+        gs_ItemsTriangleIdSwapOffsets[itemOffset] = triangleIdSwapOffset;
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    {
+        uint itemId = 0;
+        uint refScan = 0;
+        for (uint refId = gtid; refId < gs_RefCounter; refId += 255)
+        {
+            while (refId >= gs_ItemsRefCount[itemId] + refScan)
+            {
+                refScan += gs_ItemsRefCount[itemId];
+                itemId++;
+            }
+            if (refId >= gs_RefCounter)
+                break;
+            if (gs_ItemsTriangleIdSwapOffsets[itemId] == uint(-1))
+                continue; // Skip if culled
+
+            uint localRefId = refId - refScan;
+            Item item = gs_Items[itemId];
+            uint3 dim = item.boundMax - item.boundMin;
+            uint numCells = dim.x * dim.y * dim.z;
+            
+            uint3 localVoxelCoord = VoxelOffset1DTo3D(localRefId, dim);
+            uint3 globalVoxelCoord = localVoxelCoord + item.boundMin;
+            uint voxelIdx = VoxelOffset3DTo1D(globalVoxelCoord, 3);
+            if (!gs_HasSpace)
+            {
+                _AllocateFailBuffer[voxelIdx] = 1;
+            }
+            else
+            {
+                AddReferenceOrMarkVoxelFailed(voxelIdx, gs_ItemsTriangleIdSwapOffsets[itemId]);
+            }
+        }
+    }
+}
