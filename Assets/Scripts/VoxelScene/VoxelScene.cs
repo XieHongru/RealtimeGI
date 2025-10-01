@@ -2,75 +2,96 @@ using System.Collections;
 using System.Collections.Generic;
 using Unity.Mathematics;
 using UnityEngine;
+using static UnityEditor.Searcher.SearcherWindow.Alignment;
 
 public class VoxelScene
 {
-    Cascade[] cascades = new Cascade[4];
-    List<Vector3> verticesList = new List<Vector3>();
-    List<int> indicesList = new List<int>();
-
-    SceneData sceneData;
+    Cascade[] m_Cascades;
+    SceneData m_SceneData;
 
     public void CreateScene()
     {
-        sceneData = new SceneData();
-
-        GetAllMeshes();
-        Voxelize();
+        m_SceneData = new SceneData();
+        m_SceneData.Init();
+        CreateCascade();
     }
 
-    void GetAllMeshes()
+    public void UpdateScene()
     {
+        m_SceneData.Update();
+    }
 
-        // 获取所有MeshFilter和SkinnedMeshRenderer
-        MeshFilter[] meshFilters = GameObject.FindObjectsOfType<MeshFilter>();
-        SkinnedMeshRenderer[] skinnedMeshRenderers = GameObject.FindObjectsOfType<SkinnedMeshRenderer>();
+    public void CreateCascade()
+    {
+        m_Cascades = new Cascade[4];
 
-        // 处理普通Mesh
-        foreach (MeshFilter mf in meshFilters)
+        float voxelSize = GlobalSettings.Instance.voxelSize;
+        for (int i = 0; i < m_Cascades.Length; i++)
         {
-            if (mf.sharedMesh != null)
+            m_Cascades[i] = new Cascade();
+            m_Cascades[i].Init(i, voxelSize, m_SceneData.cameraPosition);
+            voxelSize *= 2;
+        }
+
+        CullMesh();
+    }
+
+    public void UpdateCascade()
+    {
+        foreach (var cascade in m_Cascades)
+        {
+            cascade.Update(ref m_SceneData);
+        }
+    }
+
+    void CullMesh()
+    {
+        var objectList = m_SceneData.objects;
+        for (int i = 0; i < objectList.Count; i++)
+        {
+            MeshRenderer meshRenderer = objectList[i].GetComponent<MeshRenderer>();
+            Mesh mesh = objectList[i].GetComponent<MeshFilter>().sharedMesh;
+            if (meshRenderer != null && mesh != null)
             {
-                AddMeshData(mf.sharedMesh, mf.transform, ref verticesList, ref indicesList);
+                // aabb bounds
+                var bounds = meshRenderer.bounds;
+                // vertices data
+                Vector3[] meshVertices = mesh.vertices;
+
+                for (int j = 0; j < m_Cascades.Length; j++)
+                {
+                    if (m_Cascades[j].CheckBounds(bounds))
+                    {
+                        // calculate vertices global position
+                        List<Vector3> vertices = new List<Vector3>();
+                        foreach (var vert in meshVertices)
+                        {
+                            vertices.Add(meshRenderer.transform.TransformPoint(vert));
+                        }
+                        int[] indices = mesh.triangles;
+
+                        // push vertices and indices into following cascade data holder
+                        for (int k = j; k < m_Cascades.Length; k++)
+                        {
+                            m_Cascades[k].AddObject(objectList[i], vertices, indices);
+                        }
+
+                        break;
+                    }
+                    else
+                    {
+                        continue;
+                    }
+                }
             }
         }
-
-        // 处理SkinnedMesh
-        foreach (SkinnedMeshRenderer smr in skinnedMeshRenderers)
-        {
-            if (smr.sharedMesh != null)
-            {
-                AddMeshData(smr.sharedMesh, smr.transform, ref verticesList, ref indicesList);
-            }
-        }
-
-        Debug.Log($"Total vertices: {verticesList.Count}, Total indices: {indicesList.Count}");
     }
 
-    void AddMeshData(Mesh mesh, Transform transform, ref List<Vector3> vertices, ref List<int> indices)
+    public void UpdateDebugInfo(float[] voxelSize, Vector4[] cascadeMin, Vector4[] cascadeMax)
     {
-        // 获取原始顶点数据并转换到世界空间
-        Vector3[] meshVertices = mesh.vertices;
-        for (int i = 0; i < meshVertices.Length; i++)
+        for (int i = 0; i < m_Cascades.Length; i++)
         {
-            vertices.Add(transform.TransformPoint(meshVertices[i]));
+            m_Cascades[i].GetDebugInfo(out voxelSize[i], out cascadeMin[i], out cascadeMax[i]);
         }
-
-        // 处理索引（需要考虑顶点偏移）
-        int vertexOffset = vertices.Count - meshVertices.Length;
-        int[] meshIndices = mesh.triangles;
-        for (int i = 0; i < meshIndices.Length; i++)
-        {
-            indices.Add(meshIndices[i] + vertexOffset);
-        }
-    }
-
-    void Voxelize()
-    {
-        sceneData.vertexBuffer = new ComputeBuffer(verticesList.Count, 3 * sizeof(float));
-        sceneData.indexBuffer = new ComputeBuffer(indicesList.Count, sizeof(int));
-
-        sceneData.vertexBuffer.SetData(verticesList);
-        sceneData.indexBuffer.SetData(indicesList);
     }
 }

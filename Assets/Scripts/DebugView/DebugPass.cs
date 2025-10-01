@@ -8,12 +8,13 @@ public class DebugPass : ScriptableRenderPass
 {
     public DebugMode debugMode;
 
+    VoxelScene m_VoxelScene;
     Material m_DebugMaterial;
     string m_ProfilerTag;
 
-    float[] voxelSize = { 0.2f, 0.4f, 0.8f, 1.6f };
-    Vector4[] cascadeMin = { new Vector3(-6.4f, -6.4f, -6.4f), new Vector3(-12.8f, -12.8f, -12.8f), new Vector3(-25.6f, -25.6f, -25.6f), new Vector3(-51.2f, -51.2f, -51.2f) };
-    Vector4[] cascadeMax = { new Vector3(6.4f, 6.4f, 6.4f), new Vector3(12.8f, 12.8f, 12.8f), new Vector3(25.6f, 25.6f, 25.6f), new Vector3(51.2f, 51.2f, 51.2f) };
+    float[] voxelSize = new float[4];
+    Vector4[] cascadeMin = new Vector4[4];
+    Vector4[] cascadeMax = new Vector4[4];
 
     public DebugPass(Material debugMaterial, string profilerTag)
     {
@@ -27,6 +28,14 @@ public class DebugPass : ScriptableRenderPass
         {
             return;
         }
+
+        if (m_VoxelScene == null)
+        {
+            m_VoxelScene = GameObject.Find("GIController").GetComponent<GIController>().voxelScene;
+        }
+
+        m_VoxelScene.UpdateDebugInfo(voxelSize, cascadeMin, cascadeMax);
+
         m_DebugMaterial.SetInteger("_DebugMode", (int)debugMode);
         m_DebugMaterial.SetFloatArray("_VoxelSize", voxelSize);
         m_DebugMaterial.SetVectorArray("_CascadeMin", cascadeMin);

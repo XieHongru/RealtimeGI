@@ -2,16 +2,18 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.XR;
 
+[ExecuteAlways]
 public class GIController : MonoBehaviour
 {
-    public VoxelScene VoxelScene;
+    public VoxelScene voxelScene;
 
     // Start is called before the first frame update
     void Start()
     {
-        VoxelScene = new VoxelScene();
-        VoxelScene.CreateScene();
+        voxelScene = new VoxelScene();
+        voxelScene.CreateScene();
     }
 
     // Update is called once per frame
@@ -39,6 +41,32 @@ public class GIController : MonoBehaviour
             foreach (var child in fbxObject.GetComponentsInChildren<Transform>())
             {
                 Debug.Log("child of " + fbxObject.name + " : " + child.gameObject.name);
+            }
+        }
+    }
+
+    [MenuItem("Tools/Search Meshes")]
+    public static void SearchMeshes()
+    {
+        // 获取所有MeshFilter和SkinnedMeshRenderer
+        MeshFilter[] meshFilters = GameObject.FindObjectsOfType<MeshFilter>();
+        SkinnedMeshRenderer[] skinnedMeshRenderers = GameObject.FindObjectsOfType<SkinnedMeshRenderer>();
+
+        // 处理普通Mesh
+        foreach (MeshFilter mf in meshFilters)
+        {
+            if (mf.sharedMesh != null)
+            {
+                Debug.Log($"local bounds: {mf.sharedMesh.bounds}, world bounds: {mf.GetComponent<MeshRenderer>().bounds}");
+            }
+        }
+
+        // 处理SkinnedMesh
+        foreach (SkinnedMeshRenderer smr in skinnedMeshRenderers)
+        {
+            if (smr.sharedMesh != null)
+            {
+                
             }
         }
     }
