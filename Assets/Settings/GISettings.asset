@@ -12,4 +12,4 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 3b75558ede718424cb55de04dcb2a0be, type: 3}
   m_Name: GISettings
   m_EditorClassIdentifier: 
-  voxelSize: 0.1
+  voxelSize: 0.2

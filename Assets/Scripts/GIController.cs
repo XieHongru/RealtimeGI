@@ -48,6 +48,7 @@ public class GIController : MonoBehaviour
     [MenuItem("Tools/Search Meshes")]
     public static void SearchMeshes()
     {
+        Dictionary<Mesh, int> meshMap = new Dictionary<Mesh, int>();
         // 获取所有MeshFilter和SkinnedMeshRenderer
         MeshFilter[] meshFilters = GameObject.FindObjectsOfType<MeshFilter>();
         SkinnedMeshRenderer[] skinnedMeshRenderers = GameObject.FindObjectsOfType<SkinnedMeshRenderer>();
@@ -57,9 +58,18 @@ public class GIController : MonoBehaviour
         {
             if (mf.sharedMesh != null)
             {
-                Debug.Log($"local bounds: {mf.sharedMesh.bounds}, world bounds: {mf.GetComponent<MeshRenderer>().bounds}");
+                if (!meshMap.ContainsKey(mf.sharedMesh))
+                {
+                    meshMap.Add(mf.sharedMesh, 0);
+                }
+                else
+                {
+                    meshMap[mf.sharedMesh]++;
+                }
+                //Debug.Log($"local bounds: {mf.sharedMesh.bounds}, world bounds: {mf.GetComponent<MeshRenderer>().bounds}");
             }
         }
+        Debug.Log($"there are {meshMap.Count} meshes");
 
         // 处理SkinnedMesh
         foreach (SkinnedMeshRenderer smr in skinnedMeshRenderers)

@@ -5,10 +5,7 @@ using UnityEngine;
 
 public class CascadeData
 {
-    public List<GameObject> objects = new List<GameObject>();
-    public List<float3> vertices = new List<float3>();
-    public List<int> indices = new List<int>();
+    public List<ObjectInfo> objectsInfo;
 
-    public ComputeBuffer vertexBuffer;
-    public ComputeBuffer indexBuffer;
+    public ComputeBuffer culledObjects;
 }

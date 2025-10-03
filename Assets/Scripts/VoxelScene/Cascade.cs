@@ -31,17 +31,17 @@ public class Cascade
 
     public void AddObject(GameObject gameObject, List<Vector3> vertices, int[] indices)
     {
-        m_CascadeData.objects.Add(gameObject);
+        //m_CascadeData.objects.Add(gameObject);
 
-        int beginOffset = m_CascadeData.vertices.Count;
-        foreach (var idx in indices)
-        {
-            m_CascadeData.indices.Add(idx + beginOffset);
-        }
-        foreach (var vert in vertices)
-        {
-            m_CascadeData.vertices.Add(vert);
-        }
+        //int beginOffset = m_CascadeData.vertices.Count;
+        //foreach (var idx in indices)
+        //{
+        //    m_CascadeData.indices.Add(idx + beginOffset);
+        //}
+        //foreach (var vert in vertices)
+        //{
+        //    m_CascadeData.vertices.Add(vert);
+        //}
     }
 
     public void GetDebugInfo(out float voxelSize, out Vector4 cascadeMin, out Vector4 cascadeMax)
@@ -49,7 +49,5 @@ public class Cascade
         voxelSize = m_VoxelSize;
         cascadeMin = m_Bounds.min;
         cascadeMax = m_Bounds.max;
-
-        Debug.Log(m_CascadeId + "," + m_CascadeData.objects.Count);
     }
 }

@@ -1,36 +1,93 @@
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using UnityEditor;
 using UnityEngine;
 
+public struct ObjectInfo
+{
+    public int objectId;
+    public int meshId;
+
+    public Vector3 localBoundsMin;
+    public Vector3 localBoundsMax;
+    public Vector3 worldBoundsMin;
+    public Vector3 worldBoundsMax;
+    public Matrix4x4 localToWorldMatrix;
+    public Matrix4x4 worldToWorldMatrix;
+}
+
+public struct MeshInfo
+{
+    public int meshId;
+    public int vertexCount;
+    public int vertexOffset;
+    public int indexCount;
+    public int indexOffset;
+}
+
 public class SceneData
 {
-    public List<GameObject> objects;
+    // ---------------------------------------------------
+    // assume there is no object add or delete in scene,
+    // because we are study GI, not streaming load
+    // no object spawned or broken
+    // ---------------------------------------------------
+    // TODO: if we need scene objects update, we need
+    // limit max objects count and vertices count,
+    // then implement a system of object listen
+    // ---------------------------------------------------
+    public List<GameObject> objects;            // all object instances in scene 
+    public List<ObjectInfo> objectsInfo;        // all object instances info in scene
+    public List<MeshInfo>   meshesInfo;         // all meshes info in scene
+    public List<Vector3>    vertices;           // all vertices in scene (local position)
+    public List<int>        indices;            // all meshes tri indices in scene
+    public Dictionary<Mesh, MeshInfo> meshMap;  //
+
     public Vector3 cameraPositionPrev;
     public Vector3 cameraPosition;
 
-    bool m_MeshIsDirty = true;
+    public ComputeBuffer objectInfoBuffer;
+    public ComputeBuffer vertexBuffer;
+    public ComputeBuffer indexBuffer;
 
     public void Init()
     {
-        objects = new List<GameObject>();
+        objects     = new List<GameObject>();
+        objectsInfo = new List<ObjectInfo>();
+        meshesInfo  = new List<MeshInfo>();
+        vertices    = new List<Vector3>();
+        indices     = new List<int>();
+        meshMap     = new Dictionary<Mesh, MeshInfo>();
+
+        // init for all scene objects
         GetAllObjects();
+
         cameraPosition = Camera.main.transform.position;
+
+        objectInfoBuffer = new ComputeBuffer(objectsInfo.Count, Marshal.SizeOf<ObjectInfo>(), ComputeBufferType.Structured);
+        vertexBuffer = new ComputeBuffer(vertices.Count, sizeof(float) * 3, ComputeBufferType.Structured);
+        indexBuffer = new ComputeBuffer(indices.Count, sizeof(int), ComputeBufferType.Structured);
+        objectInfoBuffer.SetData(objectsInfo);
+        vertexBuffer.SetData(vertices);
+        indexBuffer.SetData(indices);
     }
 
     public void Update()
     {
-        if (m_MeshIsDirty)
-        {
-            
-            m_MeshIsDirty = false;
-        }
         cameraPositionPrev = cameraPosition;
         cameraPosition = Camera.main.transform.position;
+
+        // TODO: objects remove or add/update
     }
 
     public void Release()
     {
-        
+        objectInfoBuffer.Release();
+        vertexBuffer.Release();
+        indexBuffer.Release();
+        objectInfoBuffer = null;
+        vertexBuffer = null;
+        indexBuffer = null;
     }
 
     void GetAllObjects()
@@ -40,28 +97,47 @@ public class SceneData
 
         foreach (MeshFilter mf in meshFilters)
         {
-            if (mf.sharedMesh != null)
+            Mesh mesh = mf.sharedMesh;
+            if (mesh != null)
             {
                 objects.Add(mf.gameObject);
+
+                ObjectInfo objectInfo = new ObjectInfo();
+                objectInfo.objectId = objectsInfo.Count;
+                if (meshMap.ContainsKey(mesh))
+                {
+                    objectInfo.meshId = meshMap[mesh].meshId;
+                }
+                else
+                {
+                    Vector3[] meshVertices = mesh.vertices;
+                    int[] meshIndices = mesh.triangles;
+
+                    MeshInfo meshInfo = new MeshInfo();
+                    meshInfo.meshId = meshesInfo.Count;
+                    meshInfo.vertexCount = meshVertices.Length;
+                    meshInfo.vertexOffset = vertices.Count;
+                    meshInfo.indexCount = meshIndices.Length;
+                    meshInfo.indexOffset = indices.Count;
+
+                    foreach (Vector3 v in meshVertices)
+                        vertices.Add(v);
+                    foreach (int i in meshIndices)
+                        indices.Add(i);
+
+                    meshesInfo.Add(meshInfo);
+                    meshMap.Add(mesh, meshInfo);
+                }
+
+                objectInfo.localBoundsMin = mesh.bounds.min;
+                objectInfo.localBoundsMax = mesh.bounds.max;
+                objectInfo.worldBoundsMin = mf.GetComponent<MeshRenderer>().bounds.min;
+                objectInfo.worldBoundsMax = mf.GetComponent<MeshRenderer>().bounds.max;
+                objectInfo.localToWorldMatrix = mf.transform.localToWorldMatrix;
+                objectInfo.worldToWorldMatrix = mf.transform.worldToLocalMatrix;
+
+                objectsInfo.Add(objectInfo);
             }
-        }
-    }
-
-    void AddMeshData(Mesh mesh, Transform transform, ref List<Vector3> vertices, ref List<int> indices)
-    {
-        // 获取原始顶点数据并转换到世界空间
-        Vector3[] meshVertices = mesh.vertices;
-        for (int i = 0; i < meshVertices.Length; i++)
-        {
-            vertices.Add(transform.TransformPoint(meshVertices[i]));
-        }
-
-        // 处理索引（需要考虑顶点偏移）
-        int vertexOffset = vertices.Count - meshVertices.Length;
-        int[] meshIndices = mesh.triangles;
-        for (int i = 0; i < meshIndices.Length; i++)
-        {
-            indices.Add(meshIndices[i] + vertexOffset);
         }
     }
 }

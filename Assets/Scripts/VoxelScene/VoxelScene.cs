@@ -13,6 +13,7 @@ public class VoxelScene
     {
         m_SceneData = new SceneData();
         m_SceneData.Init();
+
         CreateCascade();
     }
 
