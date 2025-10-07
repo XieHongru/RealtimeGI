@@ -8,18 +8,23 @@ public class VoxelScene
 {
     Cascade[] m_Cascades;
     SceneData m_SceneData;
+    SurfaceCache m_SurfaceCache;
 
     public void CreateScene()
     {
         m_SceneData = new SceneData();
         m_SceneData.Init();
 
-        CreateCascade();
+        m_SurfaceCache = new SurfaceCache();
+        m_SurfaceCache.Init();
+        m_SurfaceCache.CaptureSurfaceCache(m_SceneData.objectsInfo, m_SceneData.objects, m_SceneData.meshes);
+
+        //CreateCascade();
     }
 
     public void UpdateScene()
     {
-        m_SceneData.Update();
+        //m_SceneData.Update();
     }
 
     public void CreateCascade()

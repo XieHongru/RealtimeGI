@@ -19,7 +19,7 @@ public class GIController : MonoBehaviour
     // Update is called once per frame
     void Update()
     {
-        
+        voxelScene.UpdateScene();
     }
 
     [MenuItem("Tools/Search Prefabs")]
