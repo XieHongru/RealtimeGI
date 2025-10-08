@@ -8,7 +8,7 @@ public class DebugPass : ScriptableRenderPass
 {
     public DebugMode debugMode;
 
-    VoxelScene m_VoxelScene;
+    GPUScene m_GPUScene;
     Material m_DebugMaterial;
     string m_ProfilerTag;
 
@@ -29,12 +29,12 @@ public class DebugPass : ScriptableRenderPass
             return;
         }
 
-        if (m_VoxelScene == null)
+        if (m_GPUScene == null)
         {
-            m_VoxelScene = GameObject.Find("GIController").GetComponent<GIController>().voxelScene;
+            m_GPUScene = GameObject.Find("GIController").GetComponent<GIController>().gpuScene;
         }
 
-        m_VoxelScene.UpdateDebugInfo(voxelSize, cascadeMin, cascadeMax);
+        m_GPUScene.UpdateDebugInfo(voxelSize, cascadeMin, cascadeMax);
 
         m_DebugMaterial.SetInteger("_DebugMode", (int)debugMode);
         m_DebugMaterial.SetFloatArray("_VoxelSize", voxelSize);

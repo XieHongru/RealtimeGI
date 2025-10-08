@@ -25,7 +25,7 @@ public struct MeshInfo
     public int indexOffset;
 }
 
-public class SceneData
+public class GPUSceneData
 {
     // ---------------------------------------------------
     // assume there is no object add or delete in scene,

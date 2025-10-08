@@ -19,7 +19,7 @@ public class Cascade
         m_Bounds = new Bounds(m_CascadeCenter, Vector3.one * m_VoxelSize * 64);
     }
 
-    public void Update(ref SceneData sceneData)
+    public void Update(ref GPUSceneData sceneData)
     {
 
     }
