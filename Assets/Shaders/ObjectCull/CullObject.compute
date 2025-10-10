@@ -1,0 +1,156 @@
+#include "../GICommon.hlsl"
+#pragma kernel CullObjectToClipmap
+
+cbuffer _Params
+{
+    float3 _CascadeCenter;
+    float3 _CascadeSize;
+    uint3 _CascadeResolution;
+    uint3 _UpdateChunkResolution;
+    int _NumObjects;
+    int _NumUpdateChunks;
+    int _NumThreadsForCulling;
+    int _MaxObjectNumPerUpdateChunk;
+};
+
+RWStructuredBuffer<int> _RWClipmapCullingResult;
+RWStructuredBuffer<int> _RWClipmapObjectCounter;
+
+groupshared bool gs_ThreadValidMask[8];
+groupshared bool gs_ThreadCullingResult[8];
+groupshared int gs_ThreadWriteIndex[8];
+
+bool IsObjectPassCulling(int groupThreadIndex)
+{
+    bool validThread = gs_ThreadValidMask[groupThreadIndex];
+    bool intersectObject = gs_ThreadCullingResult[groupThreadIndex];
+    return validThread && intersectObject;
+}
+
+[numthreads(8, 1, 1)]
+void CullObjectToClipmap(uint threadId : SV_DispatchThreadID, uint groupThreadId : SV_GroupThreadID)
+{
+    int objectIndex = threadId;
+
+    // clamp the index, mark invalid thread
+    gs_ThreadValidMask[groupThreadId] = objectIndex < _NumObjects;
+    objectIndex = min(objectIndex, _NumObjects - 1);
+    
+    ObjectInfo objectInfo = _ObjectsInfo[objectIndex];
+    gs_ThreadCullingResult[groupThreadId] = ObjectIntersectAABB(objectInfo, _CascadeCenter, _CascadeCenter);
+
+    GroupMemoryBarrierWithGroupSync();
+
+    if (groupThreadId == 0)
+    {
+        int visibleObjectCounter = 0;
+        for (int i = 0; i < 8; i++)
+        {
+            if (IsObjectPassCulling(i))
+            {
+                visibleObjectCounter += 1;
+            }
+        }
+
+        int startIndex = 0;
+        InterlockedAdd(_RWClipmapObjectCounter[0], visibleObjectCounter, startIndex);
+
+        for (int i = 0; i < 8; i++)
+        {
+            if (IsObjectPassCulling(i))
+            {
+                gs_ThreadWriteIndex[i] = startIndex;
+                startIndex += 1;
+            }
+        }
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    int writeIndex = gs_ThreadWriteIndex[groupThreadId];
+    if (IsObjectPassCulling(groupThreadId))
+    {
+        _RWClipmapCullingResult[writeIndex] = objectIndex;
+    }
+}
+
+#pragma kernel BuildUpdateChunkCullingIndirectArgs
+
+StructuredBuffer<int> _ClipmapObjectCounter;
+RWStructuredBuffer<int> _RWIndirectArgs;
+
+[numthreads(1, 1, 1)]
+void BuildUpdateChunkCullingIndirectArgs()
+{
+    _RWIndirectArgs[0] = ceil(float(_ClipmapObjectCounter[0]) / float(_NumThreadsForCulling));
+    _RWIndirectArgs[1] = _NumUpdateChunks;
+    _RWIndirectArgs[2] = 1;
+}
+
+#pragma kernel CullObjectToUpdateChunk
+
+StructuredBuffer<int> _UpdateChunkList;
+StructuredBuffer<int> _ClipmapCullingResult;
+RWStructuredBuffer<int> _RWUpdateChunkObjectCounter;
+
+// 2D array as 1D, single row represent an update chunk
+RWStructuredBuffer<int> _RWUpdateChunkCullingResult;
+
+[numthreads(8, 1, 1)]
+void CullObjectToUpdateChunk(uint2 threadId : SV_DispatchThreadID, uint2 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    int groupThreadIndex = groupThreadId.x;
+    int objectIndex = threadId.x;
+    int chunkIndex = threadId.y;
+
+    // clamp the index, mark invalid thread
+    int numObjectsInClipmap = _ClipmapObjectCounter[0];
+    gs_ThreadValidMask[groupThreadIndex] = objectIndex < numObjectsInClipmap;
+    objectIndex = min(objectIndex, numObjectsInClipmap - 1);
+
+    // calc update chunk's bound
+    int3 chunkNumXYZ = _CascadeResolution / _UpdateChunkResolution;
+    int chunkId_1D = _UpdateChunkList[chunkIndex];
+    float3 chunkId_3D = (float3) Index1DTo3D(chunkId_1D, chunkNumXYZ);
+    float3 chunkCenter = CalcVoxelCenterPos(chunkId_3D, (float3) chunkNumXYZ, _CascadeCenter, _CascadeSize); // we see chunk as a "large" voxel
+    float3 chunkSize = _CascadeSize * _UpdateChunkResolution / _CascadeResolution;
+
+    ObjectInfo objectInfo = _ObjectsInfo[objectIndex];
+    gs_ThreadCullingResult[groupThreadIndex] = ObjectIntersectAABB(objectInfo, chunkCenter, chunkSize);
+
+    GroupMemoryBarrierWithGroupSync();
+
+    if (groupThreadIndex == 0)
+    {
+        int visibleObjectCounter = 0;
+        for (int i = 0; i < 8; i++)
+        {
+            if (IsObjectPassCulling(i))
+            {
+                visibleObjectCounter += 1;
+            }
+        }
+
+        int startIndex = 0;
+        InterlockedAdd(_RWUpdateChunkObjectCounter[chunkIndex], visibleObjectCounter, startIndex);
+
+        for (int i = 0; i < 8; i++)
+        {
+            if (IsObjectPassCulling(i))
+            {
+                gs_ThreadWriteIndex[i] = startIndex;
+                startIndex += 1;
+            }
+        }
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    int cullingResultOffset = chunkIndex * _MaxObjectNumPerUpdateChunk; // store 2d logic data to 1d buffer
+    int writeIndex = gs_ThreadWriteIndex[groupThreadIndex];
+    writeIndex += cullingResultOffset;
+    if (IsObjectPassCulling(groupThreadIndex))
+    {
+        _RWUpdateChunkCullingResult[writeIndex] = objectIndex;
+    }
+}

@@ -28,7 +28,7 @@ public class SurfaceCache
     RenderTexture[] m_SurfaceCacheAtlas;
     RenderTargetIdentifier[] m_SurfaceCacheRenderTargets;
     RenderTexture m_DepthStencil;
-    int m_PerObjectResolution = 128;
+    int m_PerObjectResolution = 32;
     int m_AtlasResolution = 2048;
 
     public void Init()
@@ -189,5 +189,6 @@ public class SurfaceCache
         {
             tex?.Release();
         }
+        m_DepthStencil.Release();
     }
 }

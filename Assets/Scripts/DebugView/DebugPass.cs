@@ -8,7 +8,7 @@ public class DebugPass : ScriptableRenderPass
 {
     public DebugMode debugMode;
 
-    GPUScene m_GPUScene;
+    MiraiGIGPUScene m_MiraiGIGPUScene;
     Material m_DebugMaterial;
     string m_ProfilerTag;
 
@@ -29,12 +29,12 @@ public class DebugPass : ScriptableRenderPass
             return;
         }
 
-        if (m_GPUScene == null)
+        if (m_MiraiGIGPUScene == null)
         {
-            m_GPUScene = GameObject.Find("GIController").GetComponent<GIController>().gpuScene;
+            m_MiraiGIGPUScene = GameObject.Find("GIController").GetComponent<GIController>().miraiGIGPUScene;
         }
 
-        m_GPUScene.UpdateDebugInfo(voxelSize, cascadeMin, cascadeMax);
+        m_MiraiGIGPUScene.UpdateDebugInfo(voxelSize, cascadeMin, cascadeMax);
 
         m_DebugMaterial.SetInteger("_DebugMode", (int)debugMode);
         m_DebugMaterial.SetFloatArray("_VoxelSize", voxelSize);

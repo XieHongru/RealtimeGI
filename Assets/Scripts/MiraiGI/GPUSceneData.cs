@@ -84,9 +84,9 @@ public class GPUSceneData
 
     public void Release()
     {
-        objectInfoBuffer.Release();
-        vertexBuffer.Release();
-        indexBuffer.Release();
+        objectInfoBuffer?.Release();
+        vertexBuffer?.Release();
+        indexBuffer?.Release();
         objectInfoBuffer = null;
         vertexBuffer = null;
         indexBuffer = null;

@@ -6,20 +6,20 @@ using static UnityEditor.Searcher.SearcherWindow.Alignment;
 
 public class MiraiGIGPUScene
 {
+    public GPUSceneData GPUSceneData;
+    public SurfaceCache surfaceCache;
     Cascade[] m_Cascades;
-    GPUSceneData m_GPUSceneData;
-    SurfaceCache m_SurfaceCache;
 
     public void CreateScene()
     {
         // 1. init GPU scene data
-        m_GPUSceneData = new GPUSceneData();
-        m_GPUSceneData.Init();
+        GPUSceneData = new GPUSceneData();
+        GPUSceneData.Init();
 
         // 2. capture mesh cards
-        m_SurfaceCache = new SurfaceCache();
-        m_SurfaceCache.Init();
-        m_SurfaceCache.CaptureSurfaceCache(m_GPUSceneData.objectsInfo, m_GPUSceneData.objects, m_GPUSceneData.meshes);
+        surfaceCache = new SurfaceCache();
+        surfaceCache.Init();
+        surfaceCache.CaptureSurfaceCache(GPUSceneData.objectsInfo, GPUSceneData.objects, GPUSceneData.meshes);
 
         //CreateCascade();
     }
@@ -37,7 +37,7 @@ public class MiraiGIGPUScene
         for (int i = 0; i < m_Cascades.Length; i++)
         {
             m_Cascades[i] = new Cascade();
-            m_Cascades[i].Init(i, voxelSize, m_GPUSceneData.cameraPosition);
+            m_Cascades[i].Init(i, voxelSize, GPUSceneData.cameraPosition);
             voxelSize *= 2;
         }
 
@@ -48,13 +48,19 @@ public class MiraiGIGPUScene
     {
         foreach (var cascade in m_Cascades)
         {
-            cascade.Update(ref m_GPUSceneData);
+            cascade.Update(ref GPUSceneData);
         }
+    }
+
+    public void Release()
+    {
+        GPUSceneData.Release();
+        surfaceCache.Release();
     }
 
     void CullMesh()
     {
-        var objectList = m_GPUSceneData.objects;
+        var objectList = GPUSceneData.objects;
         for (int i = 0; i < objectList.Count; i++)
         {
             MeshRenderer meshRenderer = objectList[i].GetComponent<MeshRenderer>();
