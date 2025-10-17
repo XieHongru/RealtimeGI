@@ -29,8 +29,7 @@ Shader "Mirai/SurfaceCacheCapture"
         float3 positionOS : TEXCOORD2;
         float3 normalOS : TEXCOORD3;
         float cardOrientation : TEXCOORD4;
-        float depth : TEXCOORD5;
-        float2 uv : TEXCOORD6;
+        float2 uv : TEXCOORD5;
     };
 
     TEXTURE2D(_BaseMap);
@@ -62,7 +61,7 @@ Shader "Mirai/SurfaceCacheCapture"
         return 0;
     }
 
-    FragmentInput RealtimeGICardCaptureVS(VertexInput input)
+    FragmentInput SurfaceCacheCaptureVS(VertexInput input)
     {
         FragmentInput output;
 
@@ -78,8 +77,7 @@ Shader "Mirai/SurfaceCacheCapture"
         uint cardIndex = _UseInstance ? input.instanceID : 0;
         output.cardOrientation = _CardOrientations[cardIndex];
 
-        float4 outSVPosition = mul(float4(localPosition, 1), _ViewProjectionMatrices[cardIndex]);
-        output.depth = outSVPosition.z;
+        float4 outSVPosition = mul(_ViewProjectionMatrices[cardIndex], float4(localPosition, 1));
         float4 viewportInfo = _ViewportInfos[cardIndex];
         outSVPosition.xy = outSVPosition.xy * viewportInfo.xy + viewportInfo.zw;
 	
@@ -96,7 +94,7 @@ Shader "Mirai/SurfaceCacheCapture"
         half4 depth : SV_Target3;
     };
 
-    FragmentOutput RealtimeGICardCapturePS(FragmentInput input)
+    FragmentOutput SurfaceCacheCaptureFS(FragmentInput input)
     {
         FragmentOutput output;
 
@@ -128,8 +126,9 @@ Shader "Mirai/SurfaceCacheCapture"
             Name "SurfaceCacheCapture"
             
             HLSLPROGRAM
-            #pragma vertex RealtimeGICardCaptureVS
-            #pragma fragment RealtimeGICardCapturePS
+            #pragma enable_d3d11_debug_symbols
+            #pragma vertex SurfaceCacheCaptureVS
+            #pragma fragment SurfaceCacheCaptureFS
             #pragma multi_compile_instancing
 
             ENDHLSL

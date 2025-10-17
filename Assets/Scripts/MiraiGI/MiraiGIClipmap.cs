@@ -91,7 +91,7 @@ public class MiraiGIClipmap
 
     public void UpdateClipmap(Camera camera, MiraiGIGPUScene gpuScene)
     {
-        CommandBuffer cmd = CommandBufferPool.Get("UpdateClipmap");
+        CommandBuffer cmd = CommandBufferPool.Get("Update Clipmap");
 
         PrepareRenderResources();
 
@@ -105,7 +105,7 @@ public class MiraiGIClipmap
         }
 
         Graphics.ExecuteCommandBuffer(cmd);
-        cmd.Release();
+        CommandBufferPool.Release(cmd);
     }
 
     public void Release()

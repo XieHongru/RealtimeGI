@@ -1,0 +1,135 @@
+#pragma kernel GenerateROMA
+
+#define OM_SIZE 128
+#define OM_ARRAY_NUM_PER_AXIS 4
+#define BASE_OM_SIZE 128
+#define BIT_PER_TEX 128
+#define UINT_PER_TEX 4
+#define BIT_PER_UINT 32
+
+struct CameraParams
+{
+    float4x4 viewProjMat;
+    float4x4 invViewProjMat;
+    float3 viewDir;
+    float padding;
+};
+
+float4x4 _BaseOMViewProjMat;
+
+Texture2D<uint4> _BaseOccupancyMap;
+RWTexture2DArray<uint4> _RWOccupancyMapAtlas;
+
+StructuredBuffer<CameraParams> _CameraParamsArray;
+
+float3 positionUVToNDC(float3 posUV)
+{
+    return float3((posUV.x - 0.5f) * 2.0f, (0.5f - posUV.y) * 2.0f, (0.5f - posUV.z) * 2.0f);
+}
+
+float3 positionUVToWS(float3 posUV, float4x4 invViewProjMat)
+{
+    float3 posNDC = positionUVToNDC(posUV);
+    float4 posWS = mul(invViewProjMat, float4(posNDC, 1.0f));
+    return posWS.xyz / posWS.w;
+}
+
+float3 positionNDCToUV(float3 ndc)
+{
+    return float3(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y, 0.5f - 0.5 * ndc.z);
+}
+
+float3 positionWSToUV(float3 posWS, float4x4 viewProjMat)
+{
+    float4 posCS = mul(viewProjMat, float4(posWS, 1.f));
+    float3 posNDC = posCS.xyz / posCS.w;
+    float3 posUV = positionNDCToUV(posNDC);
+    return posUV;
+}
+
+[numthreads(16, 16, 1)]
+void GenerateROMA(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    const uint2 pixelIndex = dispatchThreadId.xy;
+    const uint arrayIndex = dispatchThreadId.z;
+    const float4x4 invViewProjMat = _CameraParamsArray[arrayIndex].invViewProjMat;
+
+    //const uint2 pixelIndex = atlasPixelIndex % OM_SIZE;
+    const float2 uv = (pixelIndex + 0.5f) / OM_SIZE;
+    // const float cellSizeUV = 1.0f / BASE_OM_SIZE;
+
+    // uint4 res = uint4(0);
+
+    // Setup a bunch of samples and transform them to base om space
+    const float3 startPosUV = float3(uv, 0.5f / OM_SIZE);
+    const float3 endPosUV = float3(uv, 1.0f - 0.5f / OM_SIZE);
+    const float3 startPosWS = positionUVToWS(startPosUV, invViewProjMat);
+    const float3 endPosWS = positionUVToWS(endPosUV, invViewProjMat);
+
+    float3 curPosBaseUV = positionWSToUV(startPosWS, _BaseOMViewProjMat);
+    const float3 endPosBaseUV = positionWSToUV(endPosWS, _BaseOMViewProjMat);
+    const float3 rayStep = (endPosBaseUV - curPosBaseUV) / (OM_SIZE - 1.f);
+    // const float3 rayOffset = rayStep / (2.f * OM_SIZE);
+    const float3 rayOffset = float3(0.0f, 0.0f, 0.0f);
+
+    for (int i = 0; i < OM_SIZE; i++, curPosBaseUV += (rayStep + rayOffset))
+    {
+        if (any(curPosBaseUV < 0) || any(curPosBaseUV > 1))
+            continue;
+        const uint2 basePixelIndex = (floor(curPosBaseUV.xy * BASE_OM_SIZE));
+        // Get ombits from base om
+        uint zIndexBase = uint(floor(curPosBaseUV.z * BASE_OM_SIZE));
+        uint offsetBase = (zIndexBase / BIT_PER_UINT) % UINT_PER_TEX;
+        uint arrayIndexBase = zIndexBase / BIT_PER_TEX;
+        uint ombits = 0;
+        switch (offsetBase)
+        {
+            case 0:
+                ombits = _BaseOccupancyMap[basePixelIndex].x;
+                break;
+            case 1:
+                ombits = _BaseOccupancyMap[basePixelIndex].y;
+                break;
+            case 2:
+                ombits = _BaseOccupancyMap[basePixelIndex].z;
+                break;
+            case 3:
+                ombits = _BaseOccupancyMap[basePixelIndex].w;
+                break;
+            default:
+                break;
+        }
+        
+        // Check if the bit is occupied
+        uint remainderBase = zIndexBase % BIT_PER_UINT;
+        uint occupied = (ombits << remainderBase) >> (BIT_PER_UINT - 1);
+
+        // Save result
+        if (occupied > 0)
+        {
+            uint offset = (i / BIT_PER_UINT) % UINT_PER_TEX;
+            uint remainder = i % BIT_PER_UINT;
+            uint result = 1 << (BIT_PER_UINT - 1 - remainder);
+            uint4 currentValue = _RWOccupancyMapAtlas[uint3(pixelIndex, arrayIndex)];
+            switch (offset)
+            {
+                case 0:
+                    currentValue.x |= result;
+                    break;
+                case 1:
+                    currentValue.y |= result;
+                    break;
+                case 2:
+                    currentValue.z |= result;
+                    break;
+                case 3:
+                    currentValue.w |= result;
+                    break;
+                default:
+                    break;
+            }
+            _RWOccupancyMapAtlas[uint3(pixelIndex, arrayIndex)] = currentValue;
+        }
+    }
+    return;
+}

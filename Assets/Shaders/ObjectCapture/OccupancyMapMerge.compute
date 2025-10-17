@@ -1,0 +1,15 @@
+#pragma kernel MergeOM
+
+Texture2DArray<uint> _OccupancyMap;
+RWTexture2D<uint4> _RWBaseOccupancyMap;
+
+[numthreads(16, 16, 1)]
+void MergeOM(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    uint2 pixelCoord = dispatchThreadId.xy;
+    
+    _RWBaseOccupancyMap[pixelCoord] = uint4(_OccupancyMap[uint3(pixelCoord, 0)], 
+                                            _OccupancyMap[uint3(pixelCoord, 1)], 
+                                            _OccupancyMap[uint3(pixelCoord, 2)], 
+                                            _OccupancyMap[uint3(pixelCoord, 3)]);
+}

@@ -8,6 +8,7 @@ public class MiraiGIGPUScene
 {
     public GPUSceneData GPUSceneData;
     public SurfaceCache surfaceCache;
+    public OccupancyMap occupancyMap;
     Cascade[] m_Cascades;
 
     public void CreateScene()
@@ -21,11 +22,18 @@ public class MiraiGIGPUScene
         surfaceCache.Init();
         surfaceCache.CaptureSurfaceCache(GPUSceneData.objectsInfo, GPUSceneData.objects, GPUSceneData.meshes);
 
+        // 3. capture ROMA
+        occupancyMap = new OccupancyMap();
+        occupancyMap.Init();
+        occupancyMap.CaptureOccupancyMapAtlas(GPUSceneData.objectsInfo, GPUSceneData.meshes);
+
         //CreateCascade();
     }
 
     public void UpdateScene()
     {
+        surfaceCache.CaptureSurfaceCache(GPUSceneData.objectsInfo, GPUSceneData.objects, GPUSceneData.meshes);
+        occupancyMap.CaptureOccupancyMapAtlas(GPUSceneData.objectsInfo, GPUSceneData.meshes);
         //m_SceneData.Update();
     }
 
@@ -56,6 +64,7 @@ public class MiraiGIGPUScene
     {
         GPUSceneData.Release();
         surfaceCache.Release();
+        occupancyMap.Release();
     }
 
     void CullMesh()

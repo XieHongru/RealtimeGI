@@ -28,11 +28,12 @@ public class SurfaceCache
     RenderTexture[] m_SurfaceCacheAtlas;
     RenderTargetIdentifier[] m_SurfaceCacheRenderTargets;
     RenderTexture m_DepthStencil;
-    int m_PerObjectResolution = 32;
-    int m_AtlasResolution = 2048;
+    int m_PerObjectResolution;
+    int m_AtlasResolution;
 
     public void Init()
     {
+        m_PerObjectResolution = 32;
         m_AtlasResolution = 2048;
         m_SurfaceCacheAtlas = new RenderTexture[4];
         m_SurfaceCacheAtlas[0] = new RenderTexture(m_AtlasResolution, m_AtlasResolution, 0, RenderTextureFormat.ARGB32);
@@ -68,7 +69,7 @@ public class SurfaceCache
             Material[] mat = objects[objInfo.objectId].GetComponent<MeshRenderer>().sharedMaterials;
             int subMeshCount = mesh.subMeshCount;
 
-            Vector3 localBoundsSize = (objInfo.worldBoundsMax - objInfo.worldBoundsMin);
+            Vector3 localBoundsSize = (objInfo.localBoundsMax - objInfo.localBoundsMin);
             float maxDimension = Mathf.Max(localBoundsSize.x, Mathf.Max(localBoundsSize.y, localBoundsSize.z));
 
             CardCaptureParams cardCaptureParams = new CardCaptureParams();
@@ -81,7 +82,7 @@ public class SurfaceCache
 
             for (int cubeFace = 0; cubeFace < 6; cubeFace++)
             {
-                cardCaptureParams.viewProjectionMatrices[cubeFace] = CalcViewProjectionMatrix(cardCaptureParams.cardCenter, maxDimension, cubeFace).transpose;
+                cardCaptureParams.viewProjectionMatrices[cubeFace] = CalcViewProjectionMatrix(cardCaptureParams.cardCenter, maxDimension, cubeFace);
                 cardCaptureParams.cardOrientations[cubeFace] = cubeFace / 2;
                 cardCaptureParams.viewportInfos[cubeFace] = CalcViewportInfo(objInfo.objectId, cubeFace);
             }
@@ -89,6 +90,8 @@ public class SurfaceCache
             Matrix4x4[] identityMats = new Matrix4x4[6];
             for (int i = 0; i < subMeshCount; i++)
             {
+                if (mat[i].shader.name == "Universal Render Pipeline/Nature/SpeedTree8")
+                    continue;
                 captureMaterial.SetColor("_BaseColor", mat[i].GetColor("_BaseColor"));
                 captureMaterial.SetTexture("_BaseMap", mat[i].GetTexture("_BaseMap"));
                 captureMaterial.SetColor("_EmissionColor", mat[i].GetColor("_EmissionColor"));
@@ -128,14 +131,11 @@ public class SurfaceCache
         }
 
         Matrix4x4 viewMatrix = Matrix4x4.LookAt(center, center + viewDir, up).inverse;
+        Matrix4x4 projectionMatrix = Matrix4x4.Ortho(-halfSize, halfSize, -halfSize, halfSize, -halfSize, halfSize);
         if (SystemInfo.usesReversedZBuffer)
         {
-            viewMatrix[2, 0] = -viewMatrix[2, 0];
-            viewMatrix[2, 1] = -viewMatrix[2, 1];
-            viewMatrix[2, 2] = -viewMatrix[2, 2];
-            viewMatrix[2, 3] = -viewMatrix[2, 3];
+            projectionMatrix = Matrix4x4.Ortho(-halfSize, halfSize, -halfSize, halfSize, halfSize, -halfSize);
         }
-        Matrix4x4 projectionMatrix = Matrix4x4.Ortho(-halfSize, halfSize, -halfSize, halfSize, -halfSize, halfSize);
 
         return projectionMatrix * viewMatrix;
     }
