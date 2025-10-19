@@ -6,6 +6,7 @@ using static UnityEditor.Searcher.SearcherWindow.Alignment;
 
 public class MiraiGIGPUScene
 {
+    public MiraiGIClipmap miraiGIClipmap;
     public GPUSceneData GPUSceneData;
     public SurfaceCache surfaceCache;
     public OccupancyMap occupancyMap;
@@ -28,13 +29,22 @@ public class MiraiGIGPUScene
         occupancyMap.CaptureOccupancyMapAtlas(GPUSceneData.objectsInfo, GPUSceneData.meshes);
 
         //CreateCascade();
+
+        // 4. create clipmap
+        miraiGIClipmap = new MiraiGIClipmap();
+        miraiGIClipmap.CreateClipmap();
     }
 
     public void UpdateScene()
     {
-        surfaceCache.CaptureSurfaceCache(GPUSceneData.objectsInfo, GPUSceneData.objects, GPUSceneData.meshes);
-        occupancyMap.CaptureOccupancyMapAtlas(GPUSceneData.objectsInfo, GPUSceneData.meshes);
+        //surfaceCache.CaptureSurfaceCache(GPUSceneData.objectsInfo, GPUSceneData.objects, GPUSceneData.meshes);
+        //occupancyMap.CaptureOccupancyMapAtlas(GPUSceneData.objectsInfo, GPUSceneData.meshes);
         //m_SceneData.Update();
+
+        foreach (Camera camera in Camera.allCameras)
+        {
+            miraiGIClipmap.UpdateClipmap(camera, this);
+        }
     }
 
     public void CreateCascade()
@@ -62,6 +72,7 @@ public class MiraiGIGPUScene
 
     public void Release()
     {
+        miraiGIClipmap.Release();
         GPUSceneData.Release();
         surfaceCache.Release();
         occupancyMap.Release();

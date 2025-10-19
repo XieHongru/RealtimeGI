@@ -49,6 +49,18 @@ public class SurfaceCache
 
     ComputeShader m_CardInfosSyncCS;
 
+    public ComputeBuffer GetCardMatrixBuffer()
+    { 
+        return m_CardMatrixBuffer;
+    }
+
+    public RenderTexture GetSurfaceCacheTexture(int index)
+    {
+        if(index < 0 || index > 3)
+            return null;
+        return m_SurfaceCacheAtlas[index];
+    }
+
     public void Init()
     {
         m_AtlasResolution = 2048;
@@ -73,7 +85,7 @@ public class SurfaceCache
         m_CardMatrixUploadBuffer = new ComputeBuffer(MAX_OBJECT_COUNT * MAX_CARD_PER_MESH, sizeof(float) * 16, ComputeBufferType.Raw);
         m_CardMatrixBuffer = new ComputeBuffer(MAX_OBJECT_COUNT * MAX_CARD_PER_MESH, sizeof(float) * 16, ComputeBufferType.Structured);
 
-        m_CardInfosSyncCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/ObjectCapture/SurfaceCacheInfoSync.compute");
+        m_CardInfosSyncCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/SurfaceCache/SurfaceCacheInfoSync.compute");
     }
 
     public void Release()
@@ -83,6 +95,10 @@ public class SurfaceCache
             tex?.Release();
         }
         m_DepthStencil.Release();
+
+        m_CardMatrixOffsetUploadBuffer.Release();
+        m_CardMatrixUploadBuffer.Release();
+        m_CardMatrixBuffer.Release();
     }
 
     public void SyncCardInfosToGPU(CommandBuffer cmd, int objectCount)

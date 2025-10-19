@@ -60,8 +60,8 @@ public class OccupancyMap
 
         m_CameraParamsArray = new ComputeBuffer(OCCUPANCY_MAP_COUNT, Marshal.SizeOf<CameraParams>());
 
-        m_OccupancyMapMergeCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/ObjectCapture/OccupancyMapMerge.compute");
-        m_ROMAGenerateCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/ObjectCapture/ROMAGenerate.compute");
+        m_OccupancyMapMergeCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/ROMA/OccupancyMapMerge.compute");
+        m_ROMAGenerateCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/ROMA/ROMAGenerate.compute");
     }
 
     public void Release()

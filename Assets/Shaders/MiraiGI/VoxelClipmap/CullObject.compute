@@ -1,4 +1,4 @@
-#include "../GICommon.hlsl"
+#include "../../GICommon.hlsl"
 #pragma kernel CullObjectToClipmap
 
 cbuffer _Params

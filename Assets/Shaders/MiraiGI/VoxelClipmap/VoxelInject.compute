@@ -1,0 +1,96 @@
+#include "../../GICommon.hlsl"
+#pragma kernel VoxelInject
+
+cbuffer _Params
+{
+    float3 _CascadeCenter;
+    float3 _CascadeSize;
+    uint3 _CascadeResolution;
+    uint3 _UpdateChunkResolution;
+    int _NumObjects;
+    int _NumUpdateChunks;
+    int _NumThreadsForCulling;
+    int _MaxObjectNumPerUpdateChunk;
+};
+
+int _SurfaceCacheAtlasResolution;
+
+StructuredBuffer<int> _UpdateChunkList;
+StructuredBuffer<int> _UpdateChunkCullingResult;
+StructuredBuffer<int> _UpdateChunkObjectCounter;
+StructuredBuffer<float4x4> _CardMatrixBuffer;
+
+Texture2D _SurfaceCacheAtlasDepth;
+SamplerState sampler_LinearClamp;
+
+RWTexture3D<uint2> _RWVoxelBitOccupyClipmap;
+
+[numthreads(4, 4, 4)]
+void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    int3 chunkNumXYZ = _CascadeResolution / _UpdateChunkResolution;
+    int chunkIndex = threadId.x / _UpdateChunkResolution.x;
+    int chunkId_1D = _UpdateChunkList[chunkIndex];
+    int3 chunkId_3D = Index1DTo3D(chunkId_1D, chunkNumXYZ);
+
+    int3 voxelIndexInChunk = int3(threadId.x % _UpdateChunkResolution.x, threadId.y, threadId.z); // [0 ~ UpdateChunkResolution-1]
+    int3 voxelIndex = chunkId_3D * _UpdateChunkResolution + voxelIndexInChunk; // [0 ~ CascadeResolution]
+    float3 voxelPosition = CalcVoxelCenterPos(voxelIndex, _CascadeResolution, _CascadeCenter, _CascadeSize);
+    float voxelCellSize = _CascadeSize / float3(_CascadeResolution.xyz);
+
+    int cullingResultOffset = chunkIndex * _MaxObjectNumPerUpdateChunk; // access 2d logic data in 1d buffer
+    int numObjectsInUpdateChunk = _UpdateChunkObjectCounter[chunkIndex];
+
+    bool hasVoxel = false;
+
+    // loop all objects in update chunk, see if clipmap's voxel intersect with per object voxel
+    for (int i = 0; i < numObjectsInUpdateChunk; i++)
+    {
+        int objectId = _UpdateChunkCullingResult[cullingResultOffset + i];
+        ObjectInfo objectInfo = _ObjectsInfo[objectId];
+
+        // transform voxel center to object's space
+        float3 localPosition = mul(float4(voxelPosition, 1), objectInfo.worldToLocalMatrix);
+
+        // note: ObjectInfo.WorldBoundsMax will extend when rotate object
+        // we just want get LocalBound's size in world space
+        float3 boundMax = mul(objectInfo.localBoundsMax, objectInfo.localToWorldMatrix);
+        float3 boundMin = mul(objectInfo.localBoundsMin, objectInfo.localToWorldMatrix);
+        float3 boundSize = boundMax - boundMin;
+        float objectWorldBoundSize = max(max(boundSize.x, boundSize.y), boundSize.z);
+        // float3 worldBoundSize = objectInfo.worldBoundsMax - objectInfo.worldBoundsMin;
+        // float objectWorldBoundSize = max(max(worldBoundSize.x, worldBoundSize.y), worldBoundSize.z);
+
+        int cardCount = objectInfo.cardCount;
+        int cardResolution = objectInfo.resolution;
+        int cardOffset = objectId * MAX_CARD_PER_MESH;
+
+        for (int cardIndex = 0; cardIndex < cardCount; cardIndex++)
+        {
+            float4x4 localToCard = _CardMatrixBuffer[cardOffset + cardIndex];
+
+            //float3 cardUVZ = mul(float4(localPosition, 1), localToCard);
+            float3 cardUVZ = mul(localToCard, float4(localPosition, 1));
+            cardUVZ.xy = saturate(cardUVZ.xy * 0.5 + 0.5);
+
+            float4 UVTransform = CalcCardUVTransform(objectId, cardIndex, cardResolution, cardCount, _SurfaceCacheAtlasResolution);
+            cardUVZ.xy = cardUVZ.xy * UVTransform.xy + UVTransform.zw;
+
+            float cardDepth = WeightedBilinearFilter(_SurfaceCacheAtlasDepth, sampler_LinearClamp, cardUVZ.xy, _SurfaceCacheAtlasResolution);
+            float voxelDepth = cardUVZ.z;
+
+            if (cardDepth == 0)
+            {
+                continue;
+            }
+
+            float worldDistancce = abs(cardDepth - voxelDepth) * objectWorldBoundSize;
+            if (worldDistancce < voxelCellSize * 0.707)  // tolerance radius is sqrt(2) / 2, for unit cube
+            {
+                hasVoxel = true;
+            }
+        }
+    }
+
+    _RWVoxelBitOccupyClipmap[voxelIndex] = hasVoxel ? uint2(1, 0) : uint2(0, 0);
+}

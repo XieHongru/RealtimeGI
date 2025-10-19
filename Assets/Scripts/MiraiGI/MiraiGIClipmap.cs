@@ -45,6 +45,8 @@ public class MiraiGIClipmap
     const int MAX_UPDATE_CHUNK_PER_FRAME = 16;
     const int MAX_OBJECT_NUM_PER_UPDATE_CHUNK = 64;
 
+    RenderTexture m_VoxelMap;
+
     MiraiGICascadeInfo[] m_CascadeInfos;
     ObjectCullParams[] m_ObjectCullParams;
     ComputeBuffer[] m_ObjectCullParamsCB;
@@ -58,9 +60,16 @@ public class MiraiGIClipmap
     ComputeBuffer m_UpdateChunkObjectCounter;
 
     ComputeShader m_CullObjectCS;
+    ComputeShader m_VoxelInjectCS;
 
     public void CreateClipmap()
     {
+        m_VoxelMap = new RenderTexture(m_VoxelResolution.x, m_VoxelResolution.y, 0, RenderTextureFormat.RGInt);
+        m_VoxelMap.dimension = TextureDimension.Tex3D;
+        m_VoxelMap.volumeDepth = m_VoxelResolution.z * CASCADE_COUNT;
+        m_VoxelMap.enableRandomWrite = true;
+        m_VoxelMap.Create();
+
         m_CascadeInfos = new MiraiGICascadeInfo[CASCADE_COUNT];
         m_ObjectCullParams = new ObjectCullParams[CASCADE_COUNT];
         m_ObjectCullParamsCB = new ComputeBuffer[CASCADE_COUNT];
@@ -86,7 +95,8 @@ public class MiraiGIClipmap
 
         m_UpdateChunkList = new ComputeBuffer(MAX_UPDATE_CHUNK_PER_FRAME, sizeof(int), ComputeBufferType.Raw);
 
-        m_CullObjectCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/ObjectCull/CullObject.compute");
+        m_CullObjectCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelClipmap/CullObject.compute");
+        m_VoxelInjectCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelClipmap/VoxelInject.compute");
     }
 
     public void UpdateClipmap(Camera camera, MiraiGIGPUScene gpuScene)
@@ -102,6 +112,7 @@ public class MiraiGIClipmap
             PrepareConstantBuffer(gpuScene, cascadeIndex);
             CullObjectToClipmap(cmd, gpuScene, camera, cascadeIndex);
             CullObjectToUpdateChunk(cmd, gpuScene, camera, cascadeIndex);
+            VoxelInject(cmd, gpuScene, cascadeIndex);
         }
 
         Graphics.ExecuteCommandBuffer(cmd);
@@ -263,6 +274,32 @@ public class MiraiGIClipmap
             cmd.SetComputeBufferParam(m_CullObjectCS, kernel, Shader.PropertyToID("_RWUpdateChunkObjectCounter"), m_UpdateChunkObjectCounter);
 
             cmd.DispatchCompute(m_CullObjectCS, kernel, m_UpdateChunkCullingIndirectArgs, 0);
+        }
+    }
+
+    void VoxelInject(CommandBuffer cmd, MiraiGIGPUScene scene, int cascadeIndex)
+    {
+        MiraiGICascadeInfo cascadeInfo = m_CascadeInfos[cascadeIndex];
+
+        int kernel = m_VoxelInjectCS.FindKernel("VoxelInject");
+
+        cmd.SetComputeConstantBufferParam(m_VoxelInjectCS, Shader.PropertyToID("_Params"), m_ObjectCullParamsCB[cascadeIndex], 0, Marshal.SizeOf<ObjectCullParams>());
+        cmd.SetComputeIntParam(m_VoxelInjectCS, Shader.PropertyToID("_SurfaceCacheAtlasResolution"), 2048);
+        cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_UpdateChunkList"), m_UpdateChunkList);
+        cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_UpdateChunkCullingResult"), m_UpdateChunkCullingResults);
+        cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_UpdateChunkObjectCounter"), m_UpdateChunkObjectCounter);
+        cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_ObjectsInfo"), scene.GPUSceneData.objectInfoBuffer);
+        cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_CardMatrixBuffer"), scene.surfaceCache.GetCardMatrixBuffer());
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_SurfaceCacheAtlasDepth"), scene.surfaceCache.GetSurfaceCacheTexture(3));
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelBitOccupyClipmap"), m_VoxelMap);
+
+        Vector3Int groupCount = new Vector3Int(Mathf.CeilToInt((float)m_UpdateChunkResolution.x / 4 * cascadeInfo.numChunksToUpdate),
+                                                Mathf.CeilToInt((float)m_UpdateChunkResolution.y / 4),
+                                                Mathf.CeilToInt((float)m_UpdateChunkResolution.z / 4));
+        if(groupCount.x > 0)
+        {
+            cmd.DispatchCompute(m_VoxelInjectCS, kernel, groupCount.x, groupCount.y, groupCount.z);
+            Debug.Log("Execute");
         }
     }
 }

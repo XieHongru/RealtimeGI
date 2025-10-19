@@ -1,9 +1,13 @@
 #ifndef GI_COMMON
 #define GI_COMMON
 
+#define MAX_CARD_PER_MESH 12
+
 struct ObjectInfo
 {
     int objectId;
+    int cardCount;
+    int resolution;
     int meshId;
 
     float3 localBoundsMin;
@@ -11,7 +15,7 @@ struct ObjectInfo
     float3 worldBoundsMin;
     float3 worldBoundsMax;
     float4x4 localToWorldMatrix;
-    float4x4 worldToWorldMatrix;
+    float4x4 worldToLocalMatrix;
 };
 
 struct MeshInfo
@@ -116,6 +120,67 @@ float3 CalcVoxelCenterPos(float3 index, float3 voxelResolution, float3 boundsCen
     return result;
 }
 
+// must sync with SurfaceCache.CalcCardUVTransform
+float4 CalcCardUVTransform(int objectId, int cardIndex, int cardResolution, int cardCount, int atlasResolution)
+{
+    int numCardsInXY = atlasResolution / cardResolution;
+
+    int indexInAtlas = objectId * cardCount + cardIndex;
+    float indexInAtlasX = indexInAtlas % numCardsInXY;
+    float indexInAtlasY = indexInAtlas / numCardsInXY;
+
+    float cardSizeInUV = 1.0 / float(numCardsInXY);
+    float scale = cardSizeInUV;
+
+	// map [0, 1] to [-1, 1]
+    float offsetX = indexInAtlasX * cardSizeInUV;
+    float offsetY = indexInAtlasY * cardSizeInUV;
+    
+    // xy: scale, zw: offset
+    float4 result = float4(scale, scale, offsetX, offsetY);
+    return result;
+}
+
+float WeightedBilinearFilter(Texture2D depthTextureAtlas, SamplerState linearSampler, float2 uv, float atlasResolution)
+{
+    float2 lerpFactor = frac(uv * atlasResolution + 0.5 / atlasResolution);
+    float4 rawDepth = depthTextureAtlas.GatherRed(linearSampler, uv);
+
+	// hit background color, nothing in voxel
+    if (all(rawDepth == 0))
+    {
+        return 0;
+    }
+
+    float minDepth = 1.0;
+    for (int i = 0; i < 4; i++)
+    {
+        if (rawDepth[i] != 0)
+        {
+            minDepth = min(minDepth, rawDepth[i]);
+        }
+    }
+
+	// 0 is background, but may cause artifact when bilinear filter, we replace zero value using min value
+	// we assume 4 depth represent continuous "height field"
+    float4 filterDepth = float4(
+		rawDepth.x == 0 ? minDepth : rawDepth.x,
+		rawDepth.y == 0 ? minDepth : rawDepth.y,
+		rawDepth.z == 0 ? minDepth : rawDepth.z,
+		rawDepth.w == 0 ? minDepth : rawDepth.w
+	);
+
+	/*
+	w - z
+	|   |
+	x - y
+	*/
+    float xLerp0 = lerp(filterDepth.x, filterDepth.y, lerpFactor.x);
+    float xLerp1 = lerp(filterDepth.w, filterDepth.z, lerpFactor.x);
+    float yLerp = lerp(xLerp0, xLerp1, lerpFactor.y);
+
+    return yLerp;
+}
 
 #endif
 

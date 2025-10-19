@@ -15,7 +15,7 @@ public struct ObjectInfo
     public Vector3 worldBoundsMin;
     public Vector3 worldBoundsMax;
     public Matrix4x4 localToWorldMatrix;
-    public Matrix4x4 worldToWorldMatrix;
+    public Matrix4x4 worldToLocalMatrix;
 }
 
 public struct MeshInfo
@@ -143,7 +143,7 @@ public class GPUSceneData
                 objectInfo.worldBoundsMin = mf.GetComponent<MeshRenderer>().bounds.min;
                 objectInfo.worldBoundsMax = mf.GetComponent<MeshRenderer>().bounds.max;
                 objectInfo.localToWorldMatrix = mf.transform.localToWorldMatrix;
-                objectInfo.worldToWorldMatrix = mf.transform.worldToLocalMatrix;
+                objectInfo.worldToLocalMatrix = mf.transform.worldToLocalMatrix;
 
                 objectsInfo.Add(objectInfo);
             }
