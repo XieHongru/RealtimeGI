@@ -1,0 +1,24 @@
+#pragma kernel SurfaceInfoUpdate
+
+#define MAX_CARD_PER_MESH 12
+
+int _ObjectCount;
+StructuredBuffer<int> _CardMatrixOffsetUploadBuffer;
+StructuredBuffer<float4x4> _CardMatrixUploadBuffer;
+RWStructuredBuffer<float4x4> _RWCardMatrixBuffer;
+
+[numthreads(8, 1, 1)]
+void SurfaceInfoUpdate(uint3 threadId : SV_DispatchThreadID)
+{
+    int index = threadId.x;
+    if (index >= _ObjectCount)
+        return;
+
+    int cardReadOffset = index * MAX_CARD_PER_MESH;
+    int cardWriteOffset = _CardMatrixOffsetUploadBuffer[index];
+
+    for (int cardIndex = 0; cardIndex < MAX_CARD_PER_MESH; cardIndex++)
+    {
+        _RWCardMatrixBuffer[cardWriteOffset + cardIndex] = _CardMatrixUploadBuffer[cardReadOffset + cardIndex];
+    }
+}

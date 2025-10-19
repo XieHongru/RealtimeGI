@@ -28,7 +28,7 @@ Shader "Mirai/SurfaceCacheCapture"
         float3 positionWS : TEXCOORD1;
         float3 positionOS : TEXCOORD2;
         float3 normalOS : TEXCOORD3;
-        float cardOrientation : TEXCOORD4;
+        float depth : TEXCOORD4;
         float2 uv : TEXCOORD5;
     };
 
@@ -45,12 +45,8 @@ Shader "Mirai/SurfaceCacheCapture"
     CBUFFER_END
 
     CBUFFER_START(CardCaptureParams)
-        float3 _CardCenter;
-        float3 _CardSize;
         float4x4 _ViewProjectionMatrices[6];
-        float _CardOrientations[6];
         float4 _ViewportInfos[6];
-        int _UseInstance;
     CBUFFER_END
 
     float CalcOrientation(float3 inVec3, int orientation)
@@ -74,11 +70,10 @@ Shader "Mirai/SurfaceCacheCapture"
         output.normalOS = input.normalOS;
         output.uv = input.texcoord;
 
-        uint cardIndex = _UseInstance ? input.instanceID : 0;
-        output.cardOrientation = _CardOrientations[cardIndex];
+        float4 outSVPosition = mul(_ViewProjectionMatrices[input.instanceID], float4(localPosition, 1));
+        output.depth = outSVPosition.z;
 
-        float4 outSVPosition = mul(_ViewProjectionMatrices[cardIndex], float4(localPosition, 1));
-        float4 viewportInfo = _ViewportInfos[cardIndex];
+        float4 viewportInfo = _ViewportInfos[input.instanceID];
         outSVPosition.xy = outSVPosition.xy * viewportInfo.xy + viewportInfo.zw;
 	
         output.positionCS = outSVPosition;
@@ -107,10 +102,7 @@ Shader "Mirai/SurfaceCacheCapture"
         float3 encodedNormal = input.normalOS * 0.5 + 0.5;
         output.normal = half4(encodedNormal, 1.0);
 
-        float3 localPosition = input.positionOS;
-        float3 encodedPosition = (localPosition - _CardCenter) / _CardSize + 0.5; // map to [0, 1]
-        float encodedDepth = CalcOrientation(encodedPosition, input.cardOrientation);
-        output.depth = half4(encodedDepth, 0.0, 0.0, 1.0);
+        output.depth = half4(input.depth, 0.0, 0.0, 1.0);
                 
         return output;
     }

@@ -6,6 +6,8 @@ using UnityEngine;
 public struct ObjectInfo
 {
     public int objectId;
+    public int cardCount;
+    public int resolution;
     public int meshId;
 
     public Vector3 localBoundsMin;
@@ -106,6 +108,8 @@ public class GPUSceneData
 
                 ObjectInfo objectInfo = new ObjectInfo();
                 objectInfo.objectId = objectsInfo.Count;
+                objectInfo.cardCount = 6;
+                objectInfo.resolution = 32;
                 if (meshMap.ContainsKey(mesh))
                 {
                     objectInfo.meshId = meshMap[mesh].meshId;
