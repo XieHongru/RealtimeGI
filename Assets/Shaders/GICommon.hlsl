@@ -2,6 +2,8 @@
 #define GI_COMMON
 
 #define MAX_CARD_PER_MESH 12
+#define VOXEL_BLOCK_SIZE 4
+#define MAX_CASCADE_COUNT 4
 
 struct ObjectInfo
 {
@@ -10,10 +12,10 @@ struct ObjectInfo
     int resolution;
     int meshId;
 
-    float3 localBoundsMin;
-    float3 localBoundsMax;
-    float3 worldBoundsMin;
-    float3 worldBoundsMax;
+    float4 localBoundsMin;
+    float4 localBoundsMax;
+    float4 worldBoundsMin;
+    float4 worldBoundsMax;
     float4x4 localToWorldMatrix;
     float4x4 worldToLocalMatrix;
 };
@@ -30,6 +32,41 @@ StructuredBuffer<MeshInfo>      _MeshInfo;
 StructuredBuffer<float3>        _VertexBuffer;
 StructuredBuffer<int>           _IndexBuffer;
 
+// Morton
+uint Index3DTo1D_2x2x2(uint3 Index3D)
+{
+    return (Index3D.z << 2) + (Index3D.y << 1) + (Index3D.x << 0);
+}
+
+uint3 Index1DTo3D_2x2x2(uint Index1D)
+{
+    return uint3(
+		(Index1D >> 0) & 0x01,
+		(Index1D >> 1) & 0x01,
+		(Index1D >> 2) & 0x01
+	);
+}
+
+uint Index3DTo1D_4x4x4(uint3 Index3D)
+{
+    int3 BlockId = Index3D / 2;
+    int3 InsideBolckId = Index3D % 2;
+
+    return Index3DTo1D_2x2x2(BlockId) * 8 + Index3DTo1D_2x2x2(InsideBolckId);
+}
+
+uint3 Index1DTo3D_4x4x4(uint Index1D)
+{
+    int BlockId_1D = Index1D / 8;
+    int InsideBolckId_1D = Index1D % 8;
+
+    int3 BlockId = Index1DTo3D_2x2x2(BlockId_1D);
+    int3 InsideBlockId = Index1DTo3D_2x2x2(InsideBolckId_1D);
+
+    return BlockId * 2 + InsideBlockId;
+}
+
+// Linear
 uint Index3DTo1D(uint3 index3D, uint3 size3D)
 {
     int res = 0;
@@ -39,7 +76,7 @@ uint Index3DTo1D(uint3 index3D, uint3 size3D)
     return res;
 }
 
-uint3 Index1DTo3D(uint index1D, uint3 size3D)
+int3 Index1DTo3D(int index1D, int3 size3D)
 {
     int3 res;
 
@@ -180,6 +217,54 @@ float WeightedBilinearFilter(Texture2D depthTextureAtlas, SamplerState linearSam
     float yLerp = lerp(xLerp0, xLerp1, lerpFactor.y);
 
     return yLerp;
+}
+
+void SetUint32SingleBit(inout uint u32, uint bitId, bool b)
+{
+    if (b)
+    {
+        u32 |= 1 << bitId;
+    }
+    else
+    {
+        u32 &= ~(1 << bitId);
+    }
+}
+
+bool GetUint32SingleBit(in uint u32, uint bitId)
+{
+    return (u32 & (1 << bitId)) > 0;
+}
+
+void SetUint64SingleBit(inout uint2 u64, uint bitId, bool b)
+{
+    int compId = bitId / 32; // if 0~31 bit we set u64.x, if 32~64 bit we set u64.y
+    int bitId32 = bitId % 32;
+
+    SetUint32SingleBit(u64[compId], bitId32, b);
+}
+
+bool GetUint64SingleBit(in uint2 u64, uint bitId)
+{
+    int compId = bitId / 32;
+    int bitId32 = bitId % 32;
+
+    bool result = GetUint32SingleBit(u64[compId], bitId32);
+    return result;
+}
+
+int3 ClipmapAddressMapping(int3 voxelIndex, int3 cascadeResolution, int3 cascadeMoveOffset, int cascadeIndex)
+{
+	// [0 ~ 128] --> [0 ~ 32]
+    int3 blockIndex = voxelIndex / VOXEL_BLOCK_SIZE;
+    int3 blockResolution = cascadeResolution / VOXEL_BLOCK_SIZE;
+
+	// if cascade move, we don't move the data, just move address when access cascade
+    int3 roundIndex = (blockIndex + cascadeMoveOffset) % blockResolution;
+
+	// use 32*32*128 to represent 4 layer clipmap, single cascade is 32x32x32
+    int3 accessIndex = roundIndex + int3(0, 0, blockResolution.z * cascadeIndex);
+    return accessIndex;
 }
 
 #endif

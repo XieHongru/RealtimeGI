@@ -3,10 +3,10 @@
 
 cbuffer _Params
 {
-    float3 _CascadeCenter;
-    float3 _CascadeSize;
-    uint3 _CascadeResolution;
-    uint3 _UpdateChunkResolution;
+    float4 _CascadeCenter;
+    float4 _CascadeSize;
+    float4 _CascadeResolution;
+    float4 _UpdateChunkResolution;
     int _NumObjects;
     int _NumUpdateChunks;
     int _NumThreadsForCulling;
@@ -28,20 +28,23 @@ bool IsObjectPassCulling(int groupThreadIndex)
 }
 
 [numthreads(8, 1, 1)]
-void CullObjectToClipmap(uint threadId : SV_DispatchThreadID, uint groupThreadId : SV_GroupThreadID)
+void CullObjectToClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    int objectIndex = threadId;
+    int groupThreadIndex = groupThreadId.x;
+    int objectIndex = threadId.x;
 
     // clamp the index, mark invalid thread
-    gs_ThreadValidMask[groupThreadId] = objectIndex < _NumObjects;
+    gs_ThreadValidMask[groupThreadIndex] = objectIndex < _NumObjects;
     objectIndex = min(objectIndex, _NumObjects - 1);
     
+    // 1. do culling
     ObjectInfo objectInfo = _ObjectsInfo[objectIndex];
-    gs_ThreadCullingResult[groupThreadId] = ObjectIntersectAABB(objectInfo, _CascadeCenter, _CascadeCenter);
+    gs_ThreadCullingResult[groupThreadIndex] = ObjectIntersectAABB(objectInfo, _CascadeCenter, _CascadeSize);
 
     GroupMemoryBarrierWithGroupSync();
 
-    if (groupThreadId == 0)
+    // 2. allocate space in culling result array
+    if (groupThreadIndex == 0)
     {
         int visibleObjectCounter = 0;
         for (int i = 0; i < 8; i++)
@@ -55,11 +58,11 @@ void CullObjectToClipmap(uint threadId : SV_DispatchThreadID, uint groupThreadId
         int startIndex = 0;
         InterlockedAdd(_RWClipmapObjectCounter[0], visibleObjectCounter, startIndex);
 
-        for (int i = 0; i < 8; i++)
+        for (int j = 0; j < 8; j++)
         {
-            if (IsObjectPassCulling(i))
+            if (IsObjectPassCulling(j))
             {
-                gs_ThreadWriteIndex[i] = startIndex;
+                gs_ThreadWriteIndex[j] = startIndex;
                 startIndex += 1;
             }
         }
@@ -67,8 +70,9 @@ void CullObjectToClipmap(uint threadId : SV_DispatchThreadID, uint groupThreadId
 
     GroupMemoryBarrierWithGroupSync();
 
-    int writeIndex = gs_ThreadWriteIndex[groupThreadId];
-    if (IsObjectPassCulling(groupThreadId))
+     // 3. write into culling result
+    int writeIndex = gs_ThreadWriteIndex[groupThreadIndex];
+    if (IsObjectPassCulling(groupThreadIndex))
     {
         _RWClipmapCullingResult[writeIndex] = objectIndex;
     }
@@ -97,7 +101,7 @@ RWStructuredBuffer<int> _RWUpdateChunkObjectCounter;
 RWStructuredBuffer<int> _RWUpdateChunkCullingResult;
 
 [numthreads(8, 1, 1)]
-void CullObjectToUpdateChunk(uint2 threadId : SV_DispatchThreadID, uint2 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+void CullObjectToUpdateChunk(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
     int groupThreadIndex = groupThreadId.x;
     int objectIndex = threadId.x;
@@ -109,17 +113,20 @@ void CullObjectToUpdateChunk(uint2 threadId : SV_DispatchThreadID, uint2 groupTh
     objectIndex = min(objectIndex, numObjectsInClipmap - 1);
 
     // calc update chunk's bound
-    int3 chunkNumXYZ = _CascadeResolution / _UpdateChunkResolution;
+    int3 chunkNumXYZ = _CascadeResolution.xyz / _UpdateChunkResolution.xyz;
     int chunkId_1D = _UpdateChunkList[chunkIndex];
-    float3 chunkId_3D = (float3) Index1DTo3D(chunkId_1D, chunkNumXYZ);
-    float3 chunkCenter = CalcVoxelCenterPos(chunkId_3D, (float3) chunkNumXYZ, _CascadeCenter, _CascadeSize); // we see chunk as a "large" voxel
-    float3 chunkSize = _CascadeSize * _UpdateChunkResolution / _CascadeResolution;
+    float3 chunkId_3D = Index1DTo3D(chunkId_1D, chunkNumXYZ);
+    float3 chunkCenter = CalcVoxelCenterPos(chunkId_3D, chunkNumXYZ, _CascadeCenter.xyz, _CascadeSize.xyz); // we see chunk as a "large" voxel
+    float3 chunkSize = _CascadeSize.xyz * _UpdateChunkResolution.xyz / _CascadeResolution.xyz;
 
-    ObjectInfo objectInfo = _ObjectsInfo[objectIndex];
+    // 1. do culling
+    int objectId = _ClipmapCullingResult[objectIndex];
+    ObjectInfo objectInfo = _ObjectsInfo[objectId];
     gs_ThreadCullingResult[groupThreadIndex] = ObjectIntersectAABB(objectInfo, chunkCenter, chunkSize);
 
     GroupMemoryBarrierWithGroupSync();
 
+    // 2. allocate space in culling result array
     if (groupThreadIndex == 0)
     {
         int visibleObjectCounter = 0;
@@ -134,11 +141,11 @@ void CullObjectToUpdateChunk(uint2 threadId : SV_DispatchThreadID, uint2 groupTh
         int startIndex = 0;
         InterlockedAdd(_RWUpdateChunkObjectCounter[chunkIndex], visibleObjectCounter, startIndex);
 
-        for (int i = 0; i < 8; i++)
+        for (int j = 0; j < 8; j++)
         {
-            if (IsObjectPassCulling(i))
+            if (IsObjectPassCulling(j))
             {
-                gs_ThreadWriteIndex[i] = startIndex;
+                gs_ThreadWriteIndex[j] = startIndex;
                 startIndex += 1;
             }
         }
@@ -146,11 +153,12 @@ void CullObjectToUpdateChunk(uint2 threadId : SV_DispatchThreadID, uint2 groupTh
 
     GroupMemoryBarrierWithGroupSync();
 
+    // 3. write into culling result
     int cullingResultOffset = chunkIndex * _MaxObjectNumPerUpdateChunk; // store 2d logic data to 1d buffer
     int writeIndex = gs_ThreadWriteIndex[groupThreadIndex];
     writeIndex += cullingResultOffset;
     if (IsObjectPassCulling(groupThreadIndex))
     {
-        _RWUpdateChunkCullingResult[writeIndex] = objectIndex;
+        _RWUpdateChunkCullingResult[writeIndex] = objectInfo.objectId;
     }
 }

@@ -3,10 +3,10 @@
 
 cbuffer _Params
 {
-    float3 _CascadeCenter;
-    float3 _CascadeSize;
-    uint3 _CascadeResolution;
-    uint3 _UpdateChunkResolution;
+    float4 _CascadeCenter;
+    float4 _CascadeSize;
+    float4 _CascadeResolution;
+    float4 _UpdateChunkResolution;
     int _NumObjects;
     int _NumUpdateChunks;
     int _NumThreadsForCulling;
@@ -14,6 +14,8 @@ cbuffer _Params
 };
 
 int _SurfaceCacheAtlasResolution;
+int _CascadeIndex;
+int3 _CascadeMoveOffset;
 
 StructuredBuffer<int> _UpdateChunkList;
 StructuredBuffer<int> _UpdateChunkCullingResult;
@@ -24,6 +26,8 @@ Texture2D _SurfaceCacheAtlasDepth;
 SamplerState sampler_LinearClamp;
 
 RWTexture3D<uint2> _RWVoxelBitOccupyClipmap;
+
+groupshared bool gs_ThreadVoxelOccupy[64];
 
 [numthreads(4, 4, 4)]
 void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
@@ -36,30 +40,34 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
     int3 voxelIndexInChunk = int3(threadId.x % _UpdateChunkResolution.x, threadId.y, threadId.z); // [0 ~ UpdateChunkResolution-1]
     int3 voxelIndex = chunkId_3D * _UpdateChunkResolution + voxelIndexInChunk; // [0 ~ CascadeResolution]
     float3 voxelPosition = CalcVoxelCenterPos(voxelIndex, _CascadeResolution, _CascadeCenter, _CascadeSize);
-    float voxelCellSize = _CascadeSize / float3(_CascadeResolution.xyz);
+    float voxelCellSize = _CascadeSize / _CascadeResolution.xyz;
+    int voxelId1D = Index3DTo1D(voxelIndexInChunk, uint3(16, 16, 16));
 
     int cullingResultOffset = chunkIndex * _MaxObjectNumPerUpdateChunk; // access 2d logic data in 1d buffer
     int numObjectsInUpdateChunk = _UpdateChunkObjectCounter[chunkIndex];
 
     bool hasVoxel = false;
 
-    // loop all objects in update chunk, see if clipmap's voxel intersect with per object voxel
+    // 1. loop all objects in update chunk, see if clipmap's voxel intersect with per object voxel
     for (int i = 0; i < numObjectsInUpdateChunk; i++)
     {
         int objectId = _UpdateChunkCullingResult[cullingResultOffset + i];
         ObjectInfo objectInfo = _ObjectsInfo[objectId];
 
         // transform voxel center to object's space
-        float3 localPosition = mul(float4(voxelPosition, 1), objectInfo.worldToLocalMatrix);
+        //float3 localPosition = mul(float4(voxelPosition, 1), objectInfo.worldToLocalMatrix);
+        float3 localPosition = mul(objectInfo.worldToLocalMatrix, float4(voxelPosition, 1));
 
         // note: ObjectInfo.WorldBoundsMax will extend when rotate object
         // we just want get LocalBound's size in world space
-        float3 boundMax = mul(objectInfo.localBoundsMax, objectInfo.localToWorldMatrix);
-        float3 boundMin = mul(objectInfo.localBoundsMin, objectInfo.localToWorldMatrix);
-        float3 boundSize = boundMax - boundMin;
-        float objectWorldBoundSize = max(max(boundSize.x, boundSize.y), boundSize.z);
-        // float3 worldBoundSize = objectInfo.worldBoundsMax - objectInfo.worldBoundsMin;
-        // float objectWorldBoundSize = max(max(worldBoundSize.x, worldBoundSize.y), worldBoundSize.z);
+        float3 objectWorldScale = float3(
+            length(objectInfo.localToWorldMatrix[0].xyz),
+            length(objectInfo.localToWorldMatrix[1].xyz),
+            length(objectInfo.localToWorldMatrix[2].xyz)
+        );
+        float3 objectLocalBoundSize = objectInfo.localBoundsMax - objectInfo.localBoundsMin;
+        float3 objectWorldBound = objectLocalBoundSize * objectWorldScale;
+        float objectWorldBoundSize = max(max(objectWorldBound.x, objectWorldBound.y), objectWorldBound.z); // @TODO: select xyz component for different card orientation
 
         int cardCount = objectInfo.cardCount;
         int cardResolution = objectInfo.resolution;
@@ -68,16 +76,17 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         for (int cardIndex = 0; cardIndex < cardCount; cardIndex++)
         {
             float4x4 localToCard = _CardMatrixBuffer[cardOffset + cardIndex];
-
+            
             //float3 cardUVZ = mul(float4(localPosition, 1), localToCard);
             float3 cardUVZ = mul(localToCard, float4(localPosition, 1));
             cardUVZ.xy = saturate(cardUVZ.xy * 0.5 + 0.5);
 
             float4 UVTransform = CalcCardUVTransform(objectId, cardIndex, cardResolution, cardCount, _SurfaceCacheAtlasResolution);
             cardUVZ.xy = cardUVZ.xy * UVTransform.xy + UVTransform.zw;
+            cardUVZ.y = 1.0 - cardUVZ.y;
 
             float cardDepth = WeightedBilinearFilter(_SurfaceCacheAtlasDepth, sampler_LinearClamp, cardUVZ.xy, _SurfaceCacheAtlasResolution);
-            float voxelDepth = cardUVZ.z;
+            float voxelDepth = (cardUVZ.z * 0.5f) + 0.5f;
 
             if (cardDepth == 0)
             {
@@ -92,5 +101,22 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         }
     }
 
-    _RWVoxelBitOccupyClipmap[voxelIndex] = hasVoxel ? uint2(1, 0) : uint2(0, 0);
+    // 2. restore result into temp LDS
+    int threadIndex = Index3DTo1D_4x4x4(groupThreadId);
+    gs_ThreadVoxelOccupy[threadIndex] = hasVoxel;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // 3. single head thread encode ThreadVoxelOccupy to uint64, write into bit occupy volume
+    if (threadIndex == 0)
+    {
+        uint2 bitOccupyBlock = uint2(0, 0);
+        for (int i = 0; i < 64; i++)
+        {
+            SetUint64SingleBit(bitOccupyBlock, i, gs_ThreadVoxelOccupy[i]);
+        }
+
+        int3 writeIndex = ClipmapAddressMapping(voxelIndex, _CascadeResolution, _CascadeMoveOffset, _CascadeIndex);
+        _RWVoxelBitOccupyClipmap[writeIndex] = bitOccupyBlock;
+    }
 }

@@ -10,10 +10,10 @@ public struct ObjectInfo
     public int resolution;
     public int meshId;
 
-    public Vector3 localBoundsMin;
-    public Vector3 localBoundsMax;
-    public Vector3 worldBoundsMin;
-    public Vector3 worldBoundsMax;
+    public Vector4 localBoundsMin;
+    public Vector4 localBoundsMax;
+    public Vector4 worldBoundsMin;
+    public Vector4 worldBoundsMax;
     public Matrix4x4 localToWorldMatrix;
     public Matrix4x4 worldToLocalMatrix;
 }
