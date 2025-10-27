@@ -8,16 +8,49 @@ using UnityEngine;
 using UnityEngine.Profiling;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
+using UnityEngine.UIElements;
 using static Unity.VisualScripting.Dependencies.Sqlite.SQLiteConnection;
 
 public class MiraiGICascadeInfo
 {
-    public Queue<int> pendingUpdateChunks = new Queue<int>();
     public Vector3 cascadeCenter;
     public Vector3 cascadeSize = new Vector3(32.0f, 32.0f, 32.0f);
     public Vector3Int moveOffset;
+    public Vector3Int chunkCountInXYZ;
+    public List<int> chunksToUpdate = new List<int>();
+    public Vector3Int deltaChunk;
 
-    public int numChunksToUpdate;
+    Queue<int> pendingUpdateChunks = new Queue<int>();
+    HashSet<int> updateChunksLookUp = new HashSet<int>();
+
+    public bool HasChunksToUpdate()
+    {
+        return pendingUpdateChunks.Count > 0;
+    }
+
+    public int PopUpdateChunk()
+    {
+        if (pendingUpdateChunks.Count == 0)
+        {
+            return -1;
+        }
+
+        int popElement = pendingUpdateChunks.Dequeue();
+        updateChunksLookUp.Remove(popElement);
+
+        return popElement;
+    }
+
+    public void PushUpdateChunk(int chunkId)
+    {
+        bool isAlreadyInSet = updateChunksLookUp.Add(chunkId);
+        if (!isAlreadyInSet)
+        {
+            return;
+        }
+
+        pendingUpdateChunks.Enqueue(chunkId);
+    }
 };
 
 public struct ObjectCullParams
@@ -95,9 +128,10 @@ public class MiraiGIClipmap
         for (int cascadeId = 0; cascadeId < CASCADE_COUNT; cascadeId++)
         {
             m_CascadeInfos[cascadeId] = new MiraiGICascadeInfo();
+            m_CascadeInfos[cascadeId].chunkCountInXYZ = updateChunkDimension; // TODO: no effect
             for (int chunkId = 0; chunkId < updateChunkCount; chunkId++)
             {
-                m_CascadeInfos[cascadeId].pendingUpdateChunks.Enqueue(chunkId);
+                m_CascadeInfos[cascadeId].PushUpdateChunk(chunkId);
             }
 
             m_ObjectCullParams[cascadeId] = new ObjectCullParams();
@@ -120,6 +154,7 @@ public class MiraiGIClipmap
         for (int cascadeIndex = 0; cascadeIndex < CASCADE_COUNT; cascadeIndex++)
         {
             UpdateCascadePosition(camera, cascadeIndex);
+            MarkDirtyChunksToUpdate(camera, cascadeIndex);
             UploadChunkIds(gpuScene, camera, cascadeIndex);
             PrepareConstantBuffer(gpuScene, cascadeIndex);
             CullObjectToClipmap(cmd, gpuScene, camera, cascadeIndex);
@@ -207,48 +242,105 @@ public class MiraiGIClipmap
         Vector3 voxelSize = new Vector3(cascadeInfo.cascadeSize.x / m_VoxelResolution.x,
                                         cascadeInfo.cascadeSize.y / m_VoxelResolution.y,
                                         cascadeInfo.cascadeSize.z / m_VoxelResolution.z);
-        Vector3 voxelBlockSize = voxelSize * VOXEL_BLOCK_SIZE;
+        Vector3 chunkSize = new Vector3(voxelSize.x * m_UpdateChunkResolution.x,
+                                        voxelSize.y * m_UpdateChunkResolution.y,
+                                        voxelSize.z * m_UpdateChunkResolution.z);
+        Vector3Int chunkResolution = new Vector3Int(m_VoxelResolution.x / m_UpdateChunkResolution.x,
+                                                    m_VoxelResolution.y / m_UpdateChunkResolution.y,
+                                                    m_VoxelResolution.z / m_UpdateChunkResolution.z);
+
+        // 1. calc moved cascade center, min move step in a chunk
+        Vector3Int cameraChunkId = new Vector3Int(Mathf.FloorToInt(cameraPosition.x / chunkSize.x),
+                                                    Mathf.FloorToInt(cameraPosition.y / chunkSize.y),
+                                                    Mathf.FloorToInt(cameraPosition.z / chunkSize.z));
+        Vector3Int cascadeCenterChunkId = new Vector3Int(Mathf.FloorToInt(cascadeInfo.cascadeCenter.x / chunkSize.x),
+                                                            Mathf.FloorToInt(cascadeInfo.cascadeCenter.y / chunkSize.y),
+                                                            Mathf.FloorToInt(cascadeInfo.cascadeCenter.z / chunkSize.z));
+        Vector3Int deltaChunk = cameraChunkId - cascadeCenterChunkId;
+
+        // 2. calc rolling address
+        // RollingInfo is for block (4x4x4) rolling address, so we map DeltaChunk to DeltaBlock
         Vector3Int blockResolution = m_VoxelResolution / VOXEL_BLOCK_SIZE;
-
-        Vector3Int cameraBlockId = new Vector3Int(Mathf.CeilToInt(cameraPosition.x / voxelBlockSize.x),
-                                                    Mathf.CeilToInt(cameraPosition.y / voxelBlockSize.y),
-                                                    Mathf.CeilToInt(cameraPosition.z / voxelBlockSize.z));
-        Vector3Int cascadeCenterBlockId = new Vector3Int(Mathf.CeilToInt(cascadeInfo.cascadeCenter.x / voxelBlockSize.x),
-                                                            Mathf.CeilToInt(cascadeInfo.cascadeCenter.y / voxelBlockSize.y),
-                                                            Mathf.CeilToInt(cascadeInfo.cascadeCenter.z / voxelBlockSize.z));
-
-        // calculate camera move offset based on voxel grid
-        // then update cascade center position
-        cascadeInfo.moveOffset += cameraBlockId - cascadeCenterBlockId;
+        Vector3Int deltaVoxelBlock = new Vector3Int(deltaChunk.x * m_UpdateChunkResolution.x, 
+                                                    deltaChunk.y * m_UpdateChunkResolution.y, 
+                                                    deltaChunk.z * m_UpdateChunkResolution.z) / VOXEL_BLOCK_SIZE;
+        cascadeInfo.moveOffset += deltaVoxelBlock;
         cascadeInfo.moveOffset.x = cascadeInfo.moveOffset.x % blockResolution.x;
         cascadeInfo.moveOffset.y = cascadeInfo.moveOffset.y % blockResolution.y;
         cascadeInfo.moveOffset.z = cascadeInfo.moveOffset.z % blockResolution.z;
 
-        cascadeInfo.cascadeCenter = new Vector3(cameraBlockId.x * voxelBlockSize.x,
-                                                cameraBlockId.y * voxelBlockSize.y,
-                                                cameraBlockId.z * voxelBlockSize.z);
+        cascadeInfo.moveOffset.x += (cascadeInfo.moveOffset.x < 0) ? blockResolution.x : 0;
+        cascadeInfo.moveOffset.y += (cascadeInfo.moveOffset.y < 0) ? blockResolution.y : 0;
+        cascadeInfo.moveOffset.z += (cascadeInfo.moveOffset.z < 0) ? blockResolution.z : 0;
+
+        // 3. update cascade new center
+        cascadeInfo.cascadeCenter = new Vector3(cameraChunkId.x * chunkSize.x,
+                                                cameraChunkId.y * chunkSize.y,
+                                                cameraChunkId.z * chunkSize.z);
+        cascadeInfo.deltaChunk = deltaChunk;
+    }
+
+    void MarkDirtyChunksToUpdate(Camera camera, int cascadeIndex)
+    {
+        MiraiGICascadeInfo cascadeInfo = m_CascadeInfos[cascadeIndex];
+
+        Vector3 voxelSize = new Vector3(cascadeInfo.cascadeSize.x / m_VoxelResolution.x,
+                                        cascadeInfo.cascadeSize.y / m_VoxelResolution.y,
+                                        cascadeInfo.cascadeSize.z / m_VoxelResolution.z);
+        Vector3 chunkSize = new Vector3(voxelSize.x * m_UpdateChunkResolution.x,
+                                        voxelSize.y * m_UpdateChunkResolution.y,
+                                        voxelSize.z * m_UpdateChunkResolution.z);
+        Vector3Int chunkResolution = new Vector3Int(m_VoxelResolution.x / m_UpdateChunkResolution.x,
+                                                    m_VoxelResolution.y / m_UpdateChunkResolution.y,
+                                                    m_VoxelResolution.z / m_UpdateChunkResolution.z);
+        Vector3Int chunkHalfResolution = chunkResolution / 2;
+        Vector3Int deltaChunk = cascadeInfo.deltaChunk;
+
+        // 1. move pending dirty chunks that haven't been update
+        List<int> dirtyChunks = new List<int>();
+        while (cascadeInfo.HasChunksToUpdate())
+        {
+            int chunkIndex1D = cascadeInfo.PopUpdateChunk();
+            dirtyChunks.Add(chunkIndex1D);
+        }
+        foreach (int chunkIndex1d in dirtyChunks)
+        {
+            Vector3Int chunkIndex3D = Index1DTo3DLinear(chunkIndex1d, chunkResolution);
+            Vector3Int movedChunkIndex3D = chunkIndex3D - deltaChunk;
+
+            if (movedChunkIndex3D.x < 0 || movedChunkIndex3D.y < 0 || movedChunkIndex3D.z < 0 ||
+                movedChunkIndex3D.x > chunkResolution.x || movedChunkIndex3D.y > chunkResolution.y || movedChunkIndex3D.z > chunkResolution.z)
+            {
+                continue;
+            }
+
+            int movedChunkIndex1D = Index3DTo1DLinear(chunkIndex3D, chunkResolution);
+            cascadeInfo.PushUpdateChunk(movedChunkIndex1D);
+        }
+
+        // 2.mark XZ plane's new coming chunks as dirty if volume move along Y axis
+        // for 8x8x8 block, we may mark [0~8, 0~1, 0~8] as dirty when volume move 2 block in Y axis
+        MarkChunkPlaneAsDirty(chunkResolution, deltaChunk, cascadeInfo, 0);
+        MarkChunkPlaneAsDirty(chunkResolution, deltaChunk, cascadeInfo, 1);
+        MarkChunkPlaneAsDirty(chunkResolution, deltaChunk, cascadeInfo, 2);
+
+        // 3. TODO: mark chunks as dirty when primitive move
     }
 
     void UploadChunkIds(MiraiGIGPUScene scene, Camera camera, int cascadeIndex)
     {
         MiraiGICascadeInfo cascadeInfo = m_CascadeInfos[cascadeIndex];
-        cascadeInfo.numChunksToUpdate = 0;
-
-        int[] chunksToUpdate = new int[MAX_UPDATE_CHUNK_PER_FRAME];
+        List<int> chunksToUpdate = cascadeInfo.chunksToUpdate;
+        chunksToUpdate.Clear();
 
         // fetch from pending queue
         for (int i = 0; i < MAX_UPDATE_CHUNK_PER_FRAME; i++)
         {
-            if (cascadeInfo.pendingUpdateChunks.Count == 0)
-            {
+            int chunkId = cascadeInfo.PopUpdateChunk();
+            if (chunkId == -1)
                 break;
-            }
 
-            int chunkId = cascadeInfo.pendingUpdateChunks.Peek();
-            cascadeInfo.pendingUpdateChunks.Dequeue();
-
-            chunksToUpdate[i] = chunkId;
-            cascadeInfo.numChunksToUpdate += 1;
+            chunksToUpdate.Add(chunkId);
         }
 
         // for debug, give back to queue
@@ -261,6 +353,11 @@ public class MiraiGIClipmap
         //}
 
         m_UpdateChunkList.SetData(chunksToUpdate);
+
+        if (chunksToUpdate.Count > 0)
+        {
+            //Debug.Log("update chunks: " + string.Join(", ", chunksToUpdate));
+        }
     }
 
     void PrepareConstantBuffer(MiraiGIGPUScene scene, int cascadeIndex)
@@ -274,7 +371,7 @@ public class MiraiGIClipmap
         objectCullParams.cascadeResolution = (Vector3)m_VoxelResolution;
         objectCullParams.updateChunkResolution = (Vector3)m_UpdateChunkResolution;
         objectCullParams.numObjects = numObjects;
-        objectCullParams.numUpdateChunks = cascadeInfo.numChunksToUpdate;
+        objectCullParams.numUpdateChunks = cascadeInfo.chunksToUpdate.Count;
         objectCullParams.numThreadsForCulling = 8;
         objectCullParams.maxObjectNumPerUpdateChunk = MAX_OBJECT_NUM_PER_UPDATE_CHUNK;
 
@@ -348,7 +445,7 @@ public class MiraiGIClipmap
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_SurfaceCacheAtlasDepth"), scene.surfaceCache.GetSurfaceCacheTexture(3));
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelBitOccupyClipmap"), m_VoxelMap);
 
-        Vector3Int groupCount = new Vector3Int(Mathf.CeilToInt((float)m_UpdateChunkResolution.x / 4 * cascadeInfo.numChunksToUpdate),
+        Vector3Int groupCount = new Vector3Int(Mathf.CeilToInt((float)m_UpdateChunkResolution.x / 4 * cascadeInfo.chunksToUpdate.Count),
                                                 Mathf.CeilToInt((float)m_UpdateChunkResolution.y / 4),
                                                 Mathf.CeilToInt((float)m_UpdateChunkResolution.z / 4));
         if(groupCount.x > 0)
@@ -389,5 +486,72 @@ public class MiraiGIClipmap
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_RWSceneColorTexture"), m_VisualizeColorTarget);
 
         cmd.DispatchCompute(m_VisualizeClipmapCS, kernel, Mathf.CeilToInt((float)camera.pixelWidth / 8), Mathf.CeilToInt((float)camera.pixelHeight / 8), 1);
+    }
+
+    int Index3DTo1DLinear(Vector3Int index3D, Vector3Int size3D)
+    {
+        int res = 0;
+        res += index3D.x * 1;
+	    res += index3D.y * size3D.x;
+        res += index3D.z * (size3D.x * size3D.y);
+	    return res;
+    }
+
+    Vector3Int Index1DTo3DLinear(int index1D, Vector3Int size3D)
+    {
+        Vector3Int res = Vector3Int.zero;
+
+        res.z = index1D / (size3D.x * size3D.y);
+        index1D -= res.z * (size3D.x * size3D.y);
+
+        res.y = index1D / size3D.x;
+        index1D -= res.y * size3D.x;
+
+        res.x = index1D;
+
+        return res;
+    }
+
+    // mark XZ plane's new coming chunks as dirty if volume move along Y axis
+    // for 8x8x8 block, we may mark [0~8, 0~1, 0~8] as dirty when volume move 2 block in Y axis
+    void MarkChunkPlaneAsDirty(Vector3Int chunkResolution, Vector3Int deltaChunk, MiraiGICascadeInfo cascadeInfo, int axis)
+    {
+        int deltaChunkInAxis = deltaChunk[axis];
+        int chunkResolutionInAxis0 = chunkResolution[(axis + 0) % 3];
+        int chunkResolutionInAxis1 = chunkResolution[(axis + 1) % 3];
+        int chunkResolutionInAxis2 = chunkResolution[(axis + 2) % 3];
+
+        if (deltaChunkInAxis == 0)
+        {
+            return;
+        }
+
+        int start = 0, end = 0;
+        if (deltaChunkInAxis > 0)   // [112 ~ 128]
+        {
+            start = chunkResolutionInAxis0 - Math.Abs(deltaChunkInAxis);
+            end = chunkResolutionInAxis0 - 1;
+        }
+        else    // [0 ~ 16]
+        {
+            start = 0;
+            end = Math.Abs(deltaChunkInAxis) - 1;
+        }
+
+        for (int X = start; X <= end; X++)
+        {
+            for (int Y = 0; Y < chunkResolutionInAxis1; Y++)
+            {
+                for (int Z = 0; Z < chunkResolutionInAxis2; Z++)
+                {
+                    Vector3Int chunkIndex3D = Vector3Int.zero;
+                    chunkIndex3D[(axis + 0) % 3] = X;
+                    chunkIndex3D[(axis + 1) % 3] = Y;
+                    chunkIndex3D[(axis + 2) % 3] = Z;
+
+                    cascadeInfo.PushUpdateChunk(Index3DTo1DLinear(chunkIndex3D, chunkResolution));
+                }
+            }
+        }
     }
 }
