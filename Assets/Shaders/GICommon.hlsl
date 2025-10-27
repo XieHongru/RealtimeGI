@@ -157,27 +157,6 @@ float3 CalcVoxelCenterPos(float3 index, float3 voxelResolution, float3 boundsCen
     return result;
 }
 
-// must sync with SurfaceCache.CalcCardUVTransform
-float4 CalcCardUVTransform(int objectId, int cardIndex, int cardResolution, int cardCount, int atlasResolution)
-{
-    int numCardsInXY = atlasResolution / cardResolution;
-
-    int indexInAtlas = objectId * cardCount + cardIndex;
-    float indexInAtlasX = indexInAtlas % numCardsInXY;
-    float indexInAtlasY = indexInAtlas / numCardsInXY;
-
-    float cardSizeInUV = 1.0 / float(numCardsInXY);
-    float scale = cardSizeInUV;
-
-	// map [0, 1] to [-1, 1]
-    float offsetX = indexInAtlasX * cardSizeInUV;
-    float offsetY = indexInAtlasY * cardSizeInUV;
-    
-    // xy: scale, zw: offset
-    float4 result = float4(scale, scale, offsetX, offsetY);
-    return result;
-}
-
 float WeightedBilinearFilter(Texture2D depthTextureAtlas, SamplerState linearSampler, float2 uv, float atlasResolution)
 {
     float2 lerpFactor = frac(uv * atlasResolution + 0.5 / atlasResolution);

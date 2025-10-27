@@ -23,7 +23,7 @@ public class CardCaptureMeshBatch
     public int cardCount;
     public int resolution;
     public List<Matrix4x4> localToCardMatrices;
-    public List<Vector4> localToAtlasUVTransforms;
+    public List<Vector4> cardUVTransforms;
 }
 
 public class SurfaceCache
@@ -43,15 +43,22 @@ public class SurfaceCache
 
     List<CardCaptureMeshBatch> m_CaptureMeshBatches;
 
-    ComputeBuffer m_CardMatrixOffsetUploadBuffer;
+    ComputeBuffer m_CardInfoWriteOffsetUploadBuffer;
     ComputeBuffer m_CardMatrixUploadBuffer;
+    ComputeBuffer m_CardUVTransformUploadBuffer;
     ComputeBuffer m_CardMatrixBuffer;
+    ComputeBuffer m_CardUVTransformBuffer;
 
     ComputeShader m_CardInfosSyncCS;
 
     public ComputeBuffer GetCardMatrixBuffer()
     { 
         return m_CardMatrixBuffer;
+    }
+
+    public ComputeBuffer GetCardUVTransformBuffer()
+    {
+        return m_CardUVTransformBuffer;
     }
 
     public RenderTexture GetSurfaceCacheTexture(int index)
@@ -81,9 +88,11 @@ public class SurfaceCache
 
         m_CaptureMeshBatches = new List<CardCaptureMeshBatch>();
 
-        m_CardMatrixOffsetUploadBuffer = new ComputeBuffer(MAX_OBJECT_COUNT, sizeof(int), ComputeBufferType.Default);
+        m_CardInfoWriteOffsetUploadBuffer = new ComputeBuffer(MAX_OBJECT_COUNT, sizeof(int), ComputeBufferType.Default);
         m_CardMatrixUploadBuffer = new ComputeBuffer(MAX_OBJECT_COUNT * MAX_CARD_PER_MESH, sizeof(float) * 16, ComputeBufferType.Raw);
+        m_CardUVTransformUploadBuffer = new ComputeBuffer(MAX_OBJECT_COUNT * MAX_CARD_PER_MESH, sizeof(float) * 16, ComputeBufferType.Raw);
         m_CardMatrixBuffer = new ComputeBuffer(MAX_OBJECT_COUNT * MAX_CARD_PER_MESH, sizeof(float) * 16, ComputeBufferType.Structured);
+        m_CardUVTransformBuffer = new ComputeBuffer(MAX_OBJECT_COUNT * MAX_CARD_PER_MESH, sizeof(float) * 16, ComputeBufferType.Structured);
 
         m_CardInfosSyncCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/SurfaceCache/SurfaceCacheInfoSync.compute");
     }
@@ -96,9 +105,11 @@ public class SurfaceCache
         }
         m_DepthStencil.Release();
 
-        m_CardMatrixOffsetUploadBuffer.Release();
+        m_CardInfoWriteOffsetUploadBuffer.Release();
         m_CardMatrixUploadBuffer.Release();
+        m_CardUVTransformUploadBuffer.Release();
         m_CardMatrixBuffer.Release();
+        m_CardUVTransformBuffer.Release();
     }
 
     public void SyncCardInfosToGPU(CommandBuffer cmd, int objectCount)
@@ -107,6 +118,7 @@ public class SurfaceCache
         int uploadDataOffset = 0;
         List<int> cardOffsets = new List<int>();
         Matrix4x4[] localToCardMatrices = new Matrix4x4[objectCount * MAX_CARD_PER_MESH];
+        Vector4[] cardUVTransforms = new Vector4[objectCount * MAX_CARD_PER_MESH];
 
         foreach (CardCaptureMeshBatch meshBatch in m_CaptureMeshBatches)
         {
@@ -117,6 +129,7 @@ public class SurfaceCache
             for (int cardIndex = 0; cardIndex < meshBatch.cardCount; cardIndex++)
             {
                 localToCardMatrices[uploadDataOffset + cardIndex] = meshBatch.localToCardMatrices[cardIndex];
+                cardUVTransforms[uploadDataOffset + cardIndex] = meshBatch.cardUVTransforms[cardIndex];
             }
 
             uploadDataOffset += MAX_CARD_PER_MESH;
@@ -124,7 +137,7 @@ public class SurfaceCache
 
         // 2. upload per-object card's write offset
         {
-            m_CardMatrixOffsetUploadBuffer.SetData(cardOffsets);
+            m_CardInfoWriteOffsetUploadBuffer.SetData(cardOffsets);
         }
 
         // 3. upload per-object card transform matrix
@@ -132,14 +145,21 @@ public class SurfaceCache
             m_CardMatrixUploadBuffer.SetData(localToCardMatrices);
         }
 
-        // 4. copy data from transient buffer to RW buffer
+        // 4. upload per-object card's uv transform address in atlas
+        {
+            m_CardUVTransformUploadBuffer.SetData(cardUVTransforms);
+        }
+
+        // 5. copy data from transient buffer to RW buffer
         {
             int kernel = m_CardInfosSyncCS.FindKernel("SurfaceInfoUpdate");
 
             cmd.SetComputeIntParam(m_CardInfosSyncCS, Shader.PropertyToID("_ObjectCount"), objectCount);
-            cmd.SetComputeBufferParam(m_CardInfosSyncCS, kernel, Shader.PropertyToID("_RWCardMatrixBuffer"), m_CardMatrixBuffer);
-            cmd.SetComputeBufferParam(m_CardInfosSyncCS, kernel, Shader.PropertyToID("_CardMatrixOffsetUploadBuffer"), m_CardMatrixOffsetUploadBuffer);
+            cmd.SetComputeBufferParam(m_CardInfosSyncCS, kernel, Shader.PropertyToID("_CardInfoWriteOffsetUploadBuffer"), m_CardInfoWriteOffsetUploadBuffer);
             cmd.SetComputeBufferParam(m_CardInfosSyncCS, kernel, Shader.PropertyToID("_CardMatrixUploadBuffer"), m_CardMatrixUploadBuffer);
+            cmd.SetComputeBufferParam(m_CardInfosSyncCS, kernel, Shader.PropertyToID("_CardUVTransformUploadBuffer"), m_CardUVTransformUploadBuffer);
+            cmd.SetComputeBufferParam(m_CardInfosSyncCS, kernel, Shader.PropertyToID("_RWCardMatrixBuffer"), m_CardMatrixBuffer);
+            cmd.SetComputeBufferParam(m_CardInfosSyncCS, kernel, Shader.PropertyToID("_RWCardUVTransformBuffer"), m_CardUVTransformBuffer);
 
             cmd.DispatchCompute(m_CardInfosSyncCS, kernel, Mathf.CeilToInt((float)objectCount / 8), 1, 1);
         }
@@ -151,30 +171,7 @@ public class SurfaceCache
         // capture surface cache per object
         foreach (var objInfo in objectsInfo)
         {
-            CardCaptureMeshBatch meshBatch = new CardCaptureMeshBatch();
-            meshBatch.localToCardMatrices = new List<Matrix4x4>();
-            meshBatch.localToAtlasUVTransforms = new List<Vector4>();
-
-            meshBatch.objectId = objInfo.objectId;
-            meshBatch.mesh = meshes[objInfo.meshId];
-
-            Vector3 localBoundsCenter = (objInfo.localBoundsMax + objInfo.localBoundsMin) * 0.5f;
-            Vector3 localBoundsSize = (objInfo.localBoundsMax - objInfo.localBoundsMin) * (1.0f + 1e-3f);
-            float maxDimension = Mathf.Max(localBoundsSize.x, Mathf.Max(localBoundsSize.y, localBoundsSize.z));
-
-            meshBatch.cardCount = objInfo.cardCount;
-            meshBatch.resolution = objInfo.resolution;
-
-            for (int cardIndex = 0; cardIndex < meshBatch.cardCount; cardIndex++)
-            {
-                Matrix4x4 localToCard = CalcViewProjectionMatrix(localBoundsCenter, maxDimension, cardIndex);
-                meshBatch.localToCardMatrices.Add(localToCard);
-
-                Vector4 localToAtlas = CalcViewportInfo(meshBatch.objectId, cardIndex, meshBatch.resolution, meshBatch.cardCount);
-                meshBatch.localToAtlasUVTransforms.Add(localToAtlas);
-            }
-
-            m_CaptureMeshBatches.Add(meshBatch);
+            AllocateMeshCard(objInfo, objects, meshes);
         }
 
         CommandBuffer cmd = CommandBufferPool.Get("Surface Cache Capture");
@@ -204,7 +201,7 @@ public class SurfaceCache
             for (int cardIndex = 0; cardIndex < 6; cardIndex++)
             {
                 cardCaptureParams.viewProjectionMatrices[cardIndex] = meshBatch.localToCardMatrices[cardIndex];
-                cardCaptureParams.viewportInfos[cardIndex] = meshBatch.localToAtlasUVTransforms[cardIndex];
+                cardCaptureParams.viewportInfos[cardIndex] = CalcViewportInfo(objectsInfo[meshBatch.objectId], cardIndex);
             }
 
             Matrix4x4[] identityMats = new Matrix4x4[6];
@@ -257,13 +254,14 @@ public class SurfaceCache
         return projectionMatrix * viewMatrix;
     }
 
-    public Vector4 CalcViewportInfo(int objectId, int cardIndex, int resolution, int cardCount)
+    public Vector4 CalcViewportInfo(ObjectInfo objectInfo, int cardIndex)
     {
-        Vector4 uvTransform = CalcCardUVTransform(objectId, cardIndex, resolution, cardCount);
+        Vector4 cardSizeAndOffset = AllocateCardUVTransform(objectInfo, cardIndex);
+        Vector4 uvTransform = cardSizeAndOffset / (float)m_AtlasResolution;
 
         // @TODO: dynamic sparse quad tree allocation
         // padding 1 texel
-        float paddingScale = (resolution - 1.0f) / resolution;
+        float paddingScale = (objectInfo.resolution - 1.0f) / (float)objectInfo.resolution;
 
         // viewport center is (0, 0) but uv center is (0.5, 0.5)
         float offsetX = 0.5f * uvTransform.x;
@@ -279,88 +277,71 @@ public class SurfaceCache
         return result;
     }
 
-    public Vector4 CalcCardUVTransform(int objectId, int cardIndex, int resolution, int cardCount)
+    public Vector4 AllocateCardUVTransform(ObjectInfo objectInfo, int cardIndex)
     {
         // TODO: dynamic sparse quad tree allocation
-        int numCardsInXY = m_AtlasResolution / resolution;
+        int numCardsInXY = m_AtlasResolution / objectInfo.resolution;
 
-        int indexInAtlas = objectId * cardCount + cardIndex;
+        int indexInAtlas = objectInfo.objectId * objectInfo.cardCount + cardIndex;
         float indexInAtlasX = indexInAtlas % numCardsInXY;
         float indexInAtlasY = indexInAtlas / numCardsInXY;
 
-        float cardSizeInUV = 1.0f / numCardsInXY;
-        float scale = cardSizeInUV;
+        float sizeX = objectInfo.resolution;
+        float sizeY = objectInfo.resolution;
 
         // map [0, 1] to [-1, 1]
-        float offsetX = indexInAtlasX * cardSizeInUV;
-        float offsetY = indexInAtlasY * cardSizeInUV;
+        float offsetX = indexInAtlasX * objectInfo.resolution;
+        float offsetY = indexInAtlasY * objectInfo.resolution;
 
         // xy: scale, zw: offset
-        Vector4 result = new Vector4(scale, scale, offsetX, offsetY);
+        Vector4 result = new Vector4(sizeX, sizeY, offsetX, offsetY);
         return result;
     }
 
-    //Matrix4x4 CalcCardCaptureViewRotationMatrix(int cubeFace)
-    //{
-    //    Matrix4x4 result = Matrix4x4.identity;
-    //    Vector3 xAxis = Vector3.right;
-    //    Vector3 yAxis = Vector3.up;
-    //    Vector3 zAxis = Vector3.forward;
+    void AllocateMeshCard(ObjectInfo objectInfo, List<GameObject> objects, List<Mesh> meshes)
+    {
+        CardCaptureMeshBatch meshBatch = new CardCaptureMeshBatch();
+        meshBatch.localToCardMatrices = new List<Matrix4x4>();
+        meshBatch.cardUVTransforms = new List<Vector4>();
 
-    //    // vectors we will need for our basis
-    //    Vector3 vUp = zAxis;
-    //    Vector3 vDir;
+        meshBatch.objectId = objectInfo.objectId;
+        meshBatch.mesh = meshes[objectInfo.meshId];
 
-    //    switch (cubeFace)
-    //    {
-    //        case 0:
-    //            vDir = XAxis;
-    //            break;
-    //        case 1:
-    //            vDir = -XAxis;
-    //            break;
-    //        case 2:
-    //            vDir = YAxis;
-    //            break;
-    //        case 3:
-    //            vDir = -YAxis;
-    //            break;
-    //        case 4:
-    //            vUp = -YAxis;
-    //            vDir = ZAxis;
-    //            break;
-    //        case 5:
-    //            vUp = YAxis;
-    //            vDir = -ZAxis;
-    //            break;
-    //    }
+        meshBatch.cardCount = 6;
 
-    //    // derive right vector
-    //    FVector vRight(vUp ^vDir);
-    //    // create matrix from the 3 axes
-    //    Result = FBasisVectorMatrix(vRight, vUp, vDir, FVector::ZeroVector);
+        // 1. calculate card capture mvp matrix
+        Vector3 localBoundsCenter = (objectInfo.localBoundsMax + objectInfo.localBoundsMin) * 0.5f;
+        Vector3 localBoundsSize = (objectInfo.localBoundsMax - objectInfo.localBoundsMin) * (1.0f + 1e-3f);
+        float maxDimension = Mathf.Max(localBoundsSize.x, Mathf.Max(localBoundsSize.y, localBoundsSize.z));
 
-    //    return Result;
-    //}
+        for (int cardIndex = 0; cardIndex < meshBatch.cardCount; cardIndex++)
+        {
+            Matrix4x4 localToCard = CalcViewProjectionMatrix(localBoundsCenter, maxDimension, cardIndex);
+            meshBatch.localToCardMatrices.Add(localToCard);
+        }
 
-    //FMatrix CalcCardCaptureViewProjectionMatrix(FVector CardCenter, float Size, ECubeFace Face)
-    //{
-    //    float Width = Size;
-    //    float Height = Size;
-    //    float Depth = Size;
+        // 2. calculate card resolution based on object's size
+        meshBatch.resolution = 32;
 
-    //    float NearPlane = Depth * -0.5;
-    //    float FarPlane = Depth * 0.5;
-    //    float ZScale = 1.0f / (FarPlane - NearPlane);
-    //    float ZOffset = -NearPlane;
+        //Vector3 localSizeXYZ = objectInfo.localBoundsMax - objectInfo.localBoundsMin;
+        //Vector3 worldScale = objects[objectInfo.objectId].GetComponent<MeshFilter>().transform.lossyScale;
 
-    //    FViewMatrices::FMinimalInitializer CaptureViewInitOptions;
-    //    CaptureViewInitOptions.ViewRotationMatrix = CalcCardCaptureViewRotationMatrix(Face);
-    //    CaptureViewInitOptions.ViewOrigin = CardCenter;
-    //    CaptureViewInitOptions.ProjectionMatrix = FReversedZOrthoMatrix(Width * 0.5, Height * 0.5, ZScale, ZOffset);
-    //    // CaptureViewInitOptions.ProjectionMatrix = GetCubeProjectionMatrix(90.0 * 0.5f, 128, 0.1f);	// for debug
-    //    FViewMatrices CaptureViewMatrices = FViewMatrices(CaptureViewInitOptions);
+        //float worldSize = 0;
+        //worldSize = Mathf.Max(worldSize, worldScale.x * localSizeXYZ.x);
+        //worldSize = Mathf.Max(worldSize, worldScale.y * localSizeXYZ.y);
+        //worldSize = Mathf.Max(worldSize, worldScale.z * localSizeXYZ.z);
 
-    //    return CaptureViewMatrices.GetViewProjectionMatrix();
-    //}
+        //float cardSizef = worldSize / 12.5f;    // 8 texel per meter
+        //int cardSize = Mathf.NextPowerOfTwo((int)cardSizef);
+        //meshBatch.resolution = Mathf.Clamp(cardSize, MeshCardAtlasAllocator.GetMinNodeSize(), MeshCardAtlasAllocator.GetMaxNodeSize());
+
+        // 3. allocate space in mesh card atlas
+        for (int cardIndex = 0; cardIndex < meshBatch.cardCount; cardIndex++)
+        {
+            Vector4 cardSizeAndOffset = AllocateCardUVTransform(objectInfo, cardIndex);
+            meshBatch.cardUVTransforms.Add(cardSizeAndOffset);
+        }
+
+        m_CaptureMeshBatches.Add(meshBatch);
+    }
 }

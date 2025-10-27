@@ -21,6 +21,7 @@ StructuredBuffer<int> _UpdateChunkList;
 StructuredBuffer<int> _UpdateChunkCullingResult;
 StructuredBuffer<int> _UpdateChunkObjectCounter;
 StructuredBuffer<float4x4> _CardMatrixBuffer;
+StructuredBuffer<float4> _CardUVTransformBuffer;
 
 Texture2D _SurfaceCacheAtlasDepth;
 SamplerState sampler_LinearClamp;
@@ -81,7 +82,8 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
             float3 cardUVZ = mul(localToCard, float4(localPosition, 1));
             cardUVZ.xy = saturate(cardUVZ.xy * 0.5 + 0.5);
 
-            float4 UVTransform = CalcCardUVTransform(objectId, cardIndex, cardResolution, cardCount, _SurfaceCacheAtlasResolution);
+            float4 cardSizeAndOffset = _CardUVTransformBuffer[cardOffset + cardIndex];
+            float4 UVTransform = cardSizeAndOffset / float(_SurfaceCacheAtlasResolution);
             cardUVZ.xy = cardUVZ.xy * UVTransform.xy + UVTransform.zw;
             cardUVZ.y = 1.0 - cardUVZ.y;
 

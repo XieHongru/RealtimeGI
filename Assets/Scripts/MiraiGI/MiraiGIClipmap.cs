@@ -290,10 +290,9 @@ public class MiraiGIClipmap
         Vector3 chunkSize = new Vector3(voxelSize.x * m_UpdateChunkResolution.x,
                                         voxelSize.y * m_UpdateChunkResolution.y,
                                         voxelSize.z * m_UpdateChunkResolution.z);
-        Vector3Int chunkResolution = new Vector3Int(m_VoxelResolution.x / m_UpdateChunkResolution.x,
+        Vector3Int chunkCountInXYZ = new Vector3Int(m_VoxelResolution.x / m_UpdateChunkResolution.x,
                                                     m_VoxelResolution.y / m_UpdateChunkResolution.y,
                                                     m_VoxelResolution.z / m_UpdateChunkResolution.z);
-        Vector3Int chunkHalfResolution = chunkResolution / 2;
         Vector3Int deltaChunk = cascadeInfo.deltaChunk;
 
         // 1. move pending dirty chunks that haven't been update
@@ -305,24 +304,24 @@ public class MiraiGIClipmap
         }
         foreach (int chunkIndex1d in dirtyChunks)
         {
-            Vector3Int chunkIndex3D = Index1DTo3DLinear(chunkIndex1d, chunkResolution);
+            Vector3Int chunkIndex3D = Index1DTo3DLinear(chunkIndex1d, chunkCountInXYZ);
             Vector3Int movedChunkIndex3D = chunkIndex3D - deltaChunk;
 
             if (movedChunkIndex3D.x < 0 || movedChunkIndex3D.y < 0 || movedChunkIndex3D.z < 0 ||
-                movedChunkIndex3D.x > chunkResolution.x || movedChunkIndex3D.y > chunkResolution.y || movedChunkIndex3D.z > chunkResolution.z)
+                movedChunkIndex3D.x > chunkCountInXYZ.x || movedChunkIndex3D.y > chunkCountInXYZ.y || movedChunkIndex3D.z > chunkCountInXYZ.z)
             {
                 continue;
             }
 
-            int movedChunkIndex1D = Index3DTo1DLinear(chunkIndex3D, chunkResolution);
+            int movedChunkIndex1D = Index3DTo1DLinear(chunkIndex3D, chunkCountInXYZ);
             cascadeInfo.PushUpdateChunk(movedChunkIndex1D);
         }
 
         // 2.mark XZ plane's new coming chunks as dirty if volume move along Y axis
         // for 8x8x8 block, we may mark [0~8, 0~1, 0~8] as dirty when volume move 2 block in Y axis
-        MarkChunkPlaneAsDirty(chunkResolution, deltaChunk, cascadeInfo, 0);
-        MarkChunkPlaneAsDirty(chunkResolution, deltaChunk, cascadeInfo, 1);
-        MarkChunkPlaneAsDirty(chunkResolution, deltaChunk, cascadeInfo, 2);
+        MarkChunkPlaneAsDirty(chunkCountInXYZ, deltaChunk, cascadeInfo, 0);
+        MarkChunkPlaneAsDirty(chunkCountInXYZ, deltaChunk, cascadeInfo, 1);
+        MarkChunkPlaneAsDirty(chunkCountInXYZ, deltaChunk, cascadeInfo, 2);
 
         // 3. TODO: mark chunks as dirty when primitive move
     }
@@ -441,6 +440,7 @@ public class MiraiGIClipmap
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_UpdateChunkObjectCounter"), m_UpdateChunkObjectCounter);
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_ObjectsInfo"), scene.GPUSceneData.objectInfoBuffer);
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_CardMatrixBuffer"), scene.surfaceCache.GetCardMatrixBuffer());
+        cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_CardUVTransformBuffer"), scene.surfaceCache.GetCardUVTransformBuffer());
 
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_SurfaceCacheAtlasDepth"), scene.surfaceCache.GetSurfaceCacheTexture(3));
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelBitOccupyClipmap"), m_VoxelMap);
@@ -514,12 +514,12 @@ public class MiraiGIClipmap
 
     // mark XZ plane's new coming chunks as dirty if volume move along Y axis
     // for 8x8x8 block, we may mark [0~8, 0~1, 0~8] as dirty when volume move 2 block in Y axis
-    void MarkChunkPlaneAsDirty(Vector3Int chunkResolution, Vector3Int deltaChunk, MiraiGICascadeInfo cascadeInfo, int axis)
+    void MarkChunkPlaneAsDirty(Vector3Int chunkCountInXYZ, Vector3Int deltaChunk, MiraiGICascadeInfo cascadeInfo, int axis)
     {
         int deltaChunkInAxis = deltaChunk[axis];
-        int chunkResolutionInAxis0 = chunkResolution[(axis + 0) % 3];
-        int chunkResolutionInAxis1 = chunkResolution[(axis + 1) % 3];
-        int chunkResolutionInAxis2 = chunkResolution[(axis + 2) % 3];
+        int chunkCountInX = chunkCountInXYZ[(axis + 0) % 3];
+        int chunkCountInY = chunkCountInXYZ[(axis + 1) % 3];
+        int chunkCountInZ = chunkCountInXYZ[(axis + 2) % 3];
 
         if (deltaChunkInAxis == 0)
         {
@@ -529,8 +529,8 @@ public class MiraiGIClipmap
         int start = 0, end = 0;
         if (deltaChunkInAxis > 0)   // [112 ~ 128]
         {
-            start = chunkResolutionInAxis0 - Math.Abs(deltaChunkInAxis);
-            end = chunkResolutionInAxis0 - 1;
+            start = chunkCountInX - Math.Abs(deltaChunkInAxis);
+            end = chunkCountInX - 1;
         }
         else    // [0 ~ 16]
         {
@@ -538,18 +538,21 @@ public class MiraiGIClipmap
             end = Math.Abs(deltaChunkInAxis) - 1;
         }
 
+        start = Mathf.Max(start, 0);
+        end = Mathf.Min(end, chunkCountInX - 1);
+
         for (int X = start; X <= end; X++)
         {
-            for (int Y = 0; Y < chunkResolutionInAxis1; Y++)
+            for (int Y = 0; Y < chunkCountInY; Y++)
             {
-                for (int Z = 0; Z < chunkResolutionInAxis2; Z++)
+                for (int Z = 0; Z < chunkCountInZ; Z++)
                 {
                     Vector3Int chunkIndex3D = Vector3Int.zero;
                     chunkIndex3D[(axis + 0) % 3] = X;
                     chunkIndex3D[(axis + 1) % 3] = Y;
                     chunkIndex3D[(axis + 2) % 3] = Z;
 
-                    cascadeInfo.PushUpdateChunk(Index3DTo1DLinear(chunkIndex3D, chunkResolution));
+                    cascadeInfo.PushUpdateChunk(Index3DTo1DLinear(chunkIndex3D, chunkCountInXYZ));
                 }
             }
         }

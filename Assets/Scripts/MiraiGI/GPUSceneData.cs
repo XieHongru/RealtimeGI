@@ -40,7 +40,7 @@ public class GPUSceneData
     // ---------------------------------------------------
     public List<GameObject> objects;            // all object instances in scene 
     public List<ObjectInfo> objectsInfo;        // all object instances info in scene
-    public List<Mesh> meshes;
+    public List<Mesh>       meshes;
     public List<MeshInfo>   meshesInfo;         // all meshes info in scene
     public List<Vector3>    vertices;           // all vertices in scene (local position)
     public List<int>        indices;            // all meshes tri indices in scene
