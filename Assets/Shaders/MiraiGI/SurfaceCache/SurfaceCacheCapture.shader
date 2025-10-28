@@ -71,6 +71,7 @@ Shader "Mirai/SurfaceCacheCapture"
         output.uv = input.texcoord;
 
         float4 outSVPosition = mul(_ViewProjectionMatrices[input.instanceID], float4(localPosition, 1));
+        outSVPosition.z = (outSVPosition.z * 0.5f) + 0.5f;
         output.depth = outSVPosition.z;
 
         float4 viewportInfo = _ViewportInfos[input.instanceID];
@@ -112,6 +113,8 @@ Shader "Mirai/SurfaceCacheCapture"
     {
         Tags { "RenderType"="Opaque" "RenderPipeline"="UniversalPipeline" }
         LOD 100
+
+        Cull Off
 
         Pass
         {

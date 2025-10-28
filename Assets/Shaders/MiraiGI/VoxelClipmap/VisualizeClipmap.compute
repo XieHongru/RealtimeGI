@@ -13,6 +13,7 @@ float4 _CascadeMoveOffsetArray[MAX_CASCADE_COUNT];
 Texture3D<uint2> _BitOccupyClipmap;
 Texture2D<float> _SceneDepthTexture;
 RWTexture2D<float4> _RWSceneColorTexture;
+Texture3D<int> _VoxelOccupy;
 
 float3 ReconstructWorldPositionFromDepth(float2 uv, float depth)
 {
@@ -55,7 +56,7 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     
     if (!hitMask)
     {
-        _RWSceneColorTexture[pixelCoord] = float4(hitResult.a, 0, 0, 1);
+        _RWSceneColorTexture[pixelCoord] = float4(hitResult.a, _VoxelOccupy[uint3(0,0,0)], 0, 1);
         return;
     }
 

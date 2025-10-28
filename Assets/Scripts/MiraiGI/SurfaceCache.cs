@@ -40,6 +40,9 @@ public class SurfaceCache
     int m_AtlasResolution;
     const int MAX_CARD_PER_MESH = 12;
     const int MAX_OBJECT_COUNT = 2048;
+    const int USE_QUAD_TREE = 0;
+
+    QuadTreeAllocator m_SurfaceCacheAtlasAllocator;
 
     List<CardCaptureMeshBatch> m_CaptureMeshBatches;
 
@@ -48,6 +51,9 @@ public class SurfaceCache
     ComputeBuffer m_CardUVTransformUploadBuffer;
     ComputeBuffer m_CardMatrixBuffer;
     ComputeBuffer m_CardUVTransformBuffer;
+
+    int m_CardClearQuadsCount;
+    ComputeBuffer m_CardClearQuadUVTransformBuffer;
 
     ComputeShader m_CardInfosSyncCS;
 
@@ -87,12 +93,15 @@ public class SurfaceCache
         m_DepthStencil.depthStencilFormat = GraphicsFormat.D24_UNorm_S8_UInt;
 
         m_CaptureMeshBatches = new List<CardCaptureMeshBatch>();
+        m_SurfaceCacheAtlasAllocator = new QuadTreeAllocator();
+        m_SurfaceCacheAtlasAllocator.TryInit(m_AtlasResolution);
 
         m_CardInfoWriteOffsetUploadBuffer = new ComputeBuffer(MAX_OBJECT_COUNT, sizeof(int), ComputeBufferType.Default);
         m_CardMatrixUploadBuffer = new ComputeBuffer(MAX_OBJECT_COUNT * MAX_CARD_PER_MESH, sizeof(float) * 16, ComputeBufferType.Raw);
-        m_CardUVTransformUploadBuffer = new ComputeBuffer(MAX_OBJECT_COUNT * MAX_CARD_PER_MESH, sizeof(float) * 16, ComputeBufferType.Raw);
+        m_CardUVTransformUploadBuffer = new ComputeBuffer(MAX_OBJECT_COUNT * MAX_CARD_PER_MESH, sizeof(float) * 4, ComputeBufferType.Raw);
         m_CardMatrixBuffer = new ComputeBuffer(MAX_OBJECT_COUNT * MAX_CARD_PER_MESH, sizeof(float) * 16, ComputeBufferType.Structured);
-        m_CardUVTransformBuffer = new ComputeBuffer(MAX_OBJECT_COUNT * MAX_CARD_PER_MESH, sizeof(float) * 16, ComputeBufferType.Structured);
+        m_CardUVTransformBuffer = new ComputeBuffer(MAX_OBJECT_COUNT * MAX_CARD_PER_MESH, sizeof(float) * 4, ComputeBufferType.Structured);
+        m_CardClearQuadUVTransformBuffer = new ComputeBuffer(MAX_OBJECT_COUNT * MAX_CARD_PER_MESH, sizeof(float) * 4, ComputeBufferType.Raw);
 
         m_CardInfosSyncCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/SurfaceCache/SurfaceCacheInfoSync.compute");
     }
@@ -110,6 +119,7 @@ public class SurfaceCache
         m_CardUVTransformUploadBuffer.Release();
         m_CardMatrixBuffer.Release();
         m_CardUVTransformBuffer.Release();
+        m_CardClearQuadUVTransformBuffer.Release();
     }
 
     public void SyncCardInfosToGPU(CommandBuffer cmd, int objectCount)
@@ -163,11 +173,16 @@ public class SurfaceCache
 
             cmd.DispatchCompute(m_CardInfosSyncCS, kernel, Mathf.CeilToInt((float)objectCount / 8), 1, 1);
         }
+
+        // 6. TODO: fill data for removed object's cards cleaning, and upload card clear list
     }
 
     public void CaptureSurfaceCache(List<ObjectInfo> objectsInfo, List<GameObject> objects, List<Mesh> meshes)
     {
         m_CaptureMeshBatches.Clear();
+
+        m_SurfaceCacheAtlasAllocator = new QuadTreeAllocator();
+        m_SurfaceCacheAtlasAllocator.TryInit(m_AtlasResolution);
         // capture surface cache per object
         foreach (var objInfo in objectsInfo)
         {
@@ -201,7 +216,7 @@ public class SurfaceCache
             for (int cardIndex = 0; cardIndex < 6; cardIndex++)
             {
                 cardCaptureParams.viewProjectionMatrices[cardIndex] = meshBatch.localToCardMatrices[cardIndex];
-                cardCaptureParams.viewportInfos[cardIndex] = CalcViewportInfo(objectsInfo[meshBatch.objectId], cardIndex);
+                cardCaptureParams.viewportInfos[cardIndex] = CalcViewportInfo(meshBatch, cardIndex);
             }
 
             Matrix4x4[] identityMats = new Matrix4x4[6];
@@ -254,14 +269,14 @@ public class SurfaceCache
         return projectionMatrix * viewMatrix;
     }
 
-    public Vector4 CalcViewportInfo(ObjectInfo objectInfo, int cardIndex)
+    public Vector4 CalcViewportInfo(CardCaptureMeshBatch meshBatch, int cardIndex)
     {
-        Vector4 cardSizeAndOffset = AllocateCardUVTransform(objectInfo, cardIndex);
+        Vector4 cardSizeAndOffset = meshBatch.cardUVTransforms[cardIndex];
         Vector4 uvTransform = cardSizeAndOffset / (float)m_AtlasResolution;
 
         // @TODO: dynamic sparse quad tree allocation
         // padding 1 texel
-        float paddingScale = (objectInfo.resolution - 1.0f) / (float)objectInfo.resolution;
+        float paddingScale = (meshBatch.resolution - 1.0f) / (float)meshBatch.resolution;
 
         // viewport center is (0, 0) but uv center is (0.5, 0.5)
         float offsetX = 0.5f * uvTransform.x;
@@ -277,25 +292,35 @@ public class SurfaceCache
         return result;
     }
 
-    public Vector4 AllocateCardUVTransform(ObjectInfo objectInfo, int cardIndex)
+    public Vector4 AllocateCardUVTransform(CardCaptureMeshBatch meshBatch, int cardIndex)
     {
-        // TODO: dynamic sparse quad tree allocation
-        int numCardsInXY = m_AtlasResolution / objectInfo.resolution;
+        if (USE_QUAD_TREE == 1)
+        {
+            QuadTreeNode node = m_SurfaceCacheAtlasAllocator.AllocateElement(meshBatch.resolution);
 
-        int indexInAtlas = objectInfo.objectId * objectInfo.cardCount + cardIndex;
-        float indexInAtlasX = indexInAtlas % numCardsInXY;
-        float indexInAtlasY = indexInAtlas / numCardsInXY;
+            Vector4 result = new Vector4(node.size, node.size, node.min.x, node.min.y);
+            return result;
+        }
+        else
+        {
+            // TODO: dynamic sparse quad tree allocation
+            int numCardsInXY = m_AtlasResolution / meshBatch.resolution;
 
-        float sizeX = objectInfo.resolution;
-        float sizeY = objectInfo.resolution;
+            int indexInAtlas = meshBatch.objectId * meshBatch.cardCount + cardIndex;
+            float indexInAtlasX = indexInAtlas % numCardsInXY;
+            float indexInAtlasY = indexInAtlas / numCardsInXY;
 
-        // map [0, 1] to [-1, 1]
-        float offsetX = indexInAtlasX * objectInfo.resolution;
-        float offsetY = indexInAtlasY * objectInfo.resolution;
+            float sizeX = meshBatch.resolution;
+            float sizeY = meshBatch.resolution;
 
-        // xy: scale, zw: offset
-        Vector4 result = new Vector4(sizeX, sizeY, offsetX, offsetY);
-        return result;
+            // map [0, 1] to [-1, 1]
+            float offsetX = indexInAtlasX * meshBatch.resolution;
+            float offsetY = indexInAtlasY * meshBatch.resolution;
+
+            // xy: scale, zw: offset
+            Vector4 result = new Vector4(sizeX, sizeY, offsetX, offsetY);
+            return result;
+        }
     }
 
     void AllocateMeshCard(ObjectInfo objectInfo, List<GameObject> objects, List<Mesh> meshes)
@@ -321,27 +346,48 @@ public class SurfaceCache
         }
 
         // 2. calculate card resolution based on object's size
-        meshBatch.resolution = 32;
+        if (USE_QUAD_TREE == 1)
+        {
+            Vector3 localSizeXYZ = objectInfo.localBoundsMax - objectInfo.localBoundsMin;
+            Vector3 worldScale = objects[objectInfo.objectId].GetComponent<MeshFilter>().transform.lossyScale;
 
-        //Vector3 localSizeXYZ = objectInfo.localBoundsMax - objectInfo.localBoundsMin;
-        //Vector3 worldScale = objects[objectInfo.objectId].GetComponent<MeshFilter>().transform.lossyScale;
+            float worldSize = 0;
+            worldSize = Mathf.Max(worldSize, worldScale.x * localSizeXYZ.x);
+            worldSize = Mathf.Max(worldSize, worldScale.y * localSizeXYZ.y);
+            worldSize = Mathf.Max(worldSize, worldScale.z * localSizeXYZ.z);
 
-        //float worldSize = 0;
-        //worldSize = Mathf.Max(worldSize, worldScale.x * localSizeXYZ.x);
-        //worldSize = Mathf.Max(worldSize, worldScale.y * localSizeXYZ.y);
-        //worldSize = Mathf.Max(worldSize, worldScale.z * localSizeXYZ.z);
-
-        //float cardSizef = worldSize / 12.5f;    // 8 texel per meter
-        //int cardSize = Mathf.NextPowerOfTwo((int)cardSizef);
-        //meshBatch.resolution = Mathf.Clamp(cardSize, MeshCardAtlasAllocator.GetMinNodeSize(), MeshCardAtlasAllocator.GetMaxNodeSize());
+            float cardSizef = worldSize / 0.25f;    // 4 texel per meter
+            int cardSize = Mathf.NextPowerOfTwo((int)cardSizef);
+            meshBatch.resolution = Mathf.Clamp(cardSize, m_SurfaceCacheAtlasAllocator.GetMinNodeSize(), m_SurfaceCacheAtlasAllocator.GetMaxNodeSize());
+        }
+        else
+        {
+            meshBatch.resolution = 32;
+        }
 
         // 3. allocate space in mesh card atlas
         for (int cardIndex = 0; cardIndex < meshBatch.cardCount; cardIndex++)
         {
-            Vector4 cardSizeAndOffset = AllocateCardUVTransform(objectInfo, cardIndex);
+            Vector4 cardSizeAndOffset = AllocateCardUVTransform(meshBatch, cardIndex);
             meshBatch.cardUVTransforms.Add(cardSizeAndOffset);
         }
 
         m_CaptureMeshBatches.Add(meshBatch);
+    }
+
+    void ReleaseMeshCard(CardCaptureMeshBatch meshBatch)
+    {
+        for (int cardIndex = 0; cardIndex < meshBatch.cardCount; cardIndex++)
+        {
+            Vector4 cardSizeAndOffset = meshBatch.cardUVTransforms[cardIndex];
+
+            QuadTreeNode freeNode = new QuadTreeNode();
+            freeNode.size = (int)cardSizeAndOffset.x;    // x == y always
+            freeNode.min = new Vector2Int((int)cardSizeAndOffset.z, (int)cardSizeAndOffset.w);
+            freeNode.max = freeNode.min + new Vector2Int((int)cardSizeAndOffset.x, (int)cardSizeAndOffset.y);
+            freeNode.center = (freeNode.max + freeNode.min) / 2;
+
+            m_SurfaceCacheAtlasAllocator.ReleaseElement(freeNode);
+        }
     }
 }

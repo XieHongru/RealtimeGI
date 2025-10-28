@@ -96,6 +96,8 @@ public class MiraiGIClipmap
     ComputeBuffer m_UpdateChunkCullingResults;
     ComputeBuffer m_UpdateChunkObjectCounter;
 
+    RenderTexture m_VoxelOccupy;
+
     ComputeShader m_CullObjectCS;
     ComputeShader m_VoxelInjectCS;
     ComputeShader m_VisualizeClipmapCS;
@@ -113,6 +115,12 @@ public class MiraiGIClipmap
         m_VisualizeColorTarget.Create();
         m_VisualizeDepthTarget = new RenderTexture(Camera.main.pixelWidth, Camera.main.pixelHeight, 0, RenderTextureFormat.RFloat);
         m_VisualizeDepthTarget.Create();
+
+        m_VoxelOccupy = new RenderTexture(128, 128, 0, RenderTextureFormat.RInt);
+        m_VoxelOccupy.dimension = TextureDimension.Tex3D;
+        m_VoxelOccupy.volumeDepth = 128;
+        m_VoxelOccupy.enableRandomWrite = true;
+        m_VoxelOccupy.Create();
 
         m_CascadeInfos = new MiraiGICascadeInfo[CASCADE_COUNT];
         m_ObjectCullParams = new ObjectCullParams[CASCADE_COUNT];
@@ -445,6 +453,8 @@ public class MiraiGIClipmap
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_SurfaceCacheAtlasDepth"), scene.surfaceCache.GetSurfaceCacheTexture(3));
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelBitOccupyClipmap"), m_VoxelMap);
 
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelOccupy"), m_VoxelOccupy);
+
         Vector3Int groupCount = new Vector3Int(Mathf.CeilToInt((float)m_UpdateChunkResolution.x / 4 * cascadeInfo.chunksToUpdate.Count),
                                                 Mathf.CeilToInt((float)m_UpdateChunkResolution.y / 4),
                                                 Mathf.CeilToInt((float)m_UpdateChunkResolution.z / 4));
@@ -484,6 +494,8 @@ public class MiraiGIClipmap
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_BitOccupyClipmap"), m_VoxelMap);
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_SceneDepthTexture"), Shader.GetGlobalTexture("_CameraDepthTexture"));
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_RWSceneColorTexture"), m_VisualizeColorTarget);
+
+        cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_VoxelOccupy"), m_VoxelOccupy);
 
         cmd.DispatchCompute(m_VisualizeClipmapCS, kernel, Mathf.CeilToInt((float)camera.pixelWidth / 8), Mathf.CeilToInt((float)camera.pixelHeight / 8), 1);
     }

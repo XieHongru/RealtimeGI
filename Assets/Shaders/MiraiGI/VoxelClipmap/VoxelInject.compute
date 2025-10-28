@@ -27,6 +27,7 @@ Texture2D _SurfaceCacheAtlasDepth;
 SamplerState sampler_LinearClamp;
 
 RWTexture3D<uint2> _RWVoxelBitOccupyClipmap;
+RWTexture3D<uint> _RWVoxelOccupy;
 
 groupshared bool gs_ThreadVoxelOccupy[64];
 
@@ -96,9 +97,10 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
             }
 
             float worldDistancce = abs(cardDepth - voxelDepth) * objectWorldBoundSize;
-            if (worldDistancce < voxelCellSize * 0.707)  // tolerance radius is sqrt(2) / 2, for unit cube
+            if (worldDistancce < voxelCellSize * 0.5)  // tolerance radius is sqrt(2) / 2, for unit cube
             {
                 hasVoxel = true;
+                _RWVoxelOccupy[voxelIndex] = 1;
             }
         }
     }
