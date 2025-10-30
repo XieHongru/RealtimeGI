@@ -5,6 +5,7 @@ float4 _ScreenResolution;
 float4 _CameraPosition;
 float4x4 _InvViewProjMat;
 
+int _CascadeCount;
 float4 _CascadeCenterArray[MAX_CASCADE_COUNT];
 float4 _CascadeSizeArray[MAX_CASCADE_COUNT];
 float4 _CascadeResolutionArray[MAX_CASCADE_COUNT];
@@ -40,29 +41,17 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     float3 pixelWorldPosition = ReconstructWorldPositionFromDepth(uv, pixelDepth);
     
     float3 rayDir = normalize(pixelWorldPosition - _CameraPosition.xyz);
+    float3 color = float3(0, 0, 0) + _VoxelOccupy[uint3(0, 0, 0)]; // used to debug, make sure it's (0, 0, 0)
 
-    CascadeInfo cascadeInfo;
-    cascadeInfo.cascadeIndex = 0;
-    cascadeInfo.center = _CascadeCenterArray[0];
-    cascadeInfo.size = _CascadeSizeArray[0];
-    cascadeInfo.resolution = _CascadeResolutionArray[0];
-    cascadeInfo.moveOffset = _CascadeMoveOffsetArray[0];
-    cascadeInfo.voxelSize = cascadeInfo.size / cascadeInfo.resolution;
-
-    float4 hitResult = VoxelRaytracing(cascadeInfo, _BitOccupyClipmap, _CameraPosition.xyz, rayDir);
-    float3 hitPosition = hitResult.xyz;
-    float hitMask = hitResult.w;
-    float hitDistance = length(hitPosition - _CameraPosition.xyz);
+    ClipmapInfo clipmapInfo;
+    clipmapInfo.cascadeCount = _CascadeCount;
+    clipmapInfo.cascadeCenterArray = _CascadeCenterArray;
+    clipmapInfo.cascadeSizeArray = _CascadeSizeArray;
+    clipmapInfo.cascadeResolutionArray = _CascadeResolutionArray;
+    clipmapInfo.cascadeMoveOffsetArray = _CascadeMoveOffsetArray;
     
-    if (!hitMask)
-    {
-        _RWSceneColorTexture[pixelCoord] = float4(hitResult.a, _VoxelOccupy[uint3(0,0,0)], 0, 1);
-        return;
-    }
+    VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _BitOccupyClipmap, _CameraPosition, rayDir);
+    color += hit.debugColor;
 
-    float3 voxelCenterPos = (floor(hitPosition / cascadeInfo.voxelSize) + 0.5) * cascadeInfo.voxelSize;
-    float3 voxelDir = normalize(hitPosition - voxelCenterPos);
-    float maxComp = max(voxelDir.x, max(voxelDir.y, voxelDir.z));
-
-    _RWSceneColorTexture[pixelCoord] = float4(length(hitPosition - voxelCenterPos), 0, 0, 1);
+    _RWSceneColorTexture[pixelCoord] = float4(color, 1);
 }

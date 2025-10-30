@@ -100,7 +100,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
             if (worldDistancce < voxelCellSize * 0.5)  // tolerance radius is sqrt(2) / 2, for unit cube
             {
                 hasVoxel = true;
-                _RWVoxelOccupy[voxelIndex] = 1;
+                _RWVoxelOccupy[voxelIndex + uint3(0, 0, 128 * _CascadeIndex)] = 1;
             }
         }
     }

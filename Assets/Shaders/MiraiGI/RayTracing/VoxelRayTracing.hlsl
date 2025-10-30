@@ -13,6 +13,24 @@ struct CascadeInfo
     float3 voxelSize;
 };
 
+struct ClipmapInfo
+{
+    int cascadeCount;
+    float4 cascadeCenterArray[MAX_CASCADE_COUNT];
+    float4 cascadeSizeArray[MAX_CASCADE_COUNT];
+    float4 cascadeResolutionArray[MAX_CASCADE_COUNT];
+    float4 cascadeMoveOffsetArray[MAX_CASCADE_COUNT];
+};
+
+struct VoxelRayTracingHitPayload
+{
+    float3 position;
+    float isHit;
+    int3 voxelIndex;
+    int cascadeIndex;
+    float3 debugColor;
+};
+
 // https://sugulee.wordpress.com/2021/01/19/screen-space-reflections-implementation-and-optimization-part-2-hi-z-tracing-method/
 float MoveToNextCellDDA(CascadeInfo cascadeInfo, float3 samplePoint, float3 rayDir, int mipLevel)
 {
@@ -80,7 +98,7 @@ bool IsTwoPointInDifferentBlock(in CascadeInfo cascadeInfo, float3 pointA, float
     return any(blockIndexA != blockIndexB);
 }
 
-float4 VoxelRaytracing(CascadeInfo cascadeInfo, Texture3D<uint2> bitOccupyClipmap, float3 rayStart, float3 rayDir)
+VoxelRayTracingHitPayload VoxelRaytracingSingleCascade(CascadeInfo cascadeInfo, Texture3D<uint2> bitOccupyClipmap, float3 rayStart, float3 rayDir)
 {
     float3 samplePoint = rayStart - cascadeInfo.center;
     int3 voxelIndex = int3(0, 0, 0);
@@ -132,7 +150,43 @@ float4 VoxelRaytracing(CascadeInfo cascadeInfo, Texture3D<uint2> bitOccupyClipma
         samplePoint = newSamplePoint;
     }
     
-    return float4(samplePoint + cascadeInfo.center, hitMask);
+    VoxelRayTracingHitPayload payload;
+    payload.position = samplePoint + cascadeInfo.center;
+    payload.isHit = hitMask;
+    payload.voxelIndex = voxelIndex;
+    payload.cascadeIndex = cascadeInfo.cascadeIndex;
+
+    float3 hitVoxelCenterPos = (floor(payload.position / cascadeInfo.voxelSize) + 0.5) * cascadeInfo.voxelSize;
+    payload.debugColor = payload.isHit ? float3(length(payload.position - hitVoxelCenterPos) / (50.0 * (1 << payload.cascadeIndex)), 0, 0) : float3(0, 0, 0);
+
+    return payload;
+}
+
+VoxelRayTracingHitPayload VoxelRaytracing(ClipmapInfo clipmapInfo, Texture3D<uint2> bitOccupyClipmap, float3 cameraPosition, float3 rayDir)
+{
+    float3 rayStart = cameraPosition;
+    for (int cascadeId = 0; cascadeId < clipmapInfo.cascadeCount; cascadeId++)
+    {
+        CascadeInfo cascadeInfo;
+        cascadeInfo.cascadeIndex = cascadeId;
+        cascadeInfo.center = clipmapInfo.cascadeCenterArray[cascadeId];
+        cascadeInfo.size = clipmapInfo.cascadeSizeArray[cascadeId];
+        cascadeInfo.resolution = clipmapInfo.cascadeResolutionArray[cascadeId];
+        cascadeInfo.moveOffset = clipmapInfo.cascadeMoveOffsetArray[cascadeId];
+        cascadeInfo.voxelSize = cascadeInfo.size / cascadeInfo.resolution;
+
+        VoxelRayTracingHitPayload hit = VoxelRaytracingSingleCascade(cascadeInfo, bitOccupyClipmap, rayStart, rayDir);
+
+        if (hit.isHit)
+        {
+            return hit;
+        }
+
+		// trace from last clip's ray start
+        rayStart = hit.position;
+    }
+
+    return (VoxelRayTracingHitPayload) 0;
 }
 
 #endif

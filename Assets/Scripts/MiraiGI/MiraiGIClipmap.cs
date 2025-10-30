@@ -14,7 +14,7 @@ using static Unity.VisualScripting.Dependencies.Sqlite.SQLiteConnection;
 public class MiraiGICascadeInfo
 {
     public Vector3 cascadeCenter;
-    public Vector3 cascadeSize = new Vector3(32.0f, 32.0f, 32.0f);
+    public Vector3 cascadeSize;
     public Vector3Int moveOffset;
     public Vector3Int chunkCountInXYZ;
     public List<int> chunksToUpdate = new List<int>();
@@ -73,7 +73,7 @@ public class MiraiGIClipmap
 {
     Vector3Int m_VoxelResolution = new Vector3Int(128, 128, 128);
     Vector3Int m_UpdateChunkResolution = new Vector3Int(16, 16, 16);
-    const int CASCADE_COUNT = 1;
+    const int CASCADE_COUNT = 4;
     const int MAX_OBJECT_NUM_PER_CASCADE = 2048;
     const int MAX_UPDATE_CHUNK_PER_FRAME = 16;
     const int MAX_OBJECT_NUM_PER_UPDATE_CHUNK = 64;
@@ -118,7 +118,7 @@ public class MiraiGIClipmap
 
         m_VoxelOccupy = new RenderTexture(128, 128, 0, RenderTextureFormat.RInt);
         m_VoxelOccupy.dimension = TextureDimension.Tex3D;
-        m_VoxelOccupy.volumeDepth = 128;
+        m_VoxelOccupy.volumeDepth = 128 * CASCADE_COUNT;
         m_VoxelOccupy.enableRandomWrite = true;
         m_VoxelOccupy.Create();
 
@@ -136,6 +136,9 @@ public class MiraiGIClipmap
         for (int cascadeId = 0; cascadeId < CASCADE_COUNT; cascadeId++)
         {
             m_CascadeInfos[cascadeId] = new MiraiGICascadeInfo();
+            m_CascadeInfos[cascadeId].cascadeCenter = Camera.main.transform.position;
+            m_CascadeInfos[cascadeId].cascadeSize = new Vector3(32, 32, 32) * (1 << cascadeId);
+            m_CascadeInfos[cascadeId].moveOffset = Vector3Int.zero;
             m_CascadeInfos[cascadeId].chunkCountInXYZ = updateChunkDimension; // TODO: no effect
             for (int chunkId = 0; chunkId < updateChunkCount; chunkId++)
             {
@@ -486,6 +489,7 @@ public class MiraiGIClipmap
         cmd.SetComputeVectorParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CameraPosition"), camera.transform.position);
         cmd.SetComputeMatrixParam(m_VisualizeClipmapCS, Shader.PropertyToID("_InvViewProjMat"), (camera.projectionMatrix * camera.worldToCameraMatrix).inverse);
 
+        cmd.SetComputeIntParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeCount"), CASCADE_COUNT);
         cmd.SetComputeVectorArrayParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeCenterArray"), cascadeCenterArray);
         cmd.SetComputeVectorArrayParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeSizeArray"), cascadeSizeArray);
         cmd.SetComputeVectorArrayParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeResolutionArray"), cascadeResolutionArray);
