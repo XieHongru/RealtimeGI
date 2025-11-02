@@ -16,6 +16,7 @@ cbuffer _Params
 int _SurfaceCacheAtlasResolution;
 int _CascadeIndex;
 int3 _CascadeMoveOffset;
+int3 _VoxelPagePoolSize;
 
 StructuredBuffer<int> _UpdateChunkList;
 StructuredBuffer<int> _UpdateChunkCullingResult;
@@ -29,7 +30,14 @@ SamplerState sampler_LinearClamp;
 RWTexture3D<uint2> _RWVoxelBitOccupyClipmap;
 RWTexture3D<uint> _RWVoxelOccupy;
 
+RWTexture3D<int> _RWVoxelPageClipmap;
+RWStructuredBuffer<int> _RWVoxelPageAllocator;
+RWStructuredBuffer<int> _RWVoxelPageFreeList;
+RWStructuredBuffer<int> _RWVoxelPageReleaseList;
+RWTexture3D<float2> _RWVoxelPagePool;
+
 groupshared bool gs_ThreadVoxelOccupy[64];
+groupshared int gs_VoxelPageId;
 
 [numthreads(4, 4, 4)]
 void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
@@ -49,6 +57,9 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
     int numObjectsInUpdateChunk = _UpdateChunkObjectCounter[chunkIndex];
 
     bool hasVoxel = false;
+    float2 hitUVInAtlas = float2(0, 0);
+    int hitObjectId = OBJECT_ID_INVALID;
+    int hitCardId = -1;
 
     // 1. loop all objects in update chunk, see if clipmap's voxel intersect with per object voxel
     for (int i = 0; i < numObjectsInUpdateChunk; i++)
@@ -100,9 +111,16 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
             if (worldDistancce < voxelCellSize * 0.5)  // tolerance radius is sqrt(2) / 2, for unit cube
             {
                 hasVoxel = true;
+                hitUVInAtlas = cardUVZ.xy;
+                hitObjectId = objectId;
+                hitCardId = cardIndex;
                 _RWVoxelOccupy[voxelIndex + uint3(0, 0, 128 * _CascadeIndex)] = 1;
+                break;
             }
         }
+        
+        if (hasVoxel)
+            break;
     }
 
     // 2. restore result into temp LDS
@@ -112,15 +130,53 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
     GroupMemoryBarrierWithGroupSync();
 
     // 3. single head thread encode ThreadVoxelOccupy to uint64, write into bit occupy volume
+    uint2 bitOccupyBlock = uint2(0, 0);
+    int3 blockAccessIndex = ClipmapAddressMapping(voxelIndex, _CascadeResolution, _CascadeMoveOffset, _CascadeIndex);
     if (threadIndex == 0)
     {
-        uint2 bitOccupyBlock = uint2(0, 0);
         for (int i = 0; i < 64; i++)
         {
             SetUint64SingleBit(bitOccupyBlock, i, gs_ThreadVoxelOccupy[i]);
         }
+        
+        _RWVoxelBitOccupyClipmap[blockAccessIndex] = bitOccupyBlock;
+    }
 
-        int3 writeIndex = ClipmapAddressMapping(voxelIndex, _CascadeResolution, _CascadeMoveOffset, _CascadeIndex);
-        _RWVoxelBitOccupyClipmap[writeIndex] = bitOccupyBlock;
+    // 4. single head thread allocate or release page
+    if (threadIndex == 0)
+    {
+        bool blockHasVoxel = any(bitOccupyBlock > 0);
+        int pageId = _RWVoxelPageClipmap[blockAccessIndex];
+
+        // 4.1. current block has voxel but not allocate voxel page, we just allocate for it
+        if (pageId == PAGE_ID_INVALID && blockHasVoxel)
+        {
+            int freePointer = 0;
+            InterlockedAdd(_RWVoxelPageAllocator[FREE_PAGE_POINTER], 1, freePointer);
+            pageId = _RWVoxelPageFreeList[freePointer];
+            _RWVoxelPageFreeList[freePointer] = PAGE_ID_INVALID;
+        }
+        // 4.2. current block is empty but hold a voxel page, we just release it
+        else if (pageId != PAGE_ID_INVALID && !blockHasVoxel)
+        {
+            int releasePointer = 0;
+            InterlockedAdd(_RWVoxelPageAllocator[RELEASE_PAGE_POINTER], 1, releasePointer);
+            _RWVoxelPageReleaseList[releasePointer] = pageId;
+            pageId = PAGE_ID_INVALID;
+        }
+        
+        // 4.3. anyway we get a valid page id, boardcast it to all voxel in same voxel block (same thread group)
+        gs_VoxelPageId = pageId;
+        _RWVoxelPageClipmap[blockAccessIndex] = pageId;
+    }
+    
+    GroupMemoryBarrierWithGroupSync();
+
+    // 5. every voxel write it's intersect result into voxel pool
+    if (gs_VoxelPageId != PAGE_ID_INVALID)
+    {
+        int3 pageOffset = PageIdToPageOffset(gs_VoxelPageId, _VoxelPagePoolSize);
+        int3 voxelWriteIndex = pageOffset + groupThreadId;
+        _RWVoxelPagePool[voxelWriteIndex] = hitUVInAtlas;
     }
 }

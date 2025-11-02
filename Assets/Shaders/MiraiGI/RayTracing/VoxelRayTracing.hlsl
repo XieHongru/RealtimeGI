@@ -25,9 +25,11 @@ struct ClipmapInfo
 struct VoxelRayTracingHitPayload
 {
     float3 position;
-    float isHit;
+    int isHit;
     int3 voxelIndex;
     int cascadeIndex;
+    int3 clipmapAccessIndex;
+    
     float3 debugColor;
 };
 
@@ -105,6 +107,7 @@ VoxelRayTracingHitPayload VoxelRaytracingSingleCascade(CascadeInfo cascadeInfo, 
     bool hitMask = false;
     uint2 bitOccupy = uint2(0, 0);
     bool needReadBitOccupy = true;
+    int3 clipmapAccessIndex = uint3(0, 0, 0);
 
     for (int i = 0; i < 128; i++)
     {
@@ -118,8 +121,8 @@ VoxelRayTracingHitPayload VoxelRaytracingSingleCascade(CascadeInfo cascadeInfo, 
 		// avoid duplicate texture sample in same location
         if (needReadBitOccupy)
         {
-            int3 readIndex = ClipmapAddressMapping(voxelIndex, cascadeInfo.resolution, cascadeInfo.moveOffset, cascadeInfo.cascadeIndex);
-            bitOccupy = bitOccupyClipmap.Load(int4(readIndex, 0)).xy;
+            clipmapAccessIndex = ClipmapAddressMapping(voxelIndex, cascadeInfo.resolution, cascadeInfo.moveOffset, cascadeInfo.cascadeIndex);
+            bitOccupy = bitOccupyClipmap.Load(int4(clipmapAccessIndex, 0)).xy;
             needReadBitOccupy = false;
         }
 
@@ -155,6 +158,7 @@ VoxelRayTracingHitPayload VoxelRaytracingSingleCascade(CascadeInfo cascadeInfo, 
     payload.isHit = hitMask;
     payload.voxelIndex = voxelIndex;
     payload.cascadeIndex = cascadeInfo.cascadeIndex;
+    payload.clipmapAccessIndex = clipmapAccessIndex;
 
     float3 hitVoxelCenterPos = (floor(payload.position / cascadeInfo.voxelSize) + 0.5) * cascadeInfo.voxelSize;
     payload.debugColor = payload.isHit ? float3(length(payload.position - hitVoxelCenterPos) / (50.0 * (1 << payload.cascadeIndex)), 0, 0) : float3(0, 0, 0);

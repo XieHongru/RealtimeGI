@@ -1,9 +1,19 @@
 #ifndef GI_COMMON
 #define GI_COMMON
 
+#define OBJECT_ID_INVALID (-1)
 #define MAX_CARD_PER_MESH 12
 #define VOXEL_BLOCK_SIZE 4
 #define MAX_CASCADE_COUNT 4
+
+#define PAGE_ID_INVALID (0x3FFFFFFF)
+#define FREE_PAGE_POINTER (0)				// value in this index is pointer to next free page's id
+#define RELEASE_PAGE_POINTER (1)			// value in this index is pointer to next location to temporally store released page's id
+#define FREE_PAGE_POINTER_READ_ONLY (2)		// value same as FREE_PAGE_POINTER, for avoid data race when release pages
+#define RELEASE_PAGE_POINTER_READ_ONLY (3)	// value same as RELEASE_PAGE_POINTER, for avoid data race when release pages
+
+#define USE_DEBUG_COLOR 0
+
 
 struct ObjectInfo
 {
@@ -244,6 +254,12 @@ int3 ClipmapAddressMapping(int3 voxelIndex, int3 cascadeResolution, int3 cascade
 	// use 32*32*128 to represent 4 layer clipmap, single cascade is 32x32x32
     int3 accessIndex = roundIndex + int3(0, 0, blockResolution.z * cascadeIndex);
     return accessIndex;
+}
+
+int3 PageIdToPageOffset(int pageId, int3 numPagesInXYZ)
+{
+    int3 pageIndex3D = Index1DTo3D(pageId, numPagesInXYZ);
+    return pageIndex3D * VOXEL_BLOCK_SIZE;
 }
 
 #endif

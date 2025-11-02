@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.InteropServices;
 using Unity.Mathematics;
 using UnityEditor;
@@ -73,14 +74,18 @@ public class MiraiGIClipmap
 {
     Vector3Int m_VoxelResolution = new Vector3Int(128, 128, 128);
     Vector3Int m_UpdateChunkResolution = new Vector3Int(16, 16, 16);
+    Vector3Int m_VoxelPagePoolSize = new Vector3Int(32, 32, 32);
     const int CASCADE_COUNT = 4;
     const int MAX_OBJECT_NUM_PER_CASCADE = 2048;
     const int MAX_UPDATE_CHUNK_PER_FRAME = 16;
     const int MAX_OBJECT_NUM_PER_UPDATE_CHUNK = 64;
     const int MAX_CASCADE_COUNT = 4;
     const int VOXEL_BLOCK_SIZE = 4;
+    const int PAGE_ID_INVALID = (0x3FFFFFFF);
 
     RenderTexture m_VoxelMap;
+    RenderTexture m_VoxelPageClipmap;
+    RenderTexture m_VoxelPagePool;
     RenderTexture m_VisualizeColorTarget;
     RenderTexture m_VisualizeDepthTarget;
 
@@ -88,7 +93,7 @@ public class MiraiGIClipmap
     ObjectCullParams[] m_ObjectCullParams;
     ComputeBuffer[] m_ObjectCullParamsCB;
 
-    ComputeBuffer m_UpdateChunkList;
+    ComputeBuffer[] m_UpdateChunkList;
     ComputeBuffer m_ClipmapObjectCounter;
     ComputeBuffer m_ClipmapCullingResult;
     ComputeBuffer m_UpdateChunkCullingIndirectArgs;
@@ -96,17 +101,34 @@ public class MiraiGIClipmap
     ComputeBuffer m_UpdateChunkCullingResults;
     ComputeBuffer m_UpdateChunkObjectCounter;
 
+    ComputeBuffer m_VoxelPageAllocator;
+    ComputeBuffer m_VoxelPageFreeList;
+    ComputeBuffer m_VoxelPageReleaseList;
+    ComputeBuffer m_VoxelPageReleaseIndirectArgs;
+
     RenderTexture m_VoxelOccupy;
 
     ComputeShader m_CullObjectCS;
     ComputeShader m_VoxelInjectCS;
     ComputeShader m_VisualizeClipmapCS;
+    ComputeShader m_VoxelPageReleaseCS;
+    ComputeShader m_VoxelPageClipmapInitCS;
 
     public void CreateClipmap()
     {
-        m_VoxelMap = new RenderTexture(m_VoxelResolution.x / VOXEL_BLOCK_SIZE, m_VoxelResolution.y / VOXEL_BLOCK_SIZE, 0, RenderTextureFormat.RGInt);
+        m_CullObjectCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelClipmap/CullObject.compute");
+        m_VoxelInjectCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelClipmap/VoxelInject.compute");
+        m_VisualizeClipmapCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelClipmap/VisualizeClipmap.compute");
+        m_VoxelPageReleaseCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelClipmap/VoxelPageRelease.compute");
+        m_VoxelPageClipmapInitCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelClipmap/VoxelPageClipmapInit.compute");
+
+        Vector3Int clipmapResolution = new Vector3Int(m_VoxelResolution.x / VOXEL_BLOCK_SIZE, 
+                                                        m_VoxelResolution.y / VOXEL_BLOCK_SIZE, 
+                                                        m_VoxelResolution.z * CASCADE_COUNT / VOXEL_BLOCK_SIZE);
+
+        m_VoxelMap = new RenderTexture(clipmapResolution.x, clipmapResolution.y, 0, RenderTextureFormat.RGInt);
         m_VoxelMap.dimension = TextureDimension.Tex3D;
-        m_VoxelMap.volumeDepth = m_VoxelResolution.z * CASCADE_COUNT / VOXEL_BLOCK_SIZE;
+        m_VoxelMap.volumeDepth = clipmapResolution.z;
         m_VoxelMap.enableRandomWrite = true;
         m_VoxelMap.Create();
 
@@ -125,6 +147,8 @@ public class MiraiGIClipmap
         m_CascadeInfos = new MiraiGICascadeInfo[CASCADE_COUNT];
         m_ObjectCullParams = new ObjectCullParams[CASCADE_COUNT];
         m_ObjectCullParamsCB = new ComputeBuffer[CASCADE_COUNT];
+
+        m_UpdateChunkList = new ComputeBuffer[CASCADE_COUNT];
 
         Vector3Int updateChunkDimension = new Vector3Int(
             m_VoxelResolution.x / m_UpdateChunkResolution.x,
@@ -147,13 +171,50 @@ public class MiraiGIClipmap
 
             m_ObjectCullParams[cascadeId] = new ObjectCullParams();
             m_ObjectCullParamsCB[cascadeId] = new ComputeBuffer(1, Marshal.SizeOf<ObjectCullParams>());
+
+            m_UpdateChunkList[cascadeId] = new ComputeBuffer(MAX_UPDATE_CHUNK_PER_FRAME, sizeof(int), ComputeBufferType.Raw);
         }
 
-        m_UpdateChunkList = new ComputeBuffer(MAX_UPDATE_CHUNK_PER_FRAME, sizeof(int), ComputeBufferType.Raw);
+        // page table
+        m_VoxelPageClipmap = new RenderTexture(clipmapResolution.x, clipmapResolution.y, 0, RenderTextureFormat.RInt);
+        m_VoxelPageClipmap.dimension = TextureDimension.Tex3D;
+        m_VoxelPageClipmap.volumeDepth = clipmapResolution.z;
+        m_VoxelPageClipmap.enableRandomWrite = true;
 
-        m_CullObjectCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelClipmap/CullObject.compute");
-        m_VoxelInjectCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelClipmap/VoxelInject.compute");
-        m_VisualizeClipmapCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelClipmap/VisualizeClipmap.compute");
+        CommandBuffer cmd = CommandBufferPool.Get("Init Voxel Page Clipmap");
+
+        cmd.SetComputeTextureParam(m_VoxelPageClipmapInitCS, 0, Shader.PropertyToID("_RWVoxelPageClipmap"), m_VoxelPageClipmap);
+        cmd.DispatchCompute(m_VoxelPageClipmapInitCS, 0, clipmapResolution.x / 4, clipmapResolution.y / 4, clipmapResolution.z / 4);
+
+        Graphics.ExecuteCommandBuffer(cmd);
+        CommandBufferPool.Release(cmd);
+
+        // TODO: adaptive size, now for 128*128*128*4 clipmap we use 32x32x32 block pages (128x128x128 total)
+        // TODO: check if need re-create, 
+        Vector3Int numPagesInXYZ = m_VoxelPagePoolSize;
+        m_VoxelPagePool = new RenderTexture(numPagesInXYZ.x * VOXEL_BLOCK_SIZE, numPagesInXYZ.y * VOXEL_BLOCK_SIZE, 0, RenderTextureFormat.RGInt);
+        m_VoxelPagePool.dimension = TextureDimension.Tex3D;
+        m_VoxelPagePool.volumeDepth = numPagesInXYZ.z * VOXEL_BLOCK_SIZE;
+        m_VoxelPagePool.enableRandomWrite = true;
+
+        // page allocator
+        int numPages = numPagesInXYZ.x * numPagesInXYZ.y * numPagesInXYZ.z;
+        m_VoxelPageAllocator = new ComputeBuffer(4, sizeof(int), ComputeBufferType.Structured);
+        // TODO: fill 0
+
+        // free list
+        int numBytesFreeList = sizeof(uint) * numPages;
+        m_VoxelPageFreeList = new ComputeBuffer(numPages, sizeof(int), ComputeBufferType.Structured);
+        int[] freeList = new int[numPages];
+        for (int i = 0; i < freeList.Length; i++)
+        {
+            freeList[i] = i;
+        }
+        m_VoxelPageFreeList.SetData(freeList);
+
+        m_VoxelPageReleaseList = new ComputeBuffer(numPages, sizeof(int), ComputeBufferType.Structured);
+
+        m_VoxelPageReleaseIndirectArgs = new ComputeBuffer(3, sizeof(int), ComputeBufferType.IndirectArguments);
     }
 
     public void UpdateClipmap(Camera camera, MiraiGIGPUScene gpuScene)
@@ -173,8 +234,9 @@ public class MiraiGIClipmap
             VoxelInject(cmd, gpuScene, cascadeIndex);
         }
 
-        // TODO: solve view bug
-        VisualizeClipmap(cmd, camera);
+        ReleaseVoxelPage(cmd);
+
+        VisualizeClipmap(cmd, gpuScene, camera);
 
         Graphics.ExecuteCommandBuffer(cmd);
         CommandBufferPool.Release(cmd);
@@ -183,9 +245,13 @@ public class MiraiGIClipmap
     public void Release()
     {
         m_VoxelMap?.Release();
+        m_VoxelPageClipmap?.Release();
+        m_VoxelPagePool?.Release();
         m_VisualizeColorTarget?.Release();
         m_VisualizeDepthTarget?.Release();
         m_VoxelMap = null;
+        m_VoxelPageClipmap = null;
+        m_VoxelPagePool = null;
         m_VisualizeColorTarget = null;
         m_VisualizeDepthTarget = null;
 
@@ -193,19 +259,28 @@ public class MiraiGIClipmap
         {
             m_ObjectCullParamsCB[cascadeId]?.Release();
             m_ObjectCullParamsCB[cascadeId] = null;
+            m_UpdateChunkList[cascadeId]?.Release();
+            m_UpdateChunkList[cascadeId] = null;
         }
-        m_UpdateChunkList?.Release();
         m_ClipmapObjectCounter?.Release();
         m_ClipmapCullingResult?.Release();
         m_UpdateChunkCullingIndirectArgs?.Release();
         m_UpdateChunkCullingResults?.Release();
         m_UpdateChunkObjectCounter?.Release();
+        m_VoxelPageAllocator?.Release();
+        m_VoxelPageFreeList?.Release();
+        m_VoxelPageReleaseList?.Release();
+        m_VoxelPageReleaseIndirectArgs?.Release();
         m_UpdateChunkList = null;
         m_ClipmapObjectCounter = null;
         m_ClipmapCullingResult = null;
         m_UpdateChunkCullingIndirectArgs = null;
         m_UpdateChunkCullingResults = null;
         m_UpdateChunkObjectCounter = null;
+        m_VoxelPageAllocator = null;
+        m_VoxelPageFreeList = null;
+        m_VoxelPageReleaseList = null;
+        m_VoxelPageReleaseIndirectArgs = null;
     }
 
     void PrepareRenderResources()
@@ -362,7 +437,7 @@ public class MiraiGIClipmap
         //    }
         //}
 
-        m_UpdateChunkList.SetData(chunksToUpdate);
+        m_UpdateChunkList[cascadeIndex].SetData(chunksToUpdate);
 
         if (chunksToUpdate.Count > 0)
         {
@@ -424,7 +499,7 @@ public class MiraiGIClipmap
             kernel = m_CullObjectCS.FindKernel("CullObjectToUpdateChunk");
             // compute shader params
             cmd.SetComputeConstantBufferParam(m_CullObjectCS, Shader.PropertyToID("_Params"), m_ObjectCullParamsCB[cascadeIndex], 0, Marshal.SizeOf<ObjectCullParams>());
-            cmd.SetComputeBufferParam(m_CullObjectCS, kernel, Shader.PropertyToID("_UpdateChunkList"), m_UpdateChunkList);
+            cmd.SetComputeBufferParam(m_CullObjectCS, kernel, Shader.PropertyToID("_UpdateChunkList"), m_UpdateChunkList[cascadeIndex]);
             cmd.SetComputeBufferParam(m_CullObjectCS, kernel, Shader.PropertyToID("_ObjectsInfo"), scene.GPUSceneData.objectInfoBuffer);
             cmd.SetComputeBufferParam(m_CullObjectCS, kernel, Shader.PropertyToID("_ClipmapCullingResult"), m_ClipmapCullingResult);
             cmd.SetComputeBufferParam(m_CullObjectCS, kernel, Shader.PropertyToID("_ClipmapObjectCounter"), m_ClipmapObjectCounter);
@@ -445,16 +520,22 @@ public class MiraiGIClipmap
         cmd.SetComputeIntParam(m_VoxelInjectCS, Shader.PropertyToID("_SurfaceCacheAtlasResolution"), 2048);
         cmd.SetComputeIntParam(m_VoxelInjectCS, Shader.PropertyToID("_CascadeIndex"), cascadeIndex);
         cmd.SetComputeVectorParam(m_VoxelInjectCS, Shader.PropertyToID("_CascadeMoveOffset"), (Vector3)cascadeInfo.moveOffset);
+        cmd.SetComputeVectorParam(m_VoxelInjectCS, Shader.PropertyToID("_VoxelPagePoolSize"), (Vector3)m_VoxelPagePoolSize);
 
-        cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_UpdateChunkList"), m_UpdateChunkList);
+        cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_UpdateChunkList"), m_UpdateChunkList[cascadeIndex]);
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_UpdateChunkCullingResult"), m_UpdateChunkCullingResults);
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_UpdateChunkObjectCounter"), m_UpdateChunkObjectCounter);
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_ObjectsInfo"), scene.GPUSceneData.objectInfoBuffer);
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_CardMatrixBuffer"), scene.surfaceCache.GetCardMatrixBuffer());
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_CardUVTransformBuffer"), scene.surfaceCache.GetCardUVTransformBuffer());
+        cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPageAllocator"), m_VoxelPageAllocator);
+        cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPageFreeList"), m_VoxelPageFreeList);
+        cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPageReleaseList"), m_VoxelPageReleaseList);
 
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_SurfaceCacheAtlasDepth"), scene.surfaceCache.GetSurfaceCacheTexture(3));
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelBitOccupyClipmap"), m_VoxelMap);
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPageClipmap"), m_VoxelPageClipmap);
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPagePool"), m_VoxelPagePool);
 
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelOccupy"), m_VoxelOccupy);
 
@@ -467,7 +548,30 @@ public class MiraiGIClipmap
         }
     }
 
-    void VisualizeClipmap(CommandBuffer cmd, Camera camera)
+    void ReleaseVoxelPage(CommandBuffer cmd)
+    {
+        // 1. build indirect dispatch args
+        {
+            int kernel = m_VoxelPageReleaseCS.FindKernel("BuildVoxelPageReleaseIndirectArgs");
+            cmd.SetComputeIntParam(m_VoxelPageReleaseCS, Shader.PropertyToID("_NumThreadsForPageRelease"), 1);
+            cmd.SetComputeBufferParam(m_VoxelPageReleaseCS, kernel, Shader.PropertyToID("_RWVoxelPageAllocator"), m_VoxelPageAllocator);
+            cmd.SetComputeBufferParam(m_VoxelPageReleaseCS, kernel, Shader.PropertyToID("_RWIndirectArgs"), m_VoxelPageReleaseIndirectArgs);
+
+            cmd.DispatchCompute(m_VoxelPageReleaseCS, kernel, 1, 1, 1);
+        }
+
+        // 2. do give empty voxel pages back to free list
+        {
+            int kernel = m_VoxelPageReleaseCS.FindKernel("VoxelPageRelease");
+            cmd.SetComputeBufferParam(m_VoxelPageReleaseCS, kernel, Shader.PropertyToID("_VoxelPageReleaseList"), m_VoxelPageReleaseList);
+            cmd.SetComputeBufferParam(m_VoxelPageReleaseCS, kernel, Shader.PropertyToID("_RWVoxelPageAllocator"), m_VoxelPageAllocator);
+            cmd.SetComputeBufferParam(m_VoxelPageReleaseCS, kernel, Shader.PropertyToID("_RWVoxelPageFreeList"), m_VoxelPageFreeList);
+
+            cmd.DispatchCompute(m_VoxelPageReleaseCS, kernel, m_VoxelPageReleaseIndirectArgs, 0);
+        }
+    }
+
+    void VisualizeClipmap(CommandBuffer cmd, MiraiGIGPUScene scene, Camera camera)
     {
         Vector4[] cascadeCenterArray = new Vector4[MAX_CASCADE_COUNT];
         Vector4[] cascadeSizeArray = new Vector4[MAX_CASCADE_COUNT];
@@ -490,12 +594,16 @@ public class MiraiGIClipmap
         cmd.SetComputeMatrixParam(m_VisualizeClipmapCS, Shader.PropertyToID("_InvViewProjMat"), (camera.projectionMatrix * camera.worldToCameraMatrix).inverse);
 
         cmd.SetComputeIntParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeCount"), CASCADE_COUNT);
+        cmd.SetComputeVectorParam(m_VisualizeClipmapCS, Shader.PropertyToID("_VoxelPagePoolSize"), (Vector3)m_VoxelPagePoolSize);
         cmd.SetComputeVectorArrayParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeCenterArray"), cascadeCenterArray);
         cmd.SetComputeVectorArrayParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeSizeArray"), cascadeSizeArray);
         cmd.SetComputeVectorArrayParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeResolutionArray"), cascadeResolutionArray);
         cmd.SetComputeVectorArrayParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeMoveOffsetArray"), cascadeMoveOffsetArray);
 
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_BitOccupyClipmap"), m_VoxelMap);
+        cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_VoxelPageClipmap"), m_VoxelPageClipmap);
+        cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_VoxelPagePool"), m_VoxelPagePool);
+        cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_SurfaceCacheAtlasToVisualize"), scene.surfaceCache.GetSurfaceCacheTexture(0));
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_SceneDepthTexture"), Shader.GetGlobalTexture("_CameraDepthTexture"));
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_RWSceneColorTexture"), m_VisualizeColorTarget);
 

@@ -6,15 +6,21 @@ float4 _CameraPosition;
 float4x4 _InvViewProjMat;
 
 int _CascadeCount;
+int3 _VoxelPagePoolSize;
 float4 _CascadeCenterArray[MAX_CASCADE_COUNT];
 float4 _CascadeSizeArray[MAX_CASCADE_COUNT];
 float4 _CascadeResolutionArray[MAX_CASCADE_COUNT];
 float4 _CascadeMoveOffsetArray[MAX_CASCADE_COUNT];
 
 Texture3D<uint2> _BitOccupyClipmap;
+Texture3D<int> _VoxelPageClipmap;
+Texture3D<float2> _VoxelPagePool;
 Texture2D<float> _SceneDepthTexture;
 RWTexture2D<float4> _RWSceneColorTexture;
+Texture2D<float4> _SurfaceCacheAtlasToVisualize;
 Texture3D<int> _VoxelOccupy;
+
+SamplerState sampler_LinearClamp;
 
 float3 ReconstructWorldPositionFromDepth(float2 uv, float depth)
 {
@@ -51,6 +57,19 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     clipmapInfo.cascadeMoveOffsetArray = _CascadeMoveOffsetArray;
     
     VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _BitOccupyClipmap, _CameraPosition, rayDir);
+    
+    if (hit.isHit)
+    {
+        int voxelPageId = _VoxelPageClipmap.Load(uint4(hit.clipmapAccessIndex, 0)).r;
+        int3 pageOffset = PageIdToPageOffset(voxelPageId, _VoxelPagePoolSize);
+
+        int3 indexInsidePage = hit.voxelIndex % VOXEL_BLOCK_SIZE;
+        int3 indexInPool = pageOffset + indexInsidePage;
+        float2 uv = _VoxelPagePool.Load(uint4(indexInPool, 0)).xy;
+        float4 surfaceCacheColor = _SurfaceCacheAtlasToVisualize.SampleLevel(sampler_LinearClamp, uv, 0);
+
+    }
+    
     color += hit.debugColor;
 
     _RWSceneColorTexture[pixelCoord] = float4(color, 1);

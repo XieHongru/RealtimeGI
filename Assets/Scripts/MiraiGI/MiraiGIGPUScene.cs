@@ -37,7 +37,7 @@ public class MiraiGIGPUScene
 
     public void UpdateScene()
     {
-        surfaceCache.CaptureSurfaceCache(GPUSceneData.objectsInfo, GPUSceneData.objects, GPUSceneData.meshes);
+        //surfaceCache.CaptureSurfaceCache(GPUSceneData.objectsInfo, GPUSceneData.objects, GPUSceneData.meshes);
         //occupancyMap.CaptureOccupancyMapAtlas(GPUSceneData.objectsInfo, GPUSceneData.meshes);
         //m_SceneData.Update();
 

@@ -1,0 +1,10 @@
+#include "../../GICommon.hlsl"
+#pragma kernel VoxelPageClipmapInit
+
+RWTexture3D<int> _RWVoxelPageClipmap;
+
+[numthreads(4, 4, 4)]
+void VoxelPageClipmapInit(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    _RWVoxelPageClipmap[threadId] = PAGE_ID_INVALID;
+}
