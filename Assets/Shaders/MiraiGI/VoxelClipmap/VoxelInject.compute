@@ -21,8 +21,7 @@ int3 _VoxelPagePoolSize;
 StructuredBuffer<int> _UpdateChunkList;
 StructuredBuffer<int> _UpdateChunkCullingResult;
 StructuredBuffer<int> _UpdateChunkObjectCounter;
-StructuredBuffer<float4x4> _CardMatrixBuffer;
-StructuredBuffer<float4> _CardUVTransformBuffer;
+StructuredBuffer<CardInfo> _CardInfoBuffer;
 
 Texture2D _SurfaceCacheAtlasDepth;
 SamplerState sampler_LinearClamp;
@@ -34,7 +33,7 @@ RWTexture3D<int> _RWVoxelPageClipmap;
 RWStructuredBuffer<int> _RWVoxelPageAllocator;
 RWStructuredBuffer<int> _RWVoxelPageFreeList;
 RWStructuredBuffer<int> _RWVoxelPageReleaseList;
-RWTexture3D<float2> _RWVoxelPagePool;
+RWTexture3D<float4> _RWVoxelPagePool;
 
 groupshared bool gs_ThreadVoxelOccupy[64];
 groupshared int gs_VoxelPageId;
@@ -57,9 +56,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
     int numObjectsInUpdateChunk = _UpdateChunkObjectCounter[chunkIndex];
 
     bool hasVoxel = false;
-    float2 hitUVInAtlas = float2(0, 0);
-    int hitObjectId = OBJECT_ID_INVALID;
-    int hitCardId = -1;
+    VoxelPageData voxelPageData = GetEmptyPageData();
 
     // 1. loop all objects in update chunk, see if clipmap's voxel intersect with per object voxel
     for (int i = 0; i < numObjectsInUpdateChunk; i++)
@@ -88,18 +85,22 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
 
         for (int cardIndex = 0; cardIndex < cardCount; cardIndex++)
         {
-            float4x4 localToCard = _CardMatrixBuffer[cardOffset + cardIndex];
+            CardInfo cardInfo = _CardInfoBuffer[cardOffset + cardIndex];
+            float4x4 localToCard = cardInfo.localToCardMatrix;
             
-            //float3 cardUVZ = mul(float4(localPosition, 1), localToCard);
+            // 1.2.1. transform voxel pos to card capture's uv space (like shadowmap)
             float3 cardUVZ = mul(localToCard, float4(localPosition, 1));
             cardUVZ.xy = saturate(cardUVZ.xy * 0.5 + 0.5);
-
-            float4 cardSizeAndOffset = _CardUVTransformBuffer[cardOffset + cardIndex];
+            
+            // 1.2.2. map card capture uv to atlas uv
+            float4 cardSizeAndOffset = cardInfo.cardUVTransform;
             float4 UVTransform = cardSizeAndOffset / float(_SurfaceCacheAtlasResolution);
             cardUVZ.xy = cardUVZ.xy * UVTransform.xy + UVTransform.zw;
             cardUVZ.y = 1.0 - cardUVZ.y;
 
-            float cardDepth = WeightedBilinearFilter(_SurfaceCacheAtlasDepth, sampler_LinearClamp, cardUVZ.xy, _SurfaceCacheAtlasResolution);
+            // 1.2.3. sample mesh card depth atlas, do "height field" intersection
+            float4 outBilinearValidMask = float4(0, 0, 0, 0);
+            float cardDepth = SurfaceCacheSampleDepth(_SurfaceCacheAtlasDepth, sampler_LinearClamp, cardUVZ.xy, _SurfaceCacheAtlasResolution, outBilinearValidMask);
             float voxelDepth = (cardUVZ.z * 0.5f) + 0.5f;
 
             if (cardDepth == 0)
@@ -111,9 +112,10 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
             if (worldDistancce < voxelCellSize * 0.5)  // tolerance radius is sqrt(2) / 2, for unit cube
             {
                 hasVoxel = true;
-                hitUVInAtlas = cardUVZ.xy;
-                hitObjectId = objectId;
-                hitCardId = cardIndex;
+                voxelPageData.uvInAtlas = cardUVZ.xy;
+                voxelPageData.objectId = objectId;
+                voxelPageData.cardId = cardIndex;
+                voxelPageData.bilinearValidMask = outBilinearValidMask;
                 _RWVoxelOccupy[voxelIndex + uint3(0, 0, 128 * _CascadeIndex)] = 1;
                 break;
             }
@@ -175,8 +177,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
     // 5. every voxel write it's intersect result into voxel pool
     if (gs_VoxelPageId != PAGE_ID_INVALID)
     {
-        int3 pageOffset = PageIdToPageOffset(gs_VoxelPageId, _VoxelPagePoolSize);
-        int3 voxelWriteIndex = pageOffset + groupThreadId;
-        _RWVoxelPagePool[voxelWriteIndex] = hitUVInAtlas;
+        int3 writeIndex = PageAddressMapping(gs_VoxelPageId, _VoxelPagePoolSize, voxelIndex);
+        _RWVoxelPagePool[writeIndex] = EncodeVoxelPage(voxelPageData);
     }
 }

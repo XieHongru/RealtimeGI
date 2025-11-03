@@ -82,6 +82,7 @@ public class MiraiGIClipmap
     const int MAX_CASCADE_COUNT = 4;
     const int VOXEL_BLOCK_SIZE = 4;
     const int PAGE_ID_INVALID = (0x3FFFFFFF);
+    const int VISUALIZE_MODE = 0;
 
     RenderTexture m_VoxelMap;
     RenderTexture m_VoxelPageClipmap;
@@ -180,6 +181,7 @@ public class MiraiGIClipmap
         m_VoxelPageClipmap.dimension = TextureDimension.Tex3D;
         m_VoxelPageClipmap.volumeDepth = clipmapResolution.z;
         m_VoxelPageClipmap.enableRandomWrite = true;
+        m_VoxelPageClipmap.Create();
 
         CommandBuffer cmd = CommandBufferPool.Get("Init Voxel Page Clipmap");
 
@@ -192,10 +194,11 @@ public class MiraiGIClipmap
         // TODO: adaptive size, now for 128*128*128*4 clipmap we use 32x32x32 block pages (128x128x128 total)
         // TODO: check if need re-create, 
         Vector3Int numPagesInXYZ = m_VoxelPagePoolSize;
-        m_VoxelPagePool = new RenderTexture(numPagesInXYZ.x * VOXEL_BLOCK_SIZE, numPagesInXYZ.y * VOXEL_BLOCK_SIZE, 0, RenderTextureFormat.RGInt);
+        m_VoxelPagePool = new RenderTexture(numPagesInXYZ.x * VOXEL_BLOCK_SIZE, numPagesInXYZ.y * VOXEL_BLOCK_SIZE, 0, RenderTextureFormat.ARGBFloat);
         m_VoxelPagePool.dimension = TextureDimension.Tex3D;
         m_VoxelPagePool.volumeDepth = numPagesInXYZ.z * VOXEL_BLOCK_SIZE;
         m_VoxelPagePool.enableRandomWrite = true;
+        m_VoxelPagePool.Create();
 
         // page allocator
         int numPages = numPagesInXYZ.x * numPagesInXYZ.y * numPagesInXYZ.z;
@@ -526,8 +529,7 @@ public class MiraiGIClipmap
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_UpdateChunkCullingResult"), m_UpdateChunkCullingResults);
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_UpdateChunkObjectCounter"), m_UpdateChunkObjectCounter);
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_ObjectsInfo"), scene.GPUSceneData.objectInfoBuffer);
-        cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_CardMatrixBuffer"), scene.surfaceCache.GetCardMatrixBuffer());
-        cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_CardUVTransformBuffer"), scene.surfaceCache.GetCardUVTransformBuffer());
+        cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_CardInfoBuffer"), scene.surfaceCache.GetCardInfoBuffer());
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPageAllocator"), m_VoxelPageAllocator);
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPageFreeList"), m_VoxelPageFreeList);
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPageReleaseList"), m_VoxelPageReleaseList);
@@ -593,8 +595,10 @@ public class MiraiGIClipmap
         cmd.SetComputeVectorParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CameraPosition"), camera.transform.position);
         cmd.SetComputeMatrixParam(m_VisualizeClipmapCS, Shader.PropertyToID("_InvViewProjMat"), (camera.projectionMatrix * camera.worldToCameraMatrix).inverse);
 
+        cmd.SetComputeIntParam(m_VisualizeClipmapCS, Shader.PropertyToID("_VisualizeMode"), VISUALIZE_MODE);
         cmd.SetComputeIntParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeCount"), CASCADE_COUNT);
         cmd.SetComputeVectorParam(m_VisualizeClipmapCS, Shader.PropertyToID("_VoxelPagePoolSize"), (Vector3)m_VoxelPagePoolSize);
+        cmd.SetComputeIntParam(m_VisualizeClipmapCS, Shader.PropertyToID("_SurfaceCacheAtlasResolution"), 2048);
         cmd.SetComputeVectorArrayParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeCenterArray"), cascadeCenterArray);
         cmd.SetComputeVectorArrayParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeSizeArray"), cascadeSizeArray);
         cmd.SetComputeVectorArrayParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeResolutionArray"), cascadeResolutionArray);
@@ -603,9 +607,10 @@ public class MiraiGIClipmap
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_BitOccupyClipmap"), m_VoxelMap);
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_VoxelPageClipmap"), m_VoxelPageClipmap);
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_VoxelPagePool"), m_VoxelPagePool);
-        cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_SurfaceCacheAtlasToVisualize"), scene.surfaceCache.GetSurfaceCacheTexture(0));
+        cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_SurfaceCacheAtlasToVisualize"), scene.surfaceCache.GetSurfaceCacheTexture(VISUALIZE_MODE));
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_SceneDepthTexture"), Shader.GetGlobalTexture("_CameraDepthTexture"));
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_RWSceneColorTexture"), m_VisualizeColorTarget);
+        cmd.SetComputeBufferParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_ObjectsInfo"), scene.GPUSceneData.objectInfoBuffer);
 
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_VoxelOccupy"), m_VoxelOccupy);
 

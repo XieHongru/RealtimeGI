@@ -1,13 +1,12 @@
+#include "../../GICommon.hlsl"
 #pragma kernel SurfaceInfoUpdate
 
 #define MAX_CARD_PER_MESH 12
 
 int _ObjectCount;
 StructuredBuffer<int> _CardInfoWriteOffsetUploadBuffer;
-StructuredBuffer<float4x4> _CardMatrixUploadBuffer;
-StructuredBuffer<float4> _CardUVTransformUploadBuffer;
-RWStructuredBuffer<float4x4> _RWCardMatrixBuffer;
-RWStructuredBuffer<float4> _RWCardUVTransformBuffer;
+StructuredBuffer<CardInfo> _CardInfoUploadBuffer;
+RWStructuredBuffer<CardInfo> _RWCardInfoBuffer;
 
 [numthreads(8, 1, 1)]
 void SurfaceInfoUpdate(uint3 threadId : SV_DispatchThreadID)
@@ -21,7 +20,6 @@ void SurfaceInfoUpdate(uint3 threadId : SV_DispatchThreadID)
 
     for (int cardIndex = 0; cardIndex < MAX_CARD_PER_MESH; cardIndex++)
     {
-        _RWCardMatrixBuffer[cardWriteOffset + cardIndex] = _CardMatrixUploadBuffer[cardReadOffset + cardIndex];
-        _RWCardUVTransformBuffer[cardWriteOffset + cardIndex] = _CardUVTransformUploadBuffer[cardReadOffset + cardIndex];
+        _RWCardInfoBuffer[cardWriteOffset + cardIndex] = _CardInfoUploadBuffer[cardReadOffset + cardIndex];
     }
 }

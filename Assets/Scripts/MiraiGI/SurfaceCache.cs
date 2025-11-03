@@ -15,6 +15,13 @@ public struct CardCaptureParams
     public Vector4[]    viewportInfos;
 };
 
+public struct CardInfoGPUData
+{
+    public Matrix4x4 localToCardMatrix;
+    public Matrix4x4 cardToLocalMatrix;
+    public Vector4 cardUVTransform;
+}
+
 public class CardCaptureMeshBatch
 {
     public int objectId;
@@ -47,24 +54,17 @@ public class SurfaceCache
     List<CardCaptureMeshBatch> m_CaptureMeshBatches;
 
     ComputeBuffer m_CardInfoWriteOffsetUploadBuffer;
-    ComputeBuffer m_CardMatrixUploadBuffer;
-    ComputeBuffer m_CardUVTransformUploadBuffer;
-    ComputeBuffer m_CardMatrixBuffer;
-    ComputeBuffer m_CardUVTransformBuffer;
+    ComputeBuffer m_CardInfoUploadBuffer;
+    ComputeBuffer m_CardInfoBuffer;
 
     int m_CardClearQuadsCount;
     ComputeBuffer m_CardClearQuadUVTransformBuffer;
 
     ComputeShader m_CardInfosSyncCS;
 
-    public ComputeBuffer GetCardMatrixBuffer()
+    public ComputeBuffer GetCardInfoBuffer()
     { 
-        return m_CardMatrixBuffer;
-    }
-
-    public ComputeBuffer GetCardUVTransformBuffer()
-    {
-        return m_CardUVTransformBuffer;
+        return m_CardInfoBuffer;
     }
 
     public RenderTexture GetSurfaceCacheTexture(int index)
@@ -97,10 +97,8 @@ public class SurfaceCache
         m_SurfaceCacheAtlasAllocator.TryInit(m_AtlasResolution);
 
         m_CardInfoWriteOffsetUploadBuffer = new ComputeBuffer(MAX_OBJECT_COUNT, sizeof(int), ComputeBufferType.Default);
-        m_CardMatrixUploadBuffer = new ComputeBuffer(MAX_OBJECT_COUNT * MAX_CARD_PER_MESH, sizeof(float) * 16, ComputeBufferType.Raw);
-        m_CardUVTransformUploadBuffer = new ComputeBuffer(MAX_OBJECT_COUNT * MAX_CARD_PER_MESH, sizeof(float) * 4, ComputeBufferType.Raw);
-        m_CardMatrixBuffer = new ComputeBuffer(MAX_OBJECT_COUNT * MAX_CARD_PER_MESH, sizeof(float) * 16, ComputeBufferType.Structured);
-        m_CardUVTransformBuffer = new ComputeBuffer(MAX_OBJECT_COUNT * MAX_CARD_PER_MESH, sizeof(float) * 4, ComputeBufferType.Structured);
+        m_CardInfoUploadBuffer = new ComputeBuffer(MAX_OBJECT_COUNT * MAX_CARD_PER_MESH, Marshal.SizeOf<CardInfoGPUData>(), ComputeBufferType.Structured);
+        m_CardInfoBuffer = new ComputeBuffer(MAX_OBJECT_COUNT * MAX_CARD_PER_MESH, Marshal.SizeOf<CardInfoGPUData>(), ComputeBufferType.Structured);
         m_CardClearQuadUVTransformBuffer = new ComputeBuffer(MAX_OBJECT_COUNT * MAX_CARD_PER_MESH, sizeof(float) * 4, ComputeBufferType.Raw);
 
         m_CardInfosSyncCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/SurfaceCache/SurfaceCacheInfoSync.compute");
@@ -115,10 +113,8 @@ public class SurfaceCache
         m_DepthStencil.Release();
 
         m_CardInfoWriteOffsetUploadBuffer.Release();
-        m_CardMatrixUploadBuffer.Release();
-        m_CardUVTransformUploadBuffer.Release();
-        m_CardMatrixBuffer.Release();
-        m_CardUVTransformBuffer.Release();
+        m_CardInfoUploadBuffer.Release();
+        m_CardInfoBuffer.Release();
         m_CardClearQuadUVTransformBuffer.Release();
     }
 
@@ -127,8 +123,7 @@ public class SurfaceCache
         // 1. build data on cpu
         int uploadDataOffset = 0;
         List<int> cardOffsets = new List<int>();
-        Matrix4x4[] localToCardMatrices = new Matrix4x4[objectCount * MAX_CARD_PER_MESH];
-        Vector4[] cardUVTransforms = new Vector4[objectCount * MAX_CARD_PER_MESH];
+        CardInfoGPUData[] cardInfoUploadData = new CardInfoGPUData[objectCount * MAX_CARD_PER_MESH];
 
         foreach (CardCaptureMeshBatch meshBatch in m_CaptureMeshBatches)
         {
@@ -138,8 +133,9 @@ public class SurfaceCache
 
             for (int cardIndex = 0; cardIndex < meshBatch.cardCount; cardIndex++)
             {
-                localToCardMatrices[uploadDataOffset + cardIndex] = meshBatch.localToCardMatrices[cardIndex];
-                cardUVTransforms[uploadDataOffset + cardIndex] = meshBatch.cardUVTransforms[cardIndex];
+                cardInfoUploadData[uploadDataOffset + cardIndex].localToCardMatrix = meshBatch.localToCardMatrices[cardIndex];
+                cardInfoUploadData[uploadDataOffset + cardIndex].cardToLocalMatrix = meshBatch.localToCardMatrices[cardIndex].inverse;
+                cardInfoUploadData[uploadDataOffset + cardIndex].cardUVTransform = meshBatch.cardUVTransforms[cardIndex];
             }
 
             uploadDataOffset += MAX_CARD_PER_MESH;
@@ -150,31 +146,24 @@ public class SurfaceCache
             m_CardInfoWriteOffsetUploadBuffer.SetData(cardOffsets);
         }
 
-        // 3. upload per-object card transform matrix
+        // 3. upload per-object card data
         {
-            m_CardMatrixUploadBuffer.SetData(localToCardMatrices);
+            m_CardInfoUploadBuffer.SetData(cardInfoUploadData);
         }
 
-        // 4. upload per-object card's uv transform address in atlas
-        {
-            m_CardUVTransformUploadBuffer.SetData(cardUVTransforms);
-        }
-
-        // 5. copy data from transient buffer to RW buffer
+        // 4. copy data from transient buffer to RW buffer
         {
             int kernel = m_CardInfosSyncCS.FindKernel("SurfaceInfoUpdate");
 
             cmd.SetComputeIntParam(m_CardInfosSyncCS, Shader.PropertyToID("_ObjectCount"), objectCount);
             cmd.SetComputeBufferParam(m_CardInfosSyncCS, kernel, Shader.PropertyToID("_CardInfoWriteOffsetUploadBuffer"), m_CardInfoWriteOffsetUploadBuffer);
-            cmd.SetComputeBufferParam(m_CardInfosSyncCS, kernel, Shader.PropertyToID("_CardMatrixUploadBuffer"), m_CardMatrixUploadBuffer);
-            cmd.SetComputeBufferParam(m_CardInfosSyncCS, kernel, Shader.PropertyToID("_CardUVTransformUploadBuffer"), m_CardUVTransformUploadBuffer);
-            cmd.SetComputeBufferParam(m_CardInfosSyncCS, kernel, Shader.PropertyToID("_RWCardMatrixBuffer"), m_CardMatrixBuffer);
-            cmd.SetComputeBufferParam(m_CardInfosSyncCS, kernel, Shader.PropertyToID("_RWCardUVTransformBuffer"), m_CardUVTransformBuffer);
+            cmd.SetComputeBufferParam(m_CardInfosSyncCS, kernel, Shader.PropertyToID("_CardInfoUploadBuffer"), m_CardInfoUploadBuffer);
+            cmd.SetComputeBufferParam(m_CardInfosSyncCS, kernel, Shader.PropertyToID("_RWCardInfoBuffer"), m_CardInfoBuffer);
 
             cmd.DispatchCompute(m_CardInfosSyncCS, kernel, Mathf.CeilToInt((float)objectCount / 8), 1, 1);
         }
 
-        // 6. TODO: fill data for removed object's cards cleaning, and upload card clear list
+        // 5. TODO: fill data for removed object's cards cleaning, and upload card clear list
     }
 
     public void CaptureSurfaceCache(List<ObjectInfo> objectsInfo, List<GameObject> objects, List<Mesh> meshes)

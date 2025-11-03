@@ -37,6 +37,21 @@ struct MeshInfo
     int vertexCount;
 };
 
+struct CardInfo
+{
+    float4x4 localToCardMatrix;
+    float4x4 cardToLocalMatrix;
+    float4 cardUVTransform;
+};
+
+struct VoxelPageData
+{
+    float2 uvInAtlas;
+    int objectId;
+    int cardId;
+    float4 bilinearValidMask;
+};
+
 StructuredBuffer<ObjectInfo>    _ObjectsInfo;
 StructuredBuffer<MeshInfo>      _MeshInfo;
 StructuredBuffer<float3>        _VertexBuffer;
@@ -167,33 +182,27 @@ float3 CalcVoxelCenterPos(float3 index, float3 voxelResolution, float3 boundsCen
     return result;
 }
 
-float WeightedBilinearFilter(Texture2D depthTextureAtlas, SamplerState linearSampler, float2 uv, float atlasResolution)
+float MaskedBilinearFilter(float4 gatherResult, float2 uv, float atlasResolution, float4 validMask)
 {
     float2 lerpFactor = frac(uv * atlasResolution + 0.5 / atlasResolution);
-    float4 rawDepth = depthTextureAtlas.GatherRed(linearSampler, uv);
 
-	// hit background color, nothing in voxel
-    if (all(rawDepth == 0))
-    {
-        return 0;
-    }
-
-    float minDepth = 1.0;
+	// find min value from all valid value
+    float minValue = 1e5;
     for (int i = 0; i < 4; i++)
     {
-        if (rawDepth[i] != 0)
+        if (validMask[i] != 0)
         {
-            minDepth = min(minDepth, rawDepth[i]);
+            minValue = min(minValue, gatherResult[i]);
         }
     }
 
 	// 0 is background, but may cause artifact when bilinear filter, we replace zero value using min value
 	// we assume 4 depth represent continuous "height field"
-    float4 filterDepth = float4(
-		rawDepth.x == 0 ? minDepth : rawDepth.x,
-		rawDepth.y == 0 ? minDepth : rawDepth.y,
-		rawDepth.z == 0 ? minDepth : rawDepth.z,
-		rawDepth.w == 0 ? minDepth : rawDepth.w
+    float4 filterValue = float4(
+		validMask.x == 0 ? minValue : gatherResult.x,
+		validMask.y == 0 ? minValue : gatherResult.y,
+		validMask.z == 0 ? minValue : gatherResult.z,
+		validMask.w == 0 ? minValue : gatherResult.w
 	);
 
 	/*
@@ -201,11 +210,42 @@ float WeightedBilinearFilter(Texture2D depthTextureAtlas, SamplerState linearSam
 	|   |
 	x - y
 	*/
-    float xLerp0 = lerp(filterDepth.x, filterDepth.y, lerpFactor.x);
-    float xLerp1 = lerp(filterDepth.w, filterDepth.z, lerpFactor.x);
+    float xLerp0 = lerp(filterValue.x, filterValue.y, lerpFactor.x);
+    float xLerp1 = lerp(filterValue.w, filterValue.z, lerpFactor.x);
     float yLerp = lerp(xLerp0, xLerp1, lerpFactor.y);
 
     return yLerp;
+}
+
+float SurfaceCacheSampleDepth(Texture2D depthTextureAtlas, SamplerState linearSampler, float2 uv, float atlasResolution, out float4 outValidMask)
+{
+    float4 rawDepth = depthTextureAtlas.GatherRed(linearSampler, uv);
+
+	// depth tex represent rim detect result of mesh card, so we record and reuse it later when sample BaseColor, Normal and Emission
+    outValidMask = (rawDepth != 0);
+
+	// hit background color, nothing in voxel
+    if (all(rawDepth == 0))
+    {
+        return 0;
+    }
+
+    float depth = MaskedBilinearFilter(rawDepth, uv, atlasResolution, outValidMask);
+    return depth;
+}
+
+float3 SurfaceCacheSampleColor(Texture2D surfaceCacheAtlas, SamplerState linearSampler, float2 uv, float atlasResolution, float4 validMask)
+{
+    float4 gatherRed = surfaceCacheAtlas.GatherRed(linearSampler, uv);
+    float4 gatherGreen = surfaceCacheAtlas.GatherGreen(linearSampler, uv);
+    float4 gatherBlue = surfaceCacheAtlas.GatherBlue(linearSampler, uv);
+
+    float3 color = float3(0, 0, 0);
+    color.r = MaskedBilinearFilter(gatherRed, uv, atlasResolution, validMask);
+    color.g = MaskedBilinearFilter(gatherGreen, uv, atlasResolution, validMask);
+    color.b = MaskedBilinearFilter(gatherBlue, uv, atlasResolution, validMask);
+
+    return color;
 }
 
 void SetUint32SingleBit(inout uint u32, uint bitId, bool b)
@@ -256,10 +296,60 @@ int3 ClipmapAddressMapping(int3 voxelIndex, int3 cascadeResolution, int3 cascade
     return accessIndex;
 }
 
-int3 PageIdToPageOffset(int pageId, int3 numPagesInXYZ)
+int3 PageAddressMapping(int pageId, int3 numPagesInXYZ, int3 voxelIndex)
 {
+	// note: each "page" is same size as "block", which 4x4x4
+    int3 indexInsidePage = voxelIndex % VOXEL_BLOCK_SIZE;
+
     int3 pageIndex3D = Index1DTo3D(pageId, numPagesInXYZ);
-    return pageIndex3D * VOXEL_BLOCK_SIZE;
+    int3 pageOffset = pageIndex3D * VOXEL_BLOCK_SIZE;
+
+    int3 indexInPool = pageOffset + indexInsidePage;
+    return indexInPool;
+}
+
+float4 EncodeVoxelPage(VoxelPageData pageData)
+{
+    float4 result;
+    result.xy = pageData.uvInAtlas;
+    result.z = pageData.objectId;
+
+    int validMask = 0;
+    validMask += pageData.bilinearValidMask[0] == 0 ? 0 : (1 << 0);
+    validMask += pageData.bilinearValidMask[1] == 0 ? 0 : (1 << 1);
+    validMask += pageData.bilinearValidMask[2] == 0 ? 0 : (1 << 2);
+    validMask += pageData.bilinearValidMask[3] == 0 ? 0 : (1 << 3);
+
+    result.w = (pageData.cardId << 4) + validMask;
+
+    return result;
+}
+
+VoxelPageData DecodeVoxelPage(float4 encodedPage)
+{
+    VoxelPageData result;
+    result.uvInAtlas = encodedPage.xy;
+    result.objectId = encodedPage.z;
+
+    int cardIdAndMask = encodedPage.w;
+    int encodedMask = cardIdAndMask & 0x0F;
+
+    result.cardId = (cardIdAndMask >> 4) & 0x0F;
+
+    float4 validMask = float4(0, 0, 0, 0);
+    result.bilinearValidMask[0] = (encodedMask >> 0) & 0x01;
+    result.bilinearValidMask[1] = (encodedMask >> 1) & 0x01;
+    result.bilinearValidMask[2] = (encodedMask >> 2) & 0x01;
+    result.bilinearValidMask[3] = (encodedMask >> 3) & 0x01;
+
+    return result;
+}
+
+VoxelPageData GetEmptyPageData()
+{
+    VoxelPageData result = (VoxelPageData) 0;
+    result.objectId = OBJECT_ID_INVALID;
+    return result;
 }
 
 #endif
