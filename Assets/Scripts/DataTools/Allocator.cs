@@ -3,13 +3,13 @@ using System.Collections.Generic;
 using TreeEditor;
 using UnityEngine;
 
-public class LinearAllocator
+public class LinearAllocator<T> where T : System.IEquatable<T>
 {
     Queue<int> m_UnusedElementIds = new Queue<int>();
-    Dictionary<GameObject, int> m_AllocatedElementIds = new Dictionary<GameObject, int>();
+    Dictionary<T, int> m_AllocatedElementIds = new Dictionary<T, int>();
     int m_MaxNumElements = 0;
 
-    public void TryInit(int numElements)
+    public void Init(int numElements)
     {
         if (m_MaxNumElements == 0)
         {
@@ -23,7 +23,7 @@ public class LinearAllocator
         // @TODO: change size
     }
 
-    public int ReleaseElement(GameObject keyValue)
+    public int ReleaseElement(T keyValue)
     {
         if (!m_AllocatedElementIds.TryGetValue(keyValue, out int freeId))
         {
@@ -42,7 +42,7 @@ public class LinearAllocator
         return freeId;
     }
 
-    public int AllocateElement(GameObject keyValue)
+    public int AllocateElement(T keyValue)
     {
         if (m_UnusedElementIds.Count == 0)
         {
@@ -55,12 +55,12 @@ public class LinearAllocator
         return id;
     }
 
-    public bool Find(GameObject keyValue, out int outId)
+    public bool Find(T keyValue, out int outId)
     {
         return m_AllocatedElementIds.TryGetValue(keyValue, out outId);
     }
 
-    public bool Find(GameObject keyValue)
+    public bool Find(T keyValue)
     {
         return m_AllocatedElementIds.ContainsKey(keyValue);
     }
@@ -126,7 +126,7 @@ class QuadTreeAllocator
         return m_MaxNodeSize; 
     }
 
-    public void TryInit(int inAtlasResolution)
+    public void Init(int inAtlasResolution)
     {
         if (m_AtlasResolution == 0)
         {

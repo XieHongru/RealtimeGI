@@ -3,12 +3,25 @@ using System.Runtime.InteropServices;
 using UnityEditor;
 using UnityEngine;
 
-public struct ObjectInfo
+public class ObjectInfo
 {
     public int objectId;
-    public int cardCount;
-    public int resolution;
     public int meshId;
+    public int surfaceCacheId;
+    public SurfaceCacheKey surfaceCacheKey;
+
+    public Vector4 localBoundsMin;
+    public Vector4 localBoundsMax;
+    public Vector4 worldBoundsMin;
+    public Vector4 worldBoundsMax;
+    public Matrix4x4 localToWorldMatrix;
+    public Matrix4x4 worldToLocalMatrix;
+}
+
+public struct ObjectInfoGPUData
+{
+    public int objectId;
+    public int surfaceCacheId;
 
     public Vector4 localBoundsMin;
     public Vector4 localBoundsMax;
@@ -44,7 +57,9 @@ public class GPUSceneData
     public List<MeshInfo>   meshesInfo;         // all meshes info in scene
     public List<Vector3>    vertices;           // all vertices in scene (local position)
     public List<int>        indices;            // all meshes tri indices in scene
-    public Dictionary<Mesh, MeshInfo> meshMap;  //
+    public Dictionary<Mesh, MeshInfo> meshMap;
+
+    public List<ObjectInfoGPUData> objectInfoGPUData;
 
     public Vector3 cameraPositionPrev;
     public Vector3 cameraPosition;
@@ -62,16 +77,17 @@ public class GPUSceneData
         vertices    = new List<Vector3>();
         indices     = new List<int>();
         meshMap     = new Dictionary<Mesh, MeshInfo>();
+        objectInfoGPUData = new List<ObjectInfoGPUData>();
 
         // init for all scene objects
         GetAllObjects();
 
         cameraPosition = Camera.main.transform.position;
 
-        objectInfoBuffer = new ComputeBuffer(objectsInfo.Count, Marshal.SizeOf<ObjectInfo>(), ComputeBufferType.Structured);
+        objectInfoBuffer = new ComputeBuffer(objectsInfo.Count, Marshal.SizeOf<ObjectInfoGPUData>(), ComputeBufferType.Structured);
         vertexBuffer = new ComputeBuffer(vertices.Count, sizeof(float) * 3, ComputeBufferType.Structured);
         indexBuffer = new ComputeBuffer(indices.Count, sizeof(int), ComputeBufferType.Structured);
-        objectInfoBuffer.SetData(objectsInfo);
+        
         vertexBuffer.SetData(vertices);
         indexBuffer.SetData(indices);
     }
@@ -108,8 +124,6 @@ public class GPUSceneData
 
                 ObjectInfo objectInfo = new ObjectInfo();
                 objectInfo.objectId = objectsInfo.Count;
-                objectInfo.cardCount = 6;
-                objectInfo.resolution = 32;
                 if (meshMap.ContainsKey(mesh))
                 {
                     objectInfo.meshId = meshMap[mesh].meshId;

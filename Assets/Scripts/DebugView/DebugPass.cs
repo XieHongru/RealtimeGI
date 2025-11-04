@@ -34,7 +34,7 @@ public class DebugPass : ScriptableRenderPass
             m_MiraiGIGPUScene = GameObject.Find("GIController").GetComponent<GIController>().miraiGIGPUScene;
         }
 
-        m_MiraiGIGPUScene.UpdateDebugInfo(voxelSize, cascadeMin, cascadeMax);
+        //m_MiraiGIGPUScene.UpdateDebugInfo(voxelSize, cascadeMin, cascadeMax);
 
         m_DebugMaterial.SetInteger("_DebugMode", (int)debugMode);
         m_DebugMaterial.SetFloatArray("_VoxelSize", voxelSize);

@@ -21,6 +21,7 @@ int3 _VoxelPagePoolSize;
 StructuredBuffer<int> _UpdateChunkList;
 StructuredBuffer<int> _UpdateChunkCullingResult;
 StructuredBuffer<int> _UpdateChunkObjectCounter;
+StructuredBuffer<SurfaceCacheInfo> _SurfaceCacheInfoBuffer;
 StructuredBuffer<CardInfo> _CardInfoBuffer;
 
 Texture2D _SurfaceCacheAtlasDepth;
@@ -79,9 +80,11 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         float3 objectWorldBound = objectLocalBoundSize * objectWorldScale;
         float objectWorldBoundSize = max(max(objectWorldBound.x, objectWorldBound.y), objectWorldBound.z); // @TODO: select xyz component for different card orientation
 
-        int cardCount = objectInfo.cardCount;
-        int cardResolution = objectInfo.resolution;
-        int cardOffset = objectId * MAX_CARD_PER_MESH;
+        int surfaceCacheId = objectInfo.surfaceCacheId;
+        SurfaceCacheInfo surfaceCacheInfo = _SurfaceCacheInfoBuffer[surfaceCacheId];
+        int cardCount = surfaceCacheInfo.meshCardCount;
+        int cardResolution = surfaceCacheInfo.meshCardResolution;
+        int cardOffset = surfaceCacheId * MAX_CARD_PER_MESH;
 
         for (int cardIndex = 0; cardIndex < cardCount; cardIndex++)
         {

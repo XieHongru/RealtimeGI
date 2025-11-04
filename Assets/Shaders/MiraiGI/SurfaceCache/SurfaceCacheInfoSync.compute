@@ -3,20 +3,28 @@
 
 #define MAX_CARD_PER_MESH 12
 
-int _ObjectCount;
-StructuredBuffer<int> _CardInfoWriteOffsetUploadBuffer;
+int _SurfaceCacheCount;
+
 StructuredBuffer<CardInfo> _CardInfoUploadBuffer;
 RWStructuredBuffer<CardInfo> _RWCardInfoBuffer;
+
+StructuredBuffer<SurfaceCacheInfo> _SurfaceCacheInfoUploadBuffer;
+RWStructuredBuffer<SurfaceCacheInfo> _RWSurfaceCacheInfoBuffer;
 
 [numthreads(8, 1, 1)]
 void SurfaceInfoUpdate(uint3 threadId : SV_DispatchThreadID)
 {
     int index = threadId.x;
-    if (index >= _ObjectCount)
+    if (index >= _SurfaceCacheCount)
         return;
+    
+    SurfaceCacheInfo surfaceCacheInfo = _SurfaceCacheInfoUploadBuffer[index];
+    
+    int surfaceCacheId = surfaceCacheInfo.surfaceCacheId;
+    _RWSurfaceCacheInfoBuffer[surfaceCacheId] = surfaceCacheInfo;
 
     int cardReadOffset = index * MAX_CARD_PER_MESH;
-    int cardWriteOffset = _CardInfoWriteOffsetUploadBuffer[index];
+    int cardWriteOffset = surfaceCacheId * MAX_CARD_PER_MESH;
 
     for (int cardIndex = 0; cardIndex < MAX_CARD_PER_MESH; cardIndex++)
     {

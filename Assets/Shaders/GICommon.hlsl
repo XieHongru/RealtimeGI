@@ -18,9 +18,7 @@
 struct ObjectInfo
 {
     int objectId;
-    int cardCount;
-    int resolution;
-    int meshId;
+    int surfaceCacheId;
 
     float4 localBoundsMin;
     float4 localBoundsMax;
@@ -35,6 +33,14 @@ struct MeshInfo
     int meshId;
     int vertexOffset;
     int vertexCount;
+};
+
+struct SurfaceCacheInfo
+{
+    int surfaceCacheId;
+    int meshCardCount;
+    int meshCardResolution;
+    int refCount;
 };
 
 struct CardInfo

@@ -531,6 +531,7 @@ public class MiraiGIClipmap
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_UpdateChunkCullingResult"), m_UpdateChunkCullingResults);
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_UpdateChunkObjectCounter"), m_UpdateChunkObjectCounter);
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_ObjectsInfo"), scene.GPUSceneData.objectInfoBuffer);
+        cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_SurfaceCacheInfoBuffer"), scene.surfaceCache.GetSurfaceCacheInfoBuffer());
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_CardInfoBuffer"), scene.surfaceCache.GetCardInfoBuffer());
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPageAllocator"), m_VoxelPageAllocator);
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPageFreeList"), m_VoxelPageFreeList);
