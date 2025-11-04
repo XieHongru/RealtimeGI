@@ -49,14 +49,6 @@ Shader "Mirai/SurfaceCacheCapture"
         float4 _ViewportInfos[6];
     CBUFFER_END
 
-    float CalcOrientation(float3 inVec3, int orientation)
-    {
-        if(orientation == 0) return inVec3.x;
-        if(orientation == 1) return inVec3.y;
-        if(orientation == 2) return inVec3.z;
-        return 0;
-    }
-
     FragmentInput SurfaceCacheCaptureVS(VertexInput input)
     {
         FragmentInput output;

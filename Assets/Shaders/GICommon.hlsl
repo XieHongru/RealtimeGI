@@ -40,10 +40,9 @@ struct MeshInfo
 struct CardInfo
 {
     float4x4 localToCardMatrix;
-    float4x4 cardToLocalMatrix;
     float4 cardUVTransform;
 };
-
+    
 struct VoxelPageData
 {
     float2 uvInAtlas;

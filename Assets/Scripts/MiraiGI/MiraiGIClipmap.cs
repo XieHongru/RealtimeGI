@@ -396,13 +396,15 @@ public class MiraiGIClipmap
             Vector3Int chunkIndex3D = Index1DTo3DLinear(chunkIndex1d, chunkCountInXYZ);
             Vector3Int movedChunkIndex3D = chunkIndex3D - deltaChunk;
 
-            if (movedChunkIndex3D.x < 0 || movedChunkIndex3D.y < 0 || movedChunkIndex3D.z < 0 ||
-                movedChunkIndex3D.x > chunkCountInXYZ.x || movedChunkIndex3D.y > chunkCountInXYZ.y || movedChunkIndex3D.z > chunkCountInXYZ.z)
-            {
-                continue;
-            }
+            movedChunkIndex3D.x = movedChunkIndex3D.x % chunkCountInXYZ.x;
+            movedChunkIndex3D.y = movedChunkIndex3D.y % chunkCountInXYZ.y;
+            movedChunkIndex3D.z = movedChunkIndex3D.z % chunkCountInXYZ.z;
 
-            int movedChunkIndex1D = Index3DTo1DLinear(chunkIndex3D, chunkCountInXYZ);
+            movedChunkIndex3D.x += (movedChunkIndex3D.x < 0) ? chunkCountInXYZ.x : 0;
+            movedChunkIndex3D.y += (movedChunkIndex3D.y < 0) ? chunkCountInXYZ.y : 0;
+            movedChunkIndex3D.z += (movedChunkIndex3D.z < 0) ? chunkCountInXYZ.z : 0;
+
+            int movedChunkIndex1D = Index3DTo1DLinear(movedChunkIndex3D, chunkCountInXYZ);
             cascadeInfo.PushUpdateChunk(movedChunkIndex1D);
         }
 

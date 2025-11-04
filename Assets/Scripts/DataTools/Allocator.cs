@@ -162,6 +162,8 @@ class QuadTreeAllocator
 
     public void ReleaseElement(QuadTreeNode freeNode)
     {
+        if (freeNode.size == 0)
+            return;
         QuadTreeNode rootNode = GetRootNode();
         ReleaseElementRecursive(rootNode, freeNode);
     }

@@ -104,8 +104,8 @@ VoxelRayTracingHitPayload VoxelRaytracingSingleCascade(CascadeInfo cascadeInfo, 
 {
     float3 samplePoint = rayStart - cascadeInfo.center;
     int3 voxelIndex = int3(0, 0, 0);
+    int mipLevel = 0;
     bool hitMask = false;
-    uint2 bitOccupy = uint2(0, 0);
     bool needReadBitOccupy = true;
     int3 clipmapAccessIndex = uint3(0, 0, 0);
 
@@ -118,39 +118,26 @@ VoxelRayTracingHitPayload VoxelRaytracingSingleCascade(CascadeInfo cascadeInfo, 
             break;
         }
         
-		// avoid duplicate texture sample in same location
-        if (needReadBitOccupy)
-        {
-            clipmapAccessIndex = ClipmapAddressMapping(voxelIndex, cascadeInfo.resolution, cascadeInfo.moveOffset, cascadeInfo.cascadeIndex);
-            bitOccupy = bitOccupyClipmap.Load(int4(clipmapAccessIndex, 0)).xy;
-            needReadBitOccupy = false;
-        }
+        clipmapAccessIndex = ClipmapAddressMapping(voxelIndex, cascadeInfo.resolution, cascadeInfo.moveOffset, cascadeInfo.cascadeIndex);
+        uint2 bitOccupy = bitOccupyClipmap.Load(int4(clipmapAccessIndex, 0)).xy;
 
 		// 1. check if sample point hit mip 0,1,2 voxel
-        float3 mipHitMask = float3(0, 0, 0);
-        float3 mipMoveT = float3(0, 0, 0);
-
-        for (int mipLevel = 0; mipLevel <= 2; mipLevel++)
-        {
-            mipHitMask[mipLevel] = IsPointInsideVoxel(cascadeInfo, voxelIndex, bitOccupy, mipLevel);
-            mipMoveT[mipLevel] = MoveToNextCellDDA(cascadeInfo, samplePoint, rayDir, mipLevel);
-        }
-
+        bool isHitMip = IsPointInsideVoxel(cascadeInfo, voxelIndex, bitOccupy, mipLevel);
+        
 		// 2. if hit mip 0 (most accurate level) we assume ray actually hit
-        if (mipHitMask[0] > 0)
+        if (isHitMip && mipLevel == 0)
         {
             hitMask = true;
             break;
         }
 
-		// 3. move as far as we can
-        float3 mipMoveDistance = mipMoveT * (1 - mipHitMask);
-        float moveDistance = max(mipMoveDistance.x, max(mipMoveDistance.y, mipMoveDistance.z));
-        float3 newSamplePoint = samplePoint + rayDir * moveDistance;
+		// 3. if not hit in cur mip, we can skip entire cell by DDA march 1 step
+        float moveDistance = isHitMip ? 0 : MoveToNextCellDDA(cascadeInfo, samplePoint, rayDir, mipLevel);
+        samplePoint += rayDir * moveDistance;
 
-		// 4. if step into a different block, cached BitOccupy will be flushed
-        needReadBitOccupy = IsTwoPointInDifferentBlock(cascadeInfo, samplePoint, newSamplePoint);
-        samplePoint = newSamplePoint;
+		// 4. if hit in cur mip, we stay in place, just go down to more accurate mip level
+        mipLevel += isHitMip ? -1 : 1;
+        mipLevel = clamp(mipLevel, 0, 2);
     }
     
     VoxelRayTracingHitPayload payload;
