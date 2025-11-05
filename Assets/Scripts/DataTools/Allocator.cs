@@ -114,7 +114,7 @@ class QuadTreeAllocator
     public List<NodeAllocationInfo> m_NodeAllocationInfos;
     public int m_AtlasResolution = 0;
     public int m_MinNodeSize = 16;
-    public int m_MaxNodeSize = 256;
+    public int m_MaxNodeSize = 128;
 
     public int GetMinNodeSize() 
     { 

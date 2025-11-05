@@ -40,7 +40,6 @@ struct SurfaceCacheInfo
     int surfaceCacheId;
     int meshCardCount;
     int meshCardResolution;
-    int refCount;
 };
 
 struct CardInfo

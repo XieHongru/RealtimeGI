@@ -17,5 +17,11 @@ public class GlobalSettings : ScriptableObject
         }
     }
 
-    public float voxelSize = 0.5f;
+    public int maxObjectCount = 16384;
+    public int maxSurfaceCacheCount = 4096;
+    public int meshCardDefaultResolution = 32;
+    public float meshCardResolutionThreshold1 = 4;
+    public float meshCardResolutionThreshold2 = 16;
+    public float meshCardResolutionThreshold3 = 64;
+    public int adaptiveSurfaceCacheCount = 8;
 }

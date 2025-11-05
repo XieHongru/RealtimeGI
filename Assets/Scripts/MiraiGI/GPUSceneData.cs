@@ -8,6 +8,8 @@ public class ObjectInfo
     public int objectId;
     public int meshId;
     public int surfaceCacheId;
+
+    public GameObject gameObject;
     public SurfaceCacheKey surfaceCacheKey;
 
     public Vector4 localBoundsMin;
@@ -68,6 +70,8 @@ public class GPUSceneData
     public ComputeBuffer vertexBuffer;
     public ComputeBuffer indexBuffer;
 
+    const int OBJECT_ID_INVALID = -1;
+
     public void Init()
     {
         objects     = new List<GameObject>();
@@ -124,6 +128,8 @@ public class GPUSceneData
 
                 ObjectInfo objectInfo = new ObjectInfo();
                 objectInfo.objectId = objectsInfo.Count;
+                objectInfo.surfaceCacheId = OBJECT_ID_INVALID;
+                objectInfo.gameObject = mf.gameObject;
                 if (meshMap.ContainsKey(mesh))
                 {
                     objectInfo.meshId = meshMap[mesh].meshId;

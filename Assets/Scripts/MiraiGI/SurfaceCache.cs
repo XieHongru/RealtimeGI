@@ -28,6 +28,8 @@ public class SurfaceCacheKey : IEquatable<SurfaceCacheKey>
     public Mesh mesh;
     public Material[] materials;
 
+    public SurfaceCacheKey() { }
+
     public SurfaceCacheKey(GameObject gameObject)
     {
         mesh = gameObject.GetComponent<MeshFilter>().sharedMesh;
@@ -58,7 +60,6 @@ public class SurfaceCacheKey : IEquatable<SurfaceCacheKey>
 public class SurfaceCacheInfo
 {
     public int surfaceCacheId;
-    public int refCount;
     public int meshCardCount;
     public int meshCardResolution;
 
@@ -67,30 +68,41 @@ public class SurfaceCacheInfo
     public List<Matrix4x4> localToCardMatrices;
     public List<Vector4> cardUVTransforms;
 
-    public SurfaceCacheInfo(int inSurfaceCacheId, ObjectInfo objectInfo, Mesh inMesh, Material[] inMaterials, SurfaceCache surfaceCache)
+    HashSet<int> m_ReferenceHolder;
+
+    public SurfaceCacheInfo(int inSurfaceCacheId)
     {
-        mesh = inMesh;
-        materials = inMaterials;
         surfaceCacheId = inSurfaceCacheId;
-        refCount = 1;
 
         localToCardMatrices = new List<Matrix4x4>();
         cardUVTransforms = new List<Vector4>();
-
-        // setup mesh card placement and capture matrix
-        // @TODO: precomputed card placement
-        meshCardCount = 6;
-
-        Vector3 localBoundsCenter = (objectInfo.localBoundsMax + objectInfo.localBoundsMin) * 0.5f;
-        Vector3 localBoundsSize = (objectInfo.localBoundsMax - objectInfo.localBoundsMin) * (1.0f + 1e-3f);
-        float maxDimension = Mathf.Max(localBoundsSize.x, Mathf.Max(localBoundsSize.y, localBoundsSize.z));
-
-        for (int cardIndex = 0; cardIndex < meshCardCount; cardIndex++)
-        {
-            Matrix4x4 localToCard = surfaceCache.CalcViewProjectionMatrix(localBoundsCenter, maxDimension, cardIndex);
-            localToCardMatrices.Add(localToCard);
-        }
+        m_ReferenceHolder = new HashSet<int>();
     }
+
+    public void Empty()
+    {
+        surfaceCacheId = 0;
+        meshCardCount = 0;
+        meshCardResolution = 0;
+
+        mesh = null;
+        materials = null;
+        localToCardMatrices = null;
+        cardUVTransforms = null;
+    }
+
+    public void AddObjectReference(ObjectInfo objectInfo)
+    {
+        m_ReferenceHolder.Add(objectInfo.objectId);
+    }
+
+    public void RemoveObjectReference(ObjectInfo objectInfo)
+    {
+        m_ReferenceHolder.Remove(objectInfo.objectId);
+    }
+
+    public int GetRefCount() => m_ReferenceHolder.Count;
+    public List<int> GetReferenceHolder() => new List<int>(m_ReferenceHolder);
 }
 
 public struct SurfaceCacheInfoGPUData
@@ -98,8 +110,9 @@ public struct SurfaceCacheInfoGPUData
     public int surfaceCacheId;
     public int meshCardCount;
     public int meshCardResolution;
-    public int refCount;
 }
+
+// -----------------------------------------------------------------------------------------------------------------
 
 public class SurfaceCache
 {
@@ -113,6 +126,7 @@ public class SurfaceCache
     RenderTargetIdentifier[] m_SurfaceCacheRenderTargets;
     RenderTexture m_DepthStencil;
     int m_AtlasResolution;
+    const int OBJECT_ID_INVALID = -1;
     const int MAX_CARD_PER_MESH = 12;
     const int MAX_OBJECT_COUNT = 2048;
     const int MAX_SURFACE_CACHE_COUNT = 2048;
@@ -241,7 +255,6 @@ public class SurfaceCache
             surfaceCacheInfoGPUData.surfaceCacheId = surfaceCacheInfo.surfaceCacheId;
             surfaceCacheInfoGPUData.meshCardCount = surfaceCacheInfo.meshCardCount;
             surfaceCacheInfoGPUData.meshCardResolution = surfaceCacheInfo.meshCardResolution;
-            surfaceCacheInfoGPUData.refCount = surfaceCacheInfo.refCount;
 
             surfaceCacheInfoUploadData.Add(surfaceCacheInfoGPUData);
         }
@@ -291,27 +304,21 @@ public class SurfaceCache
     public void CaptureSurfaceCache(GPUSceneData gpuSceneData)
     {
         List<ObjectInfo> objectsInfo = gpuSceneData.objectsInfo;
-        List<GameObject> objects = gpuSceneData.objects;
         // TODO: clear surface cache capture command list?
 
-        // capture surface cache per object
+        // 1. allocate surface cache per object
         foreach (var objInfo in objectsInfo)
         {
-            SurfaceCacheKey key = new SurfaceCacheKey(objects[objInfo.objectId]);
-            int surfaceCacheId;
-            if (m_SurfaceCacheAllocator.Find(key, out surfaceCacheId))
-            {
-                m_SurfaceCacheInfos[surfaceCacheId].refCount++;
-            }
-            else
-            {
-                surfaceCacheId = m_SurfaceCacheAllocator.AllocateElement(key);
-                m_SurfaceCacheInfos[surfaceCacheId] = new SurfaceCacheInfo(surfaceCacheId, objInfo, key.mesh, key.materials, this);
-                AllocateSurfaceCache(surfaceCacheId, 32);
-            }
+            ReferenceSurfaceCache(objInfo);
+        }
 
-            objInfo.surfaceCacheId = surfaceCacheId;
-            objInfo.surfaceCacheKey = key;
+        // 2. TODO: loop and see if surface cache need change size (update per frame)
+
+        // 3. allocate surface cache atlas space
+        foreach (int surfaceCacheId in m_SurfaceCacheCaptureCommands)
+        {
+            GatherSurfaceCacheInfo(surfaceCacheId, objectsInfo);
+            AllocateSurfaceCache(surfaceCacheId);
         }
 
         CommandBuffer cmd = CommandBufferPool.Get("Surface Cache Capture");
@@ -365,6 +372,50 @@ public class SurfaceCache
 
         Graphics.ExecuteCommandBuffer(cmd);
         cmd.Release();
+    }
+
+    void ReferenceSurfaceCache(ObjectInfo objectInfo)
+    {
+        SurfaceCacheKey key = new SurfaceCacheKey(objectInfo.gameObject);
+        int surfaceCacheId = OBJECT_ID_INVALID;
+        
+        // if not exist, allocate it
+        if (!m_SurfaceCacheAllocator.Find(key, out surfaceCacheId))
+        {
+            surfaceCacheId = m_SurfaceCacheAllocator.AllocateElement(key);
+            m_SurfaceCacheInfos[surfaceCacheId] = new SurfaceCacheInfo(surfaceCacheId);
+
+            m_SurfaceCacheCaptureCommands.Add(surfaceCacheId);
+        }
+
+        m_SurfaceCacheInfos[surfaceCacheId].AddObjectReference(objectInfo);
+
+        // if surface cache change, release old item
+        if (objectInfo.surfaceCacheKey != key && objectInfo.surfaceCacheId != OBJECT_ID_INVALID)
+        {
+            DeReferenceSurfaceCache(objectInfo);
+        }
+
+        objectInfo.surfaceCacheId = surfaceCacheId;
+        objectInfo.surfaceCacheKey = key;
+    }
+
+    void DeReferenceSurfaceCache(ObjectInfo objectInfo)
+    {
+        SurfaceCacheInfo surfaceCacheInfo = m_SurfaceCacheInfos[objectInfo.surfaceCacheId];
+        surfaceCacheInfo.RemoveObjectReference(objectInfo);
+
+        // if nobody use surface cache, we release it
+        if (surfaceCacheInfo.GetRefCount() == 0)
+        {
+            m_SurfaceCacheAllocator.ReleaseElement(objectInfo.surfaceCacheKey);
+            ReleaseSurfaceCache(objectInfo.surfaceCacheId);
+            surfaceCacheInfo.Empty();
+        }
+
+        // sync info to object
+        objectInfo.surfaceCacheKey = new SurfaceCacheKey();    // reset to null
+        objectInfo.surfaceCacheId = OBJECT_ID_INVALID;
     }
 
     // TODO: support directions apart from axis-dir
@@ -450,10 +501,38 @@ public class SurfaceCache
         //}
     }
 
-    void AllocateSurfaceCache(int surfaceCacheId, int size)
+    void GatherSurfaceCacheInfo(int surfaceCacheId, List<ObjectInfo> objectsInfo)
     {
         SurfaceCacheInfo surfaceCacheInfo = m_SurfaceCacheInfos[surfaceCacheId];
-        surfaceCacheInfo.meshCardResolution = size;
+        ObjectInfo objectInfo = objectsInfo[surfaceCacheInfo.GetReferenceHolder()[0]];
+
+        surfaceCacheInfo.mesh = objectInfo.gameObject.GetComponent<MeshFilter>().sharedMesh;
+        surfaceCacheInfo.materials = objectInfo.gameObject.GetComponent<MeshRenderer>().sharedMaterials;
+
+        // setup mesh card placement and capture matrix
+        // @TODO: precomputed card placement
+        surfaceCacheInfo.meshCardCount = 6;
+
+        Vector3 localBoundsCenter = (objectInfo.localBoundsMax + objectInfo.localBoundsMin) * 0.5f;
+        Vector3 localBoundsSize = (objectInfo.localBoundsMax - objectInfo.localBoundsMin) * (1.0f + 1e-3f);
+        float maxDimension = Mathf.Max(localBoundsSize.x, Mathf.Max(localBoundsSize.y, localBoundsSize.z));
+
+        for (int cardIndex = 0; cardIndex < surfaceCacheInfo.meshCardCount; cardIndex++)
+        {
+            Matrix4x4 localToCard = CalcViewProjectionMatrix(localBoundsCenter, maxDimension, cardIndex);
+            surfaceCacheInfo.localToCardMatrices.Add(localToCard);
+        }
+    }
+
+    void AllocateSurfaceCache(int surfaceCacheId)
+    {
+        SurfaceCacheInfo surfaceCacheInfo = m_SurfaceCacheInfos[surfaceCacheId];
+
+        // if first time allocate, we give a default size
+        if (surfaceCacheInfo.meshCardResolution == 0)
+        {
+            surfaceCacheInfo.meshCardResolution = 32;
+        }
 
         //if (USE_QUAD_TREE == 1)
         //{
@@ -480,13 +559,14 @@ public class SurfaceCache
             Vector4 cardSizeAndOffset = new Vector4(node.size, node.size, node.min.x, node.min.y);
             surfaceCacheInfo.cardUVTransforms.Add(cardSizeAndOffset);
         }
-
-        m_SurfaceCacheCaptureCommands.Add(surfaceCacheId);
     }
 
-    void ReleaseMeshCard(int surfaceCacheId)
+    void ReleaseSurfaceCache(int surfaceCacheId)
     {
         SurfaceCacheInfo surfaceCacheInfo = m_SurfaceCacheInfos[surfaceCacheId];
+        if (surfaceCacheInfo.meshCardResolution == 0)
+            return;
+
         for (int cardIndex = 0; cardIndex < surfaceCacheInfo.meshCardCount; cardIndex++)
         {
             Vector4 cardSizeAndOffset = surfaceCacheInfo.cardUVTransforms[cardIndex];
