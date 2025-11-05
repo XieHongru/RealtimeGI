@@ -62,6 +62,7 @@ public class SurfaceCacheInfo
     public int surfaceCacheId;
     public int meshCardCount;
     public int meshCardResolution;
+    public float aspectRatio;
 
     public Mesh mesh;
     public Material[] materials;
@@ -419,9 +420,32 @@ public class SurfaceCache
     }
 
     // TODO: support directions apart from axis-dir
-    public Matrix4x4 CalcViewProjectionMatrix(Vector3 center, float size, int cubeFace)
+    public Matrix4x4 CalcViewProjectionMatrix(Vector3 center, Vector3 size, int cubeFace, out float aspectRatio)
     {
-        float halfSize = size * 0.5f;
+        float width = Mathf.Max(size.x, Mathf.Max(size.y, size.z));
+        float height = width;
+        float depth = width;
+
+        // TODO: capture size bug
+        //if (cubeFace == 0 || cubeFace == 1)
+        //{
+        //    width = size.y;
+        //    height = size.z;
+        //}
+
+        //if (cubeFace == 2 || cubeFace == 3)
+        //{
+        //    width = size.x;
+        //    height = size.z;
+        //}
+
+        //if (cubeFace == 4 || cubeFace == 5)
+        //{
+        //    width = size.x;
+        //    height = size.y;
+        //}
+
+        aspectRatio = width / height;
 
         Vector3 viewDir = Vector3.forward;
         Vector3 up = Vector3.up;
@@ -437,10 +461,10 @@ public class SurfaceCache
         }
 
         Matrix4x4 viewMatrix = Matrix4x4.LookAt(center, center + viewDir, up).inverse;
-        Matrix4x4 projectionMatrix = Matrix4x4.Ortho(-halfSize, halfSize, -halfSize, halfSize, -halfSize, halfSize);
+        Matrix4x4 projectionMatrix = Matrix4x4.Ortho(-width * 0.5f, width * 0.5f, -height * 0.5f, height * 0.5f, -depth * 0.5f, depth * 0.5f);
         if (SystemInfo.usesReversedZBuffer)
         {
-            projectionMatrix = Matrix4x4.Ortho(-halfSize, halfSize, -halfSize, halfSize, halfSize, -halfSize);
+            projectionMatrix = Matrix4x4.Ortho(-width * 0.5f, width * 0.5f, -height * 0.5f, height * 0.5f, depth * 0.5f, -depth * 0.5f);
         }
 
         return projectionMatrix * viewMatrix;
@@ -453,15 +477,25 @@ public class SurfaceCache
 
         // @TODO: dynamic sparse quad tree allocation
         // padding 1 texel
-        float paddingScale = (surfaceCacheInfo.meshCardResolution - 1.0f) / (float)surfaceCacheInfo.meshCardResolution;
+        float paddingScaleX = (surfaceCacheInfo.meshCardResolution - 1.0f) / (float)surfaceCacheInfo.meshCardResolution;
+        float paddingScaleY = paddingScaleX;
+
+        if (surfaceCacheInfo.aspectRatio > 1.0f)
+        {
+            paddingScaleY /= surfaceCacheInfo.aspectRatio;
+        }
+        else
+        {
+            paddingScaleX *= surfaceCacheInfo.aspectRatio;
+        }
 
         // viewport center is (0, 0) but uv center is (0.5, 0.5)
         float offsetX = 0.5f * uvTransform.x;
         float offsetY = 0.5f * uvTransform.y;
 
         Vector4 result = new Vector4(
-            uvTransform.x * paddingScale,
-            uvTransform.y * paddingScale,
+            uvTransform.x * paddingScaleX,
+            uvTransform.y * paddingScaleY,
             (uvTransform.z + offsetX) * 2.0f - 1.0f, // using this offset in clip space [-1, 1]
             (uvTransform.w + offsetY) * 2.0f - 1.0f
         );
@@ -515,11 +549,10 @@ public class SurfaceCache
 
         Vector3 localBoundsCenter = (objectInfo.localBoundsMax + objectInfo.localBoundsMin) * 0.5f;
         Vector3 localBoundsSize = (objectInfo.localBoundsMax - objectInfo.localBoundsMin) * (1.0f + 1e-3f);
-        float maxDimension = Mathf.Max(localBoundsSize.x, Mathf.Max(localBoundsSize.y, localBoundsSize.z));
 
         for (int cardIndex = 0; cardIndex < surfaceCacheInfo.meshCardCount; cardIndex++)
         {
-            Matrix4x4 localToCard = CalcViewProjectionMatrix(localBoundsCenter, maxDimension, cardIndex);
+            Matrix4x4 localToCard = CalcViewProjectionMatrix(localBoundsCenter, localBoundsSize, cardIndex, out surfaceCacheInfo.aspectRatio);
             surfaceCacheInfo.localToCardMatrices.Add(localToCard);
         }
     }

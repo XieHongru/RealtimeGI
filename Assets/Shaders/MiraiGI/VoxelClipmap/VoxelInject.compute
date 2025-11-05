@@ -158,8 +158,13 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         {
             int freePointer = 0;
             InterlockedAdd(_RWVoxelPageAllocator[FREE_PAGE_POINTER], 1, freePointer);
-            pageId = _RWVoxelPageFreeList[freePointer];
-            _RWVoxelPageFreeList[freePointer] = PAGE_ID_INVALID;
+            
+            int maxPageNum = _VoxelPagePoolSize.x * _VoxelPagePoolSize.y * _VoxelPagePoolSize.z;
+            if (freePointer < maxPageNum)
+            {
+                pageId = _RWVoxelPageFreeList[freePointer];
+                _RWVoxelPageFreeList[freePointer] = PAGE_ID_INVALID;
+            }
         }
         // 4.2. current block is empty but hold a voxel page, we just release it
         else if (pageId != PAGE_ID_INVALID && !blockHasVoxel)
@@ -170,7 +175,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
             pageId = PAGE_ID_INVALID;
         }
         
-        // 4.3. anyway we get a valid page id, boardcast it to all voxel in same voxel block (same thread group)
+        // 4.3. anyway we get a page id, boardcast it to all voxel in same voxel block (same thread group)
         gs_VoxelPageId = pageId;
         _RWVoxelPageClipmap[blockAccessIndex] = pageId;
     }

@@ -113,7 +113,7 @@ public class MiraiGIClipmap
     ComputeShader m_VoxelInjectCS;
     ComputeShader m_VisualizeClipmapCS;
     ComputeShader m_VoxelPageReleaseCS;
-    ComputeShader m_VoxelPageClipmapInitCS;
+    ComputeShader m_VoxelPageInitCS;
 
     public void CreateClipmap()
     {
@@ -121,7 +121,7 @@ public class MiraiGIClipmap
         m_VoxelInjectCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelClipmap/VoxelInject.compute");
         m_VisualizeClipmapCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelClipmap/VisualizeClipmap.compute");
         m_VoxelPageReleaseCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelClipmap/VoxelPageRelease.compute");
-        m_VoxelPageClipmapInitCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelClipmap/VoxelPageClipmapInit.compute");
+        m_VoxelPageInitCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelClipmap/VoxelPageInit.compute");
 
         Vector3Int clipmapResolution = new Vector3Int(m_VoxelResolution.x / VOXEL_BLOCK_SIZE, 
                                                         m_VoxelResolution.y / VOXEL_BLOCK_SIZE, 
@@ -183,22 +183,23 @@ public class MiraiGIClipmap
         m_VoxelPageClipmap.enableRandomWrite = true;
         m_VoxelPageClipmap.Create();
 
-        CommandBuffer cmd = CommandBufferPool.Get("Init Voxel Page Clipmap");
-
-        cmd.SetComputeTextureParam(m_VoxelPageClipmapInitCS, 0, Shader.PropertyToID("_RWVoxelPageClipmap"), m_VoxelPageClipmap);
-        cmd.DispatchCompute(m_VoxelPageClipmapInitCS, 0, clipmapResolution.x / 4, clipmapResolution.y / 4, clipmapResolution.z / 4);
-
-        Graphics.ExecuteCommandBuffer(cmd);
-        CommandBufferPool.Release(cmd);
-
         // TODO: adaptive size, now for 128*128*128*4 clipmap we use 32x32x32 block pages (128x128x128 total)
         // TODO: check if need re-create, 
         Vector3Int numPagesInXYZ = m_VoxelPagePoolSize;
-        m_VoxelPagePool = new RenderTexture(numPagesInXYZ.x * VOXEL_BLOCK_SIZE, numPagesInXYZ.y * VOXEL_BLOCK_SIZE, 0, RenderTextureFormat.ARGBFloat);
+        m_VoxelPagePool = new RenderTexture(numPagesInXYZ.x * VOXEL_BLOCK_SIZE, numPagesInXYZ.y * VOXEL_BLOCK_SIZE, 0, RenderTextureFormat.ARGB64);
         m_VoxelPagePool.dimension = TextureDimension.Tex3D;
         m_VoxelPagePool.volumeDepth = numPagesInXYZ.z * VOXEL_BLOCK_SIZE;
         m_VoxelPagePool.enableRandomWrite = true;
         m_VoxelPagePool.Create();
+
+        CommandBuffer cmd = CommandBufferPool.Get("Init Voxel Page");
+
+        cmd.SetComputeTextureParam(m_VoxelPageInitCS, 0, Shader.PropertyToID("_RWVoxelPageClipmap"), m_VoxelPageClipmap);
+        cmd.SetComputeTextureParam(m_VoxelPageInitCS, 0, Shader.PropertyToID("_RWVoxelPagePool"), m_VoxelPagePool);
+        cmd.DispatchCompute(m_VoxelPageInitCS, 0, clipmapResolution.x / 4, clipmapResolution.y / 4, clipmapResolution.z / 4);
+
+        Graphics.ExecuteCommandBuffer(cmd);
+        CommandBufferPool.Release(cmd);
 
         // page allocator
         int numPages = numPagesInXYZ.x * numPagesInXYZ.y * numPagesInXYZ.z;
@@ -349,18 +350,18 @@ public class MiraiGIClipmap
 
         // 2. calc rolling address
         // RollingInfo is for block (4x4x4) rolling address, so we map DeltaChunk to DeltaBlock
-        Vector3Int blockResolution = m_VoxelResolution / VOXEL_BLOCK_SIZE;
+        Vector3Int blockCountInXYZ = m_VoxelResolution / VOXEL_BLOCK_SIZE;
         Vector3Int deltaVoxelBlock = new Vector3Int(deltaChunk.x * m_UpdateChunkResolution.x, 
                                                     deltaChunk.y * m_UpdateChunkResolution.y, 
                                                     deltaChunk.z * m_UpdateChunkResolution.z) / VOXEL_BLOCK_SIZE;
         cascadeInfo.moveOffset += deltaVoxelBlock;
-        cascadeInfo.moveOffset.x = cascadeInfo.moveOffset.x % blockResolution.x;
-        cascadeInfo.moveOffset.y = cascadeInfo.moveOffset.y % blockResolution.y;
-        cascadeInfo.moveOffset.z = cascadeInfo.moveOffset.z % blockResolution.z;
+        cascadeInfo.moveOffset.x = cascadeInfo.moveOffset.x % blockCountInXYZ.x;
+        cascadeInfo.moveOffset.y = cascadeInfo.moveOffset.y % blockCountInXYZ.y;
+        cascadeInfo.moveOffset.z = cascadeInfo.moveOffset.z % blockCountInXYZ.z;
 
-        cascadeInfo.moveOffset.x += (cascadeInfo.moveOffset.x < 0) ? blockResolution.x : 0;
-        cascadeInfo.moveOffset.y += (cascadeInfo.moveOffset.y < 0) ? blockResolution.y : 0;
-        cascadeInfo.moveOffset.z += (cascadeInfo.moveOffset.z < 0) ? blockResolution.z : 0;
+        cascadeInfo.moveOffset.x += (cascadeInfo.moveOffset.x < 0) ? blockCountInXYZ.x : 0;
+        cascadeInfo.moveOffset.y += (cascadeInfo.moveOffset.y < 0) ? blockCountInXYZ.y : 0;
+        cascadeInfo.moveOffset.z += (cascadeInfo.moveOffset.z < 0) ? blockCountInXYZ.z : 0;
 
         // 3. update cascade new center
         cascadeInfo.cascadeCenter = new Vector3(cameraChunkId.x * chunkSize.x,
@@ -558,6 +559,7 @@ public class MiraiGIClipmap
         // 1. build indirect dispatch args
         {
             int kernel = m_VoxelPageReleaseCS.FindKernel("BuildVoxelPageReleaseIndirectArgs");
+            cmd.SetComputeVectorParam(m_VoxelPageReleaseCS, Shader.PropertyToID("_VoxelPagePoolSize"), (Vector3)m_VoxelPagePoolSize);
             cmd.SetComputeIntParam(m_VoxelPageReleaseCS, Shader.PropertyToID("_NumThreadsForPageRelease"), 1);
             cmd.SetComputeBufferParam(m_VoxelPageReleaseCS, kernel, Shader.PropertyToID("_RWVoxelPageAllocator"), m_VoxelPageAllocator);
             cmd.SetComputeBufferParam(m_VoxelPageReleaseCS, kernel, Shader.PropertyToID("_RWIndirectArgs"), m_VoxelPageReleaseIndirectArgs);

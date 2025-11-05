@@ -290,13 +290,13 @@ int3 ClipmapAddressMapping(int3 voxelIndex, int3 cascadeResolution, int3 cascade
 {
 	// [0 ~ 128] --> [0 ~ 32]
     int3 blockIndex = voxelIndex / VOXEL_BLOCK_SIZE;
-    int3 blockResolution = cascadeResolution / VOXEL_BLOCK_SIZE;
+    int3 blockCountInXYZ = cascadeResolution / VOXEL_BLOCK_SIZE;
 
 	// if cascade move, we don't move the data, just move address when access cascade
-    int3 roundIndex = (blockIndex + cascadeMoveOffset) % blockResolution;
+    int3 roundIndex = (blockIndex + cascadeMoveOffset) % blockCountInXYZ;
 
 	// use 32*32*128 to represent 4 layer clipmap, single cascade is 32x32x32
-    int3 accessIndex = roundIndex + int3(0, 0, blockResolution.z * cascadeIndex);
+    int3 accessIndex = roundIndex + int3(0, 0, blockCountInXYZ.z * cascadeIndex);
     return accessIndex;
 }
 
@@ -312,11 +312,21 @@ int3 PageAddressMapping(int pageId, int3 numPagesInXYZ, int3 voxelIndex)
     return indexInPool;
 }
 
+float IntToR16(int intVal)
+{
+    return float(intVal) / 65535.0f;
+}
+
+int R16ToInt(float R16Val)
+{
+    return R16Val * 65535.0f;
+}
+
 float4 EncodeVoxelPage(VoxelPageData pageData)
 {
     float4 result;
     result.xy = pageData.uvInAtlas;
-    result.z = pageData.objectId;
+    result.z = IntToR16(pageData.objectId);
 
     int validMask = 0;
     validMask += pageData.bilinearValidMask[0] == 0 ? 0 : (1 << 0);
@@ -324,7 +334,8 @@ float4 EncodeVoxelPage(VoxelPageData pageData)
     validMask += pageData.bilinearValidMask[2] == 0 ? 0 : (1 << 2);
     validMask += pageData.bilinearValidMask[3] == 0 ? 0 : (1 << 3);
 
-    result.w = (pageData.cardId << 4) + validMask;
+    int cardIdAndMask = (pageData.cardId << 4) + validMask;
+    result.w = IntToR16(cardIdAndMask);
 
     return result;
 }
@@ -333,9 +344,9 @@ VoxelPageData DecodeVoxelPage(float4 encodedPage)
 {
     VoxelPageData result;
     result.uvInAtlas = encodedPage.xy;
-    result.objectId = encodedPage.z;
+    result.objectId = R16ToInt(encodedPage.z);
 
-    int cardIdAndMask = encodedPage.w;
+    int cardIdAndMask = R16ToInt(encodedPage.w);
     int encodedMask = cardIdAndMask & 0x0F;
 
     result.cardId = (cardIdAndMask >> 4) & 0x0F;

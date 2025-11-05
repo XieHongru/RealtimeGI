@@ -66,27 +66,35 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
 #if USE_DEBUG_COLOR
         color += hit.debugColor;
 #else
+        float3 surfaceCacheColor = float3(0, 0, 0);
         int voxelPageId = _VoxelPageClipmap.Load(uint4(hit.clipmapAccessIndex, 0)).r;
-        int3 indexInPool = PageAddressMapping(voxelPageId, _VoxelPagePoolSize, hit.voxelIndex);
-        float4 rawPageData = _VoxelPagePool.Load(uint4(indexInPool, 0));
-        VoxelPageData pageData = DecodeVoxelPage(rawPageData);
-
-        ObjectInfo objectInfo = _ObjectsInfo[pageData.objectId];
-        float3 surfaceCacheColor = SurfaceCacheSampleColor(
-            _SurfaceCacheAtlasToVisualize, sampler_LinearClamp,
-            pageData.uvInAtlas, _SurfaceCacheAtlasResolution, pageData.bilinearValidMask
-        );
-
-        if (_VisualizeMode == 1)  // is normal
+        
+        if (voxelPageId != PAGE_ID_INVALID)
         {
-            float3 localSpaceNormal = surfaceCacheColor.xyz * 2 - 1;
-            float3 worldNormal = normalize(mul(float4(localSpaceNormal, 0), objectInfo.localToWorldMatrix).xyz);
-            color += worldNormal * 0.5 + 0.5;
+            int3 indexInPool = PageAddressMapping(voxelPageId, _VoxelPagePoolSize, hit.voxelIndex);
+            float4 rawPageData = _VoxelPagePool.Load(uint4(indexInPool, 0));
+            VoxelPageData pageData = DecodeVoxelPage(rawPageData);
+
+            ObjectInfo objectInfo = _ObjectsInfo[pageData.objectId];
+            surfaceCacheColor = SurfaceCacheSampleColor(
+                _SurfaceCacheAtlasToVisualize, sampler_LinearClamp,
+                pageData.uvInAtlas, _SurfaceCacheAtlasResolution, pageData.bilinearValidMask
+            );
+
+            if (_VisualizeMode == 1)  // is normal
+            {
+                float3 localSpaceNormal = surfaceCacheColor.xyz * 2 - 1;
+                float3 worldNormal = normalize(mul(float4(localSpaceNormal, 0), objectInfo.localToWorldMatrix).xyz);
+                surfaceCacheColor += worldNormal * 0.5 + 0.5;
+            }
         }
-        else // other
+        // for invalid page maybe runout of space, we just give it a warning color
+        else
         {
-            color += surfaceCacheColor;
+            surfaceCacheColor = float3(1, 0, 1);
         }
+        
+        color += surfaceCacheColor;
 #endif
     }
 
