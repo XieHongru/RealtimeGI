@@ -13,8 +13,9 @@
 #define FREE_PAGE_POINTER_READ_ONLY (2)		// value same as FREE_PAGE_POINTER, for avoid data race when release pages
 #define RELEASE_PAGE_POINTER_READ_ONLY (3)	// value same as RELEASE_PAGE_POINTER, for avoid data race when release pages
 
-#define USE_DEBUG_COLOR 0
-
+#define VOXEL_FACE_FRONT (0)
+#define VOXEL_FACE_BACK (1)
+#define VOXEL_FACE_NUM (2)
 
 struct ObjectInfo
 {
@@ -347,6 +348,13 @@ VoxelPageData GetEmptyPageData()
     VoxelPageData result = (VoxelPageData) 0;
     result.objectId = OBJECT_ID_INVALID;
     return result;
+}
+
+// VoxelRadiancePool share address with VoxelPagePool, but double the size for two side voxel
+// we pack front-back size nearby in z axis to reduce cache miss when access
+int3 VoxelPoolTwoSideAddressMapping(int3 indexInPool, int isBackFace)
+{
+    return indexInPool * int3(1, 1, VOXEL_FACE_NUM) + int3(0, 0, isBackFace);
 }
 
 #endif

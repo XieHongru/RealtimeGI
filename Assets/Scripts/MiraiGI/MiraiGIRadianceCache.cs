@@ -64,11 +64,11 @@ public class MiraiGIRadianceCache
         MiraiGIClipmap clipmap = scene.miraiGIClipmap;
 
         Vector3Int pageCountInXYZ = clipmap.voxelPagePoolSize;
-        Vector3Int voxelRadiancePoolSize = pageCountInXYZ * GlobalShared.VOXEL_BLOCK_SIZE;
+        Vector3Int voxelRadiancePoolSize = pageCountInXYZ * GlobalShared.VOXEL_BLOCK_SIZE * 2; // for two side voxel
         // TODO: pool size change
         if (m_VoxelRadiancePool == null)
         {
-            m_VoxelRadiancePool = new RenderTexture(voxelRadiancePoolSize.x, voxelRadiancePoolSize.y, 0, RenderTextureFormat.ARGBFloat);
+            m_VoxelRadiancePool = new RenderTexture(voxelRadiancePoolSize.x, voxelRadiancePoolSize.y, 0, RenderTextureFormat.RGB111110Float);
             m_VoxelRadiancePool.dimension = TextureDimension.Tex3D;
             m_VoxelRadiancePool.volumeDepth = voxelRadiancePoolSize.z;
             m_VoxelRadiancePool.enableRandomWrite = true;
@@ -109,20 +109,24 @@ public class MiraiGIRadianceCache
         MiraiGICascadeInfo clipmapInfo = clipmap.cascadeInfos[cascadeId];
 
         Vector3Int blockCountInXYZ = clipmap.voxelResolution / GlobalShared.VOXEL_BLOCK_SIZE;
+        Vector3Int blockCountToLightInXYZ = blockCountInXYZ / m_CheckerBoardSize;
+        int maxFrameNum = m_CheckerBoardSize * m_CheckerBoardSize * m_CheckerBoardSize;
+        Vector3Int checkerBoardOffset = GlobalShared.Index1DTo3DLinear((int)frameNumberRenderThread % maxFrameNum, 
+                                                                        new Vector3Int(m_CheckerBoardSize, m_CheckerBoardSize, m_CheckerBoardSize));
 
         int kernel = m_VoxelLightingCS.FindKernel("PickValidVoxel");
 
         cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeIndex"), cascadeId);
-        cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_ClipmapOffset"), new Vector3(0, 0, blockCountInXYZ.z * cascadeId));
         cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeResolution"), (Vector3) clipmap.voxelResolution);
         cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeMoveOffset"), (Vector3) clipmapInfo.moveOffset);
+        cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_CheckerBoardInfo"), new Vector4(checkerBoardOffset.x, checkerBoardOffset.y, checkerBoardOffset.z, m_CheckerBoardSize));
 
         cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelBitOccupyClipmap"), clipmap.GetVoxelMap());
 
         cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWValidVoxelCounter"), m_ValidVoxelCounter);
         cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWValidVoxelBuffer"), m_ValidVoxelBuffer);
 
-        cmd.DispatchCompute(m_VoxelLightingCS, kernel, blockCountInXYZ.x / 2, blockCountInXYZ.y / 2, blockCountInXYZ.z / 2);
+        cmd.DispatchCompute(m_VoxelLightingCS, kernel, blockCountToLightInXYZ.x / 4, blockCountToLightInXYZ.y / 4, blockCountToLightInXYZ.z / 4);
     }
 
     public void VoxelLighting(CommandBuffer cmd, MiraiGIGPUScene scene, int cascadeId)

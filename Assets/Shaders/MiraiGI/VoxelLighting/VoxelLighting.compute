@@ -3,24 +3,24 @@
 #pragma kernel PickValidVoxel
 
 int _CascadeIndex;
-int3 _ClipmapOffset;
 int3 _CascadeResolution;
 int3 _CascadeMoveOffset;
+int4 _CheckerBoardInfo;
 
 Texture3D<uint2> _VoxelBitOccupyClipmap;
 RWStructuredBuffer<int> _RWValidVoxelCounter;
 RWStructuredBuffer<int> _RWValidVoxelBuffer;
 
-groupshared int gs_ThreadVoxelCounter[8];
-groupshared int gs_ThreadWriteIndex[8];
+groupshared int gs_ThreadVoxelCounter[64];
+groupshared int gs_ThreadWriteIndex[64];
 
-[numthreads(2, 2, 2)]
+[numthreads(4, 4, 4)]
 void PickValidVoxel(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
-    int groupThreadIndex = Index3DTo1D(groupThreadId, int3(2, 2, 2));
+    int groupThreadIndex = Index3DTo1D(groupThreadId, int3(4, 4, 4));
 
-    // one thread for one block
-    int3 blockIndex = threadId.xyz;
+    // one thread for one block, use checker board 2x2x2 for average update to 8 frame
+    int3 blockIndex = threadId.xyz * _CheckerBoardInfo.w + _CheckerBoardInfo.xyz;
     int3 voxelIndexBase = blockIndex * VOXEL_BLOCK_SIZE;
     int3 clipmapAccessIndex = ClipmapAddressMapping(voxelIndexBase, _CascadeResolution, _CascadeMoveOffset, _CascadeIndex);
     uint2 bitOccupy = _VoxelBitOccupyClipmap[clipmapAccessIndex];
@@ -35,7 +35,7 @@ void PickValidVoxel(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : 
     if (groupThreadIndex == 0)
     {
         int groupVoxelCounter = 0;
-        for (int i = 0; i < 8; i++)
+        for (int i = 0; i < 64; i++)
         {
             groupVoxelCounter += gs_ThreadVoxelCounter[i];
         }
@@ -43,7 +43,7 @@ void PickValidVoxel(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : 
         int startIndex;
         InterlockedAdd(_RWValidVoxelCounter[0], groupVoxelCounter, startIndex);
 
-        for (int i = 0; i < 8; i++)
+        for (int i = 0; i < 64; i++)
         {
             gs_ThreadWriteIndex[i] = startIndex;
             startIndex += gs_ThreadVoxelCounter[i];

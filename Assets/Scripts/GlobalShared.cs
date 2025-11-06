@@ -1,3 +1,6 @@
+using System;
+using UnityEngine;
+
 public class GlobalShared
 {
     public static int OBJECT_ID_INVALID = -1;
@@ -6,6 +9,31 @@ public class GlobalShared
     public static int VOXEL_COUNT_PER_BLOCK = VOXEL_BLOCK_SIZE * VOXEL_BLOCK_SIZE * VOXEL_BLOCK_SIZE;
     public static int MAX_CASCADE_COUNT = 4;
     public static int PAGE_ID_INVALID = 0x3FFFFFFF;
+
+    public static int Index3DTo1DLinear(Vector3Int index3D, Vector3Int size3D)
+    {
+
+        int res = 0;
+        res += index3D.x * 1;
+	    res += index3D.y * size3D.x;
+        res += index3D.z * (size3D.x * size3D.y);
+	    return res;
+    }
+
+    public static Vector3Int Index1DTo3DLinear(int index1D, Vector3Int size3D)
+    {
+        Vector3Int res = new Vector3Int(0, 0, 0);
+
+        res.z = index1D / (size3D.x * size3D.y);
+        index1D -= res.z * (size3D.x * size3D.y);
+
+        res.y = index1D / size3D.x;
+        index1D -= res.y * size3D.x;
+
+        res.x = index1D;
+
+        return res;
+    }
 }
 
 public enum CardCaptureRTSlot
