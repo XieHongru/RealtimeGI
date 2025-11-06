@@ -2,11 +2,13 @@ using System.Collections;
 using System.Collections.Generic;
 using Unity.Mathematics;
 using UnityEngine;
+using UnityEngine.Rendering;
 using static UnityEditor.Searcher.SearcherWindow.Alignment;
 
 public class MiraiGIGPUScene
 {
     public MiraiGIClipmap miraiGIClipmap;
+    public MiraiGIRadianceCache miraiGIRadianceCache;
     public GPUSceneData GPUSceneData;
     public SurfaceCache surfaceCache;
     public OccupancyMap occupancyMap;
@@ -30,19 +32,34 @@ public class MiraiGIGPUScene
         // 4. create clipmap
         miraiGIClipmap = new MiraiGIClipmap();
         miraiGIClipmap.CreateClipmap();
+
+        // 5. init radiance cache
+        miraiGIRadianceCache = new MiraiGIRadianceCache();
+        miraiGIRadianceCache.Init();
+        miraiGIClipmap.radianceCache = miraiGIRadianceCache; // friend class
     }
 
     public void UpdateScene()
     {
         foreach (Camera camera in Camera.allCameras)
         {
+            // update scene
             miraiGIClipmap.UpdateClipmap(camera, this);
+            // voxel lighting
+            // TODO: multi-view
+            miraiGIRadianceCache.Update(this);
+
+            CommandBuffer cmd = CommandBufferPool.Get("Visualize GI Scene");
+            miraiGIClipmap.VisualizeMiraiGIScene(cmd, this, camera);
+            Graphics.ExecuteCommandBuffer(cmd);
+            CommandBufferPool.Release(cmd);
         }
     }
 
     public void Release()
     {
         miraiGIClipmap.Release();
+        miraiGIRadianceCache.Release();
         GPUSceneData.Release();
         surfaceCache.Release();
         occupancyMap.Release();

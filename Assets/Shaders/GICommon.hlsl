@@ -5,6 +5,7 @@
 #define MAX_CARD_PER_MESH 12
 #define VOXEL_BLOCK_SIZE 4
 #define MAX_CASCADE_COUNT 4
+#define VOXEL_COUNT_PER_BLOCK (VOXEL_BLOCK_SIZE * VOXEL_BLOCK_SIZE * VOXEL_BLOCK_SIZE)
 
 #define PAGE_ID_INVALID (0x3FFFFFFF)
 #define FREE_PAGE_POINTER (0)				// value in this index is pointer to next free page's id
@@ -258,6 +259,13 @@ bool GetUint64SingleBit(in uint2 u64, uint bitId)
 
     bool result = GetUint32SingleBit(u64[compId], bitId32);
     return result;
+}
+
+// https://tekpool.wordpress.com/category/bit-count/
+int BitCount32(uint u)
+{
+    uint uCount = u - ((u >> 1) & 033333333333) - ((u >> 2) & 011111111111);
+    return ((uCount + (uCount >> 3)) & 030707070707) % 63;
 }
 
 int3 ClipmapAddressMapping(int3 voxelIndex, int3 cascadeResolution, int3 cascadeMoveOffset, int cascadeIndex)

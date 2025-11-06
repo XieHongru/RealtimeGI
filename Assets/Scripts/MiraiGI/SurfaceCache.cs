@@ -117,6 +117,7 @@ public struct SurfaceCacheInfoGPUData
 
 public class SurfaceCache
 {
+    public int atlasResolution;
     // ----------------------------------
     // 0: base color
     // 1: normal
@@ -126,7 +127,6 @@ public class SurfaceCache
     RenderTexture[] m_SurfaceCacheAtlas;
     RenderTargetIdentifier[] m_SurfaceCacheRenderTargets;
     RenderTexture m_DepthStencil;
-    int m_AtlasResolution;
     const int OBJECT_ID_INVALID = -1;
     const int MAX_CARD_PER_MESH = 12;
     const int MAX_OBJECT_COUNT = 2048;
@@ -172,12 +172,12 @@ public class SurfaceCache
         m_CardInfosSyncCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/SurfaceCache/SurfaceCacheInfoSync.compute");
 
         // 2. surface cache atlas init
-        m_AtlasResolution = 2048;
+        atlasResolution = 2048;
         m_SurfaceCacheAtlas = new RenderTexture[4];
-        m_SurfaceCacheAtlas[0] = new RenderTexture(m_AtlasResolution, m_AtlasResolution, 0, RenderTextureFormat.ARGB32);
-        m_SurfaceCacheAtlas[1] = new RenderTexture(m_AtlasResolution, m_AtlasResolution, 0, RenderTextureFormat.ARGBHalf);
-        m_SurfaceCacheAtlas[2] = new RenderTexture(m_AtlasResolution, m_AtlasResolution, 0, RenderTextureFormat.ARGBHalf);
-        m_SurfaceCacheAtlas[3] = new RenderTexture(m_AtlasResolution, m_AtlasResolution, 0, RenderTextureFormat.RHalf);
+        m_SurfaceCacheAtlas[0] = new RenderTexture(atlasResolution, atlasResolution, 0, RenderTextureFormat.ARGB32);
+        m_SurfaceCacheAtlas[1] = new RenderTexture(atlasResolution, atlasResolution, 0, RenderTextureFormat.ARGBHalf);
+        m_SurfaceCacheAtlas[2] = new RenderTexture(atlasResolution, atlasResolution, 0, RenderTextureFormat.ARGBHalf);
+        m_SurfaceCacheAtlas[3] = new RenderTexture(atlasResolution, atlasResolution, 0, RenderTextureFormat.RHalf);
 
         // 3. surface cache capture rt init
         m_SurfaceCacheRenderTargets = new RenderTargetIdentifier[4];
@@ -186,7 +186,7 @@ public class SurfaceCache
         m_SurfaceCacheRenderTargets[2] = new RenderTargetIdentifier(m_SurfaceCacheAtlas[2]);
         m_SurfaceCacheRenderTargets[3] = new RenderTargetIdentifier(m_SurfaceCacheAtlas[3]);
 
-        m_DepthStencil = new RenderTexture(m_AtlasResolution, m_AtlasResolution, 32, RenderTextureFormat.Depth);
+        m_DepthStencil = new RenderTexture(atlasResolution, atlasResolution, 32, RenderTextureFormat.Depth);
         m_DepthStencil.depthStencilFormat = GraphicsFormat.D24_UNorm_S8_UInt;
 
         m_SurfaceCacheInfos = new SurfaceCacheInfo[MAX_SURFACE_CACHE_COUNT];
@@ -196,7 +196,7 @@ public class SurfaceCache
         m_SurfaceCacheAllocator = new LinearAllocator<SurfaceCacheKey>();
         m_SurfaceCacheAllocator.Init(MAX_SURFACE_CACHE_COUNT);
         m_SurfaceCacheAtlasAllocator = new QuadTreeAllocator();
-        m_SurfaceCacheAtlasAllocator.Init(m_AtlasResolution);
+        m_SurfaceCacheAtlasAllocator.Init(atlasResolution);
 
         // 5. GPU compute buffer init
         m_SurfaceCacheInfoUploadBuffer = new ComputeBuffer(MAX_SURFACE_CACHE_COUNT, Marshal.SizeOf<SurfaceCacheInfoGPUData>(), ComputeBufferType.Structured);
@@ -473,7 +473,7 @@ public class SurfaceCache
     public Vector4 CalcViewportInfo(SurfaceCacheInfo surfaceCacheInfo, int cardIndex)
     {
         Vector4 cardSizeAndOffset = surfaceCacheInfo.cardUVTransforms[cardIndex];
-        Vector4 uvTransform = cardSizeAndOffset / (float)m_AtlasResolution;
+        Vector4 uvTransform = cardSizeAndOffset / (float)atlasResolution;
 
         // @TODO: dynamic sparse quad tree allocation
         // padding 1 texel
@@ -516,7 +516,7 @@ public class SurfaceCache
         //else
         //{
         //    // TODO: dynamic sparse quad tree allocation
-        //    int numCardsInXY = m_AtlasResolution / surfaceCacheInfo.meshCardResolution;
+        //    int numCardsInXY = atlasResolution / surfaceCacheInfo.meshCardResolution;
 
         //    int indexInAtlas = meshBatch.objectId * meshBatch.cardCount + cardIndex;
         //    float indexInAtlasX = indexInAtlas % numCardsInXY;

@@ -29,8 +29,6 @@ struct VoxelRayTracingHitPayload
     int3 voxelIndex;
     int cascadeIndex;
     int3 clipmapAccessIndex;
-    
-    float3 debugColor;
 };
 
 // copy from UE
@@ -169,9 +167,6 @@ VoxelRayTracingHitPayload VoxelRaytracingSingleCascade(CascadeInfo cascadeInfo, 
     payload.voxelIndex = voxelIndex;
     payload.cascadeIndex = cascadeInfo.cascadeIndex;
     payload.clipmapAccessIndex = clipmapAccessIndex;
-
-    float3 hitVoxelCenterPos = (floor(payload.position / cascadeInfo.voxelSize) + 0.5) * cascadeInfo.voxelSize;
-    payload.debugColor = payload.isHit ? float3(length(payload.position - hitVoxelCenterPos) / (50.0 * (1 << payload.cascadeIndex)), 0, 0) : float3(0, 0, 0);
 
     return payload;
 }

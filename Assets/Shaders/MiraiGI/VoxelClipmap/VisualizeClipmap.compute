@@ -19,6 +19,7 @@ float4 _CascadeMoveOffsetArray[MAX_CASCADE_COUNT];
 Texture3D<uint2> _BitOccupyClipmap;
 Texture3D<int> _VoxelPageClipmap;
 Texture3D<float4> _VoxelPagePool;
+Texture3D<float4> _VoxelRadiancePool;
 Texture2D<float> _SceneDepthTexture;
 Texture2D<float4> _SurfaceCacheAtlasToVisualize;
 Texture3D<int> _VoxelOccupy;
@@ -70,39 +71,45 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     
     if (hit.isHit)
     {
-#if USE_DEBUG_COLOR
-        color += hit.debugColor;
-#else
-        float3 surfaceCacheColor = float3(0, 0, 0);
+        float3 debugColor = float3(0, 0, 0);
         int voxelPageId = _VoxelPageClipmap.Load(uint4(hit.clipmapAccessIndex, 0)).r;
         
         if (voxelPageId != PAGE_ID_INVALID)
         {
             int3 indexInPool = PageAddressMapping(voxelPageId, _VoxelPagePoolSize, hit.voxelIndex);
-            float4 rawPageData = _VoxelPagePool.Load(uint4(indexInPool, 0));
-            VoxelPageData pageData = DecodeVoxelPage(rawPageData);
-
-            ObjectInfo objectInfo = _ObjectsInfo[pageData.objectId];
-            surfaceCacheColor = SurfaceCacheSampleColor(
-                _SurfaceCacheAtlasToVisualize, sampler_LinearClamp,
-                pageData.uvInAtlas, _SurfaceCacheAtlasResolution, pageData.bilinearValidMask
-            );
-
-            if (_VisualizeMode == 1)  // is normal
+            
+            // radiance
+            if (_VisualizeMode == 5)
             {
-                float3 localSpaceNormal = surfaceCacheColor.xyz * 2 - 1;
-                float3 worldNormal = normalize(mul(float4(localSpaceNormal, 0), objectInfo.localToWorldMatrix).xyz);
-                surfaceCacheColor += worldNormal * 0.5 + 0.5;
+                debugColor = _VoxelRadiancePool.Load(uint4(indexInPool, 0)).rgb;
+            }
+            else
+            {
+                float4 rawPageData = _VoxelPagePool.Load(uint4(indexInPool, 0));
+                VoxelPageData pageData = DecodeVoxelPage(rawPageData);
+
+                ObjectInfo objectInfo = _ObjectsInfo[pageData.objectId];
+                debugColor = SurfaceCacheSampleColor(
+                    _SurfaceCacheAtlasToVisualize, sampler_LinearClamp,
+                    pageData.uvInAtlas, _SurfaceCacheAtlasResolution, pageData.bilinearValidMask
+                );
+
+                // is normal, decode it
+                if (_VisualizeMode == 2)
+                {
+                    float3 localSpaceNormal = debugColor.xyz * 2 - 1;
+                    float3 worldNormal = normalize(mul(float4(localSpaceNormal, 0), objectInfo.localToWorldMatrix).xyz);
+                    debugColor += worldNormal * 0.5 + 0.5;
+                }
             }
         }
         // for invalid page maybe runout of space, we just give it a warning color
         else
         {
-            surfaceCacheColor = float3(1, 0, 1);
+            debugColor = float3(1, 0, 1);
         }
         
-        color += surfaceCacheColor;
-#endif
+        color += debugColor;
     }
     
     if (_VisualizeUpdateChunk > 0)

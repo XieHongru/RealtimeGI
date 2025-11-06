@@ -1,0 +1,152 @@
+#include "../../GICommon.hlsl"
+
+#pragma kernel PickValidVoxel
+
+int _CascadeIndex;
+int3 _ClipmapOffset;
+int3 _CascadeResolution;
+int3 _CascadeMoveOffset;
+
+Texture3D<uint2> _VoxelBitOccupyClipmap;
+RWStructuredBuffer<int> _RWValidVoxelCounter;
+RWStructuredBuffer<int> _RWValidVoxelBuffer;
+
+groupshared int gs_ThreadVoxelCounter[8];
+groupshared int gs_ThreadWriteIndex[8];
+
+[numthreads(2, 2, 2)]
+void PickValidVoxel(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    int groupThreadIndex = Index3DTo1D(groupThreadId, int3(2, 2, 2));
+
+    // one thread for one block
+    int3 blockIndex = threadId.xyz;
+    int3 voxelIndexBase = blockIndex * VOXEL_BLOCK_SIZE;
+    int3 clipmapAccessIndex = ClipmapAddressMapping(voxelIndexBase, _CascadeResolution, _CascadeMoveOffset, _CascadeIndex);
+    uint2 bitOccupy = _VoxelBitOccupyClipmap[clipmapAccessIndex];
+
+    // 1. count valid voxel
+    int voxelCounter = BitCount32(bitOccupy.x) + BitCount32(bitOccupy.y);
+    gs_ThreadVoxelCounter[groupThreadIndex] = voxelCounter;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // 2. allocate space in RWValidVoxelBuffer, boardcast write index to thread
+    if (groupThreadIndex == 0)
+    {
+        int groupVoxelCounter = 0;
+        for (int i = 0; i < 8; i++)
+        {
+            groupVoxelCounter += gs_ThreadVoxelCounter[i];
+        }
+
+        int startIndex;
+        InterlockedAdd(_RWValidVoxelCounter[0], groupVoxelCounter, startIndex);
+
+        for (int i = 0; i < 8; i++)
+        {
+            gs_ThreadWriteIndex[i] = startIndex;
+            startIndex += gs_ThreadVoxelCounter[i];
+        }
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // 3. write voxel index to buffer
+    int writeIndex = gs_ThreadWriteIndex[groupThreadIndex];
+    for (int i = 0; i < VOXEL_COUNT_PER_BLOCK; i++)
+    {
+        bool hasVoxel = GetUint64SingleBit(bitOccupy, i);
+        if (hasVoxel)
+        {
+            int3 voxelIndex = voxelIndexBase + Index1DTo3D_4x4x4(i);
+            int voxelIndex1D = Index3DTo1D(voxelIndex, _CascadeResolution);
+            _RWValidVoxelBuffer[writeIndex] = voxelIndex1D;
+            writeIndex += 1;
+        }
+    }
+}
+
+// -------------------------------------------------------------------------------- //
+#pragma kernel BuildVoxelLightingIndirectArgs
+
+int _ThreadsCountForVoxelLighting;
+
+StructuredBuffer<int> _ValidVoxelCounter;
+RWStructuredBuffer<int> _RWIndirectArgs;
+
+[numthreads(1, 1, 1)]
+void BuildVoxelLightingIndirectArgs(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    _RWIndirectArgs[0] = ceil(float(_ValidVoxelCounter[0]) / float(_ThreadsCountForVoxelLighting));
+    _RWIndirectArgs[1] = 1;
+    _RWIndirectArgs[2] = 1;
+}
+
+// -------------------------------------------------------------------------------- //
+#pragma kernel VoxelLighting
+
+int3 _VoxelPagePoolSize;
+float3 _MainLightDirection;
+float4 _MainLightColor;
+int _SurfaceCacheAtlasResolution;
+
+StructuredBuffer<int> _ValidVoxelBuffer;
+
+SamplerState sampler_LinearClamp;
+Texture3D<float4> _VoxelPagePool;
+Texture3D<int> _VoxelPageClipmap;
+Texture2D<float4> _SurfaceCacheBaseColor;
+Texture2D<float4> _SurfaceCacheNormal;
+Texture2D<float4> _SurfaceCacheEmissive;
+
+RWTexture3D<float3> _RWVoxelRadiancePool;
+
+[numthreads(8, 1, 1)]
+void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    if (threadId.x >= _ValidVoxelCounter[0])
+    {
+        return;
+    }
+
+    // 1. read page data, note that 4x4x4 voxel in same block will share 4x4x4 page data in VoxelPagePool
+    int voxelIndex1D = _ValidVoxelBuffer[threadId.x];
+    int3 voxelIndex = Index1DTo3D(voxelIndex1D, _CascadeResolution);
+    int3 clipmapAccessIndex = ClipmapAddressMapping(voxelIndex, _CascadeResolution, _CascadeMoveOffset, _CascadeIndex);
+    int voxelPageId = _VoxelPageClipmap.Load(uint4(clipmapAccessIndex, 0)).r;
+
+    if (voxelPageId == PAGE_ID_INVALID)
+    {
+        return;
+    }
+
+    int3 indexInPool = PageAddressMapping(voxelPageId, _VoxelPagePoolSize, voxelIndex);
+    float4 rawPageData = _VoxelPagePool.Load(uint4(indexInPool, 0));
+    VoxelPageData pageData = DecodeVoxelPage(rawPageData);
+    ObjectInfo objectInfo = _ObjectsInfo[pageData.objectId];
+
+    // 2. decode surface attribute from surface cache atlas
+    float3 baseColor = SurfaceCacheSampleColor(
+        _SurfaceCacheBaseColor, sampler_LinearClamp,
+        pageData.uvInAtlas, _SurfaceCacheAtlasResolution, pageData.bilinearValidMask
+    );
+
+    float3 localSpaceNormal = SurfaceCacheSampleColor(
+        _SurfaceCacheNormal, sampler_LinearClamp,
+        pageData.uvInAtlas, _SurfaceCacheAtlasResolution, pageData.bilinearValidMask
+    ) * 2 - 1;
+    float3 worldNormal = normalize(mul(float4(localSpaceNormal, 0), objectInfo.localToWorldMatrix).xyz);
+
+    float3 emissive = SurfaceCacheSampleColor(
+        _SurfaceCacheEmissive, sampler_LinearClamp,
+        pageData.uvInAtlas, _SurfaceCacheAtlasResolution, pageData.bilinearValidMask
+    );
+
+    // 3. evaluate direct lighting
+    float3 radiance = emissive;
+    radiance += saturate(dot(worldNormal, _MainLightDirection)) * _MainLightColor * baseColor / (3.1415926);
+
+    // 4. write result to pool
+    _RWVoxelRadiancePool[indexInPool] = radiance;
+}
