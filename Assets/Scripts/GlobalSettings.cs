@@ -24,4 +24,8 @@ public class GlobalSettings : ScriptableObject
     public float meshCardResolutionThreshold2 = 16;
     public float meshCardResolutionThreshold3 = 64;
     public int adaptiveSurfaceCacheCount = 8;
+    public float clipmapObjectCullingRejectFactor1 = 1.0f;
+    public float clipmapObjectCullingRejectFactor2 = 2.0f;
+    public float clipmapObjectCullingRejectFactor3 = 3.0f;
+    public float clipmapObjectCullingRejectFactor4 = 4.0f;
 }

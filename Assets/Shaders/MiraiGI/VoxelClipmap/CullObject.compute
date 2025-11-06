@@ -11,6 +11,8 @@ cbuffer _Params
     int _NumUpdateChunks;
     int _NumThreadsForCulling;
     int _MaxObjectNumPerUpdateChunk;
+    float _RejectFactor;
+    float _VoxelCellSize;
 };
 
 RWStructuredBuffer<int> _RWClipmapCullingResult;
@@ -39,7 +41,15 @@ void CullObjectToClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThread
     
     // 1. do culling
     ObjectInfo objectInfo = _ObjectsInfo[objectIndex];
-    gs_ThreadCullingResult[groupThreadIndex] = ObjectIntersectAABB(objectInfo, _CascadeCenter, _CascadeSize);
+    bool isObjectInsideCascade = ObjectIntersectAABB(objectInfo, _CascadeCenter, _CascadeSize);
+    
+    float3 worldBoundsMin, worldBoundsMax;
+    DecodeObjectWorldBound(objectInfo, worldBoundsMin, worldBoundsMax);
+    float3 worldBoundsSize = worldBoundsMax - worldBoundsMin;
+    float objectBoundsRadius = max(max(worldBoundsSize.x, worldBoundsSize.y), worldBoundsSize.z);
+    bool isObjectTooSmall = objectBoundsRadius < (_VoxelCellSize * _RejectFactor);
+    
+    gs_ThreadCullingResult[groupThreadIndex] = isObjectInsideCascade && !isObjectTooSmall;
 
     GroupMemoryBarrierWithGroupSync();
 
@@ -154,10 +164,11 @@ void CullObjectToUpdateChunk(uint3 threadId : SV_DispatchThreadID, uint3 groupTh
     GroupMemoryBarrierWithGroupSync();
 
     // 3. write into culling result
-    int cullingResultOffset = chunkIndex * _MaxObjectNumPerUpdateChunk; // store 2d logic data to 1d buffer
+    int cullingResultStart = chunkIndex * _MaxObjectNumPerUpdateChunk; // store 2d logic data to 1d buffer
+    int cullingResultEnd = cullingResultStart + _MaxObjectNumPerUpdateChunk; // if out of max object limit per chunk, we discard the object 
     int writeIndex = gs_ThreadWriteIndex[groupThreadIndex];
-    writeIndex += cullingResultOffset;
-    if (IsObjectPassCulling(groupThreadIndex))
+    writeIndex += cullingResultStart;
+    if (IsObjectPassCulling(groupThreadIndex) && writeIndex < cullingResultEnd)
     {
         _RWUpdateChunkCullingResult[writeIndex] = objectInfo.objectId;
     }

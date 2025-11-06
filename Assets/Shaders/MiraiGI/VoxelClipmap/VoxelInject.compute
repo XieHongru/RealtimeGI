@@ -11,6 +11,8 @@ cbuffer _Params
     int _NumUpdateChunks;
     int _NumThreadsForCulling;
     int _MaxObjectNumPerUpdateChunk;
+    float _RejectFactor;
+    float _VoxelCellSize;
 };
 
 int _SurfaceCacheAtlasResolution;
@@ -53,16 +55,16 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
     float voxelCellSize = _CascadeSize / _CascadeResolution.xyz;
     int voxelId1D = Index3DTo1D(voxelIndexInChunk, uint3(16, 16, 16));
 
-    int cullingResultOffset = chunkIndex * _MaxObjectNumPerUpdateChunk; // access 2d logic data in 1d buffer
-    int numObjectsInUpdateChunk = _UpdateChunkObjectCounter[chunkIndex];
-
+    int cullingResultStart = chunkIndex * _MaxObjectNumPerUpdateChunk; // access 2d logic data in 1d buffer
+    int numObjectsInUpdateChunk = min(_UpdateChunkObjectCounter[chunkIndex], _MaxObjectNumPerUpdateChunk);
+    
     bool hasVoxel = false;
     VoxelPageData voxelPageData = GetEmptyPageData();
 
     // 1. loop all objects in update chunk, see if clipmap's voxel intersect with per object voxel
     for (int i = 0; i < numObjectsInUpdateChunk; i++)
     {
-        int objectId = _UpdateChunkCullingResult[cullingResultOffset + i];
+        int objectId = _UpdateChunkCullingResult[cullingResultStart + i];
         ObjectInfo objectInfo = _ObjectsInfo[objectId];
 
         // transform voxel center to object's space
@@ -77,9 +79,20 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
             length(objectInfo.localToWorldMatrix[2].xyz)
         );
         float3 objectLocalBoundSize = objectInfo.localBoundsMax - objectInfo.localBoundsMin;
-        float3 objectWorldBound = objectLocalBoundSize * objectWorldScale;
-        float objectWorldBoundSize = max(max(objectWorldBound.x, objectWorldBound.y), objectWorldBound.z); // @TODO: select xyz component for different card orientation
-
+        float3 objectWorldBound = objectLocalBoundSize * objectWorldScale; 
+        // note: must sync with projection matrix in CalcCardCaptureViewProjectionMatrix in c#
+        float orthoDepthWorldSize = max(max(objectWorldBound.x, objectWorldBound.y), objectWorldBound.z); 
+        
+        // if voxel is too far from object we reject
+        float3 localCellSize = voxelCellSize / objectWorldScale;
+        float localSpaceCellRadius = max(max(localCellSize.x, localCellSize.y), localCellSize.z) * 1.414; // sqrt(2) for diagonal
+        float3 toleranceBoundMin = objectInfo.localBoundsMin - localSpaceCellRadius.xxx;
+        float3 toleranceBoundMax = objectInfo.localBoundsMax + localSpaceCellRadius.xxx;
+        if (any(localPosition < toleranceBoundMin) || any(localPosition > toleranceBoundMax))
+        {
+            continue;
+        }
+        
         int surfaceCacheId = objectInfo.surfaceCacheId;
         SurfaceCacheInfo surfaceCacheInfo = _SurfaceCacheInfoBuffer[surfaceCacheId];
         int cardCount = surfaceCacheInfo.meshCardCount;
@@ -111,7 +124,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
                 continue;
             }
 
-            float worldDistancce = abs(cardDepth - voxelDepth) * objectWorldBoundSize;
+            float worldDistancce = abs(cardDepth - voxelDepth) * orthoDepthWorldSize;
             if (worldDistancce < voxelCellSize * 0.5)  // tolerance radius is sqrt(2) / 2, for unit cube
             {
                 hasVoxel = true;

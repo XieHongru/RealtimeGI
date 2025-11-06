@@ -125,44 +125,17 @@ float Squaref(float x)
     return x * x;
 }
 
-// copy from UE
-bool SphereIntersectAABB(float4 sphere, float3 aabbMin, float3 aabbMax)
+void DecodeObjectWorldBound(ObjectInfo objectInfo, out float3 worldBoundsMin, out float3 worldBoundsMax)
 {
-    float3 sphereCenter = sphere.xyz;
-    float radiusSquared = sphere.w * sphere.w;
-
-    float distSquared = 0.f;
-    if (sphereCenter.x < aabbMin.x)
-    {
-        distSquared += Squaref(sphereCenter.x - aabbMin.x);
-    }
-    else if (sphereCenter.x > aabbMax.x)
-    {
-        distSquared += Squaref(sphereCenter.x - aabbMax.x);
-    }
-    if (sphereCenter.y < aabbMin.y)
-    {
-        distSquared += Squaref(sphereCenter.y - aabbMin.y);
-    }
-    else if (sphereCenter.y > aabbMax.y)
-    {
-        distSquared += Squaref(sphereCenter.y - aabbMax.y);
-    }
-    if (sphereCenter.z < aabbMin.z)
-    {
-        distSquared += Squaref(sphereCenter.z - aabbMin.z);
-    }
-    else if (sphereCenter.z > aabbMax.z)
-    {
-        distSquared += Squaref(sphereCenter.z - aabbMax.z);
-    }
-    return distSquared <= radiusSquared;
+    float3 worldBoundPadding = float3(0.1, 0.1, 0.1); // prevent zero size bound (like plane)
+    worldBoundsMin = objectInfo.worldBoundsMin - worldBoundPadding;
+    worldBoundsMax = objectInfo.worldBoundsMax + worldBoundPadding;
 }
 
 bool ObjectIntersectAABB(in ObjectInfo objectInfo, float3 aabbCenter, float3 aabbSize)
 {
-    float3 worldBoundsMin = objectInfo.worldBoundsMin;
-    float3 worldBoundsMax = objectInfo.worldBoundsMax;
+    float3 worldBoundsMin, worldBoundsMax;
+    DecodeObjectWorldBound(objectInfo, worldBoundsMin, worldBoundsMax);
 
     float3 sphereCenter = (worldBoundsMax + worldBoundsMin) * 0.5;
     float sphereRadius = length(worldBoundsMax - worldBoundsMin) * 0.5;
@@ -171,7 +144,8 @@ bool ObjectIntersectAABB(in ObjectInfo objectInfo, float3 aabbCenter, float3 aab
     float3 aabbMin = aabbCenter - aabbSize * 0.5;
     float3 aabbMax = aabbCenter + aabbSize * 0.5;
 
-    bool res = SphereIntersectAABB(boundSphere, aabbMin, aabbMax);
+    //bool res = SphereIntersectAABB(boundSphere, aabbMin, aabbMax);
+    bool res = all(aabbMin < worldBoundsMax) && all(aabbMax > worldBoundsMin);
     return res;
 }
 

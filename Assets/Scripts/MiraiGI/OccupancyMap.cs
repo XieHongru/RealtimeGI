@@ -67,11 +67,17 @@ public class OccupancyMap
     public void Release()
     {
         m_BaseOccupancyMap?.Release();
+        m_MergedBaseOccupancyMap?.Release();
         m_OccupancyMapAtlas?.Release();
+        m_DummyRT?.Release();
+
         m_CameraParamsArray?.Release();
 
         m_BaseOccupancyMap = null;
+        m_MergedBaseOccupancyMap = null;
         m_OccupancyMapAtlas = null;
+        m_DummyRT = null;
+
         m_CameraParamsArray = null;
     }
 
