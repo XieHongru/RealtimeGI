@@ -79,7 +79,7 @@ public class MiraiGIClipmap
 
     public const int CASCADE_COUNT = 4;
     public Vector3Int voxelResolution = new Vector3Int(128, 128, 128);
-    public Vector3Int voxelPagePoolSize = new Vector3Int(32, 32, 32);
+    public Vector3Int voxelPageCountInXYZ = new Vector3Int(32, 32, 32);
 
     public MiraiGICascadeInfo[] cascadeInfos;
 
@@ -89,13 +89,19 @@ public class MiraiGIClipmap
     const int MAX_CASCADE_COUNT = 4;
     const int VOXEL_BLOCK_SIZE = 4;
     const int PAGE_ID_INVALID = (0x3FFFFFFF);
-    const int VISUALIZE_MODE = 5;
+    const int VISUALIZE_MODE = 4;
 
     RenderTexture m_VoxelMap;
     RenderTexture m_VoxelPageClipmap;
-    RenderTexture m_VoxelPagePool;
     RenderTexture m_VisualizeColorTarget;
     RenderTexture m_VisualizeDepthTarget;
+
+    // sparse store per-voxel material attribute, all clips share same physic texture
+    // note: per-mesh material attribute is store in surface cache atlas, like BLAS
+    // voxel pool will store per-instance material attribute, like TLAS
+    RenderTexture m_VoxelPoolBaseColor;
+    RenderTexture m_VoxelPoolNormal;
+    RenderTexture m_VoxelPoolEmissive;
 
     ObjectCullParams[] m_ObjectCullParams;
     ComputeBuffer[] m_ObjectCullParamsCB;
@@ -122,8 +128,10 @@ public class MiraiGIClipmap
     ComputeShader m_VoxelPageInitCS;
 
     public RenderTexture GetVoxelMap() => m_VoxelMap;
-    public RenderTexture GetVoxelPagePool() => m_VoxelPagePool;
     public RenderTexture GetVoxelPageClipmap() => m_VoxelPageClipmap;
+    public RenderTexture GetVoxelPoolBaseColor() => m_VoxelPoolBaseColor;
+    public RenderTexture GetVoxelPoolNormal() => m_VoxelPoolNormal;
+    public RenderTexture GetVoxelPoolEmissive() => m_VoxelPoolEmissive;
 
     public void CreateClipmap()
     {
@@ -197,25 +205,40 @@ public class MiraiGIClipmap
 
         // TODO: adaptive size, now for 128*128*128*4 clipmap we use 32x32x32 block pages (128x128x128 total)
         // TODO: check if need re-create, 
-        Vector3Int numPagesInXYZ = voxelPagePoolSize;
-        m_VoxelPagePool = new RenderTexture(numPagesInXYZ.x * VOXEL_BLOCK_SIZE, numPagesInXYZ.y * VOXEL_BLOCK_SIZE, 0, RenderTextureFormat.ARGB64);
-        m_VoxelPagePool.dimension = TextureDimension.Tex3D;
-        m_VoxelPagePool.volumeDepth = numPagesInXYZ.z * VOXEL_BLOCK_SIZE;
-        m_VoxelPagePool.enableRandomWrite = true;
-        m_VoxelPagePool.Create();
+        Vector3Int textureSize = voxelPageCountInXYZ * VOXEL_BLOCK_SIZE;
+
+        m_VoxelPoolBaseColor = new RenderTexture(textureSize.x, textureSize.y, 0, RenderTextureFormat.ARGB32);
+        m_VoxelPoolBaseColor.dimension = TextureDimension.Tex3D;
+        m_VoxelPoolBaseColor.volumeDepth = textureSize.z;
+        m_VoxelPoolBaseColor.enableRandomWrite = true;
+        m_VoxelPoolBaseColor.Create();
+
+        m_VoxelPoolNormal = new RenderTexture(textureSize.x, textureSize.y, 0, RenderTextureFormat.RGB111110Float);
+        m_VoxelPoolNormal.dimension = TextureDimension.Tex3D;
+        m_VoxelPoolNormal.volumeDepth = textureSize.z;
+        m_VoxelPoolNormal.enableRandomWrite = true;
+        m_VoxelPoolNormal.Create();
+
+        m_VoxelPoolEmissive = new RenderTexture(textureSize.x, textureSize.y, 0, RenderTextureFormat.RGB111110Float);
+        m_VoxelPoolEmissive.dimension = TextureDimension.Tex3D;
+        m_VoxelPoolEmissive.volumeDepth = textureSize.z;
+        m_VoxelPoolEmissive.enableRandomWrite = true;
+        m_VoxelPoolEmissive.Create();
 
         CommandBuffer cmd = CommandBufferPool.Get("Init Voxel Page");
 
         cmd.SetComputeTextureParam(m_VoxelPageInitCS, 0, Shader.PropertyToID("_RWVoxelMap"), m_VoxelMap);
         cmd.SetComputeTextureParam(m_VoxelPageInitCS, 0, Shader.PropertyToID("_RWVoxelPageClipmap"), m_VoxelPageClipmap);
-        cmd.SetComputeTextureParam(m_VoxelPageInitCS, 0, Shader.PropertyToID("_RWVoxelPagePool"), m_VoxelPagePool);
+        cmd.SetComputeTextureParam(m_VoxelPageInitCS, 0, Shader.PropertyToID("_RWVoxelPoolBaseColor"), m_VoxelPoolBaseColor);
+        cmd.SetComputeTextureParam(m_VoxelPageInitCS, 0, Shader.PropertyToID("_RWVoxelPoolNormal"), m_VoxelPoolNormal);
+        cmd.SetComputeTextureParam(m_VoxelPageInitCS, 0, Shader.PropertyToID("_RWVoxelPoolEmissive"), m_VoxelPoolEmissive);
         cmd.DispatchCompute(m_VoxelPageInitCS, 0, clipmapResolution.x / 4, clipmapResolution.y / 4, clipmapResolution.z / 4);
 
         Graphics.ExecuteCommandBuffer(cmd);
         CommandBufferPool.Release(cmd);
 
         // page allocator
-        int numPages = numPagesInXYZ.x * numPagesInXYZ.y * numPagesInXYZ.z;
+        int numPages = voxelPageCountInXYZ.x * voxelPageCountInXYZ.y * voxelPageCountInXYZ.z;
         m_VoxelPageAllocator = new ComputeBuffer(4, sizeof(int), ComputeBufferType.Structured);
         // TODO: fill 0
 
@@ -261,14 +284,18 @@ public class MiraiGIClipmap
     {
         m_VoxelMap?.Release();
         m_VoxelPageClipmap?.Release();
-        m_VoxelPagePool?.Release();
         m_VisualizeColorTarget?.Release();
         m_VisualizeDepthTarget?.Release();
+        m_VoxelPoolBaseColor?.Release();
+        m_VoxelPoolNormal?.Release();
+        m_VoxelPoolEmissive?.Release();
         m_VoxelMap = null;
         m_VoxelPageClipmap = null;
-        m_VoxelPagePool = null;
         m_VisualizeColorTarget = null;
         m_VisualizeDepthTarget = null;
+        m_VoxelPoolBaseColor = null;
+        m_VoxelPoolNormal = null;
+        m_VoxelPoolEmissive = null;
 
         for (int cascadeId = 0; cascadeId < CASCADE_COUNT; cascadeId++)
         {
@@ -542,7 +569,7 @@ public class MiraiGIClipmap
         cmd.SetComputeIntParam(m_VoxelInjectCS, Shader.PropertyToID("_SurfaceCacheAtlasResolution"), 2048);
         cmd.SetComputeIntParam(m_VoxelInjectCS, Shader.PropertyToID("_CascadeIndex"), cascadeIndex);
         cmd.SetComputeVectorParam(m_VoxelInjectCS, Shader.PropertyToID("_CascadeMoveOffset"), (Vector3)cascadeInfo.moveOffset);
-        cmd.SetComputeVectorParam(m_VoxelInjectCS, Shader.PropertyToID("_VoxelPagePoolSize"), (Vector3)voxelPagePoolSize);
+        cmd.SetComputeVectorParam(m_VoxelInjectCS, Shader.PropertyToID("_VoxelPageCountInXYZ"), (Vector3)voxelPageCountInXYZ);
 
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_UpdateChunkList"), m_UpdateChunkList[cascadeIndex]);
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_UpdateChunkCullingResult"), m_UpdateChunkCullingResults);
@@ -554,12 +581,17 @@ public class MiraiGIClipmap
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPageFreeList"), m_VoxelPageFreeList);
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPageReleaseList"), m_VoxelPageReleaseList);
 
-        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_SurfaceCacheAtlasDepth"), scene.surfaceCache.GetSurfaceCacheTexture(3));
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_SurfaceCacheAtlasDepth"), scene.surfaceCache.GetSurfaceCacheTexture((int)CardCaptureRTSlot.Depth));
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelBitOccupyClipmap"), m_VoxelMap);
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPageClipmap"), m_VoxelPageClipmap);
-        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPagePool"), m_VoxelPagePool);
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_SurfaceCacheAtlasBaseColor"), scene.surfaceCache.GetSurfaceCacheTexture((int)CardCaptureRTSlot.BaseColor));
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_SurfaceCacheAtlasNormal"), scene.surfaceCache.GetSurfaceCacheTexture((int)CardCaptureRTSlot.Normal));
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_SurfaceCacheAtlasEmissive"), scene.surfaceCache.GetSurfaceCacheTexture((int)CardCaptureRTSlot.Emissive));
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPoolBaseColor"), m_VoxelPoolBaseColor);
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPoolNormal"), m_VoxelPoolNormal);
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPoolEmissive"), m_VoxelPoolEmissive);
 
-        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelOccupy"), m_VoxelOccupy);
+        //cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelOccupy"), m_VoxelOccupy);
 
         Vector3Int groupCount = new Vector3Int(Mathf.CeilToInt((float)cascadeInfo.updateChunkResolution.x / 4 * cascadeInfo.chunksToUpdate.Count),
                                                 Mathf.CeilToInt((float)cascadeInfo.updateChunkResolution.y / 4),
@@ -575,7 +607,7 @@ public class MiraiGIClipmap
         // 1. build indirect dispatch args
         {
             int kernel = m_VoxelPageReleaseCS.FindKernel("BuildVoxelPageReleaseIndirectArgs");
-            cmd.SetComputeVectorParam(m_VoxelPageReleaseCS, Shader.PropertyToID("_VoxelPagePoolSize"), (Vector3)voxelPagePoolSize);
+            cmd.SetComputeVectorParam(m_VoxelPageReleaseCS, Shader.PropertyToID("_VoxelPageCountInXYZ"), (Vector3)voxelPageCountInXYZ);
             cmd.SetComputeIntParam(m_VoxelPageReleaseCS, Shader.PropertyToID("_NumThreadsForPageRelease"), 1);
             cmd.SetComputeBufferParam(m_VoxelPageReleaseCS, kernel, Shader.PropertyToID("_RWVoxelPageAllocator"), m_VoxelPageAllocator);
             cmd.SetComputeBufferParam(m_VoxelPageReleaseCS, kernel, Shader.PropertyToID("_RWIndirectArgs"), m_VoxelPageReleaseIndirectArgs);
@@ -610,7 +642,7 @@ public class MiraiGIClipmap
             cascadeMoveOffsetArray[cascadeId] = (Vector3)cascadeInfo.moveOffset;
         }
 
-        int visualizeRT = (VISUALIZE_MODE > 4) ? 0 : (VISUALIZE_MODE - 1);
+        int visualizeRT = (VISUALIZE_MODE > 3) ? 0 : (VISUALIZE_MODE - 1);
 
         int kernel = m_VisualizeClipmapCS.FindKernel("VisualizeClipmap");
 
@@ -620,8 +652,7 @@ public class MiraiGIClipmap
 
         cmd.SetComputeIntParam(m_VisualizeClipmapCS, Shader.PropertyToID("_VisualizeMode"), VISUALIZE_MODE);
         cmd.SetComputeIntParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeCount"), CASCADE_COUNT);
-        cmd.SetComputeVectorParam(m_VisualizeClipmapCS, Shader.PropertyToID("_VoxelPagePoolSize"), (Vector3)voxelPagePoolSize);
-        cmd.SetComputeIntParam(m_VisualizeClipmapCS, Shader.PropertyToID("_SurfaceCacheAtlasResolution"), 2048);
+        cmd.SetComputeVectorParam(m_VisualizeClipmapCS, Shader.PropertyToID("_VoxelPageCountInXYZ"), (Vector3)voxelPageCountInXYZ);
         cmd.SetComputeVectorArrayParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeCenterArray"), cascadeCenterArray);
         cmd.SetComputeVectorArrayParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeSizeArray"), cascadeSizeArray);
         cmd.SetComputeVectorArrayParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeResolutionArray"), cascadeResolutionArray);
@@ -629,8 +660,10 @@ public class MiraiGIClipmap
 
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_BitOccupyClipmap"), m_VoxelMap);
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_VoxelPageClipmap"), m_VoxelPageClipmap);
-        cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_VoxelPagePool"), m_VoxelPagePool);
-        cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_VoxelRadiancePool"), radianceCache.GetVoxelRadiancePool());
+        cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_VoxelPoolBaseColor"), m_VoxelPoolBaseColor);
+        cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_VoxelPoolNormal"), m_VoxelPoolNormal);
+        cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_VoxelPoolEmissive"), m_VoxelPoolEmissive);
+        cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_VoxelPoolRadiance"), radianceCache.GetVoxelPoolRadiance());
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_SurfaceCacheAtlasToVisualize"), scene.surfaceCache.GetSurfaceCacheTexture(visualizeRT));
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_SceneDepthTexture"), Shader.GetGlobalTexture("_CameraDepthTexture"));
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_RWSceneColorTexture"), m_VisualizeColorTarget);

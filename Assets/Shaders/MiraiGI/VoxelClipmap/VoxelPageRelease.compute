@@ -1,7 +1,7 @@
 #include "../../GICommon.hlsl"
 #pragma kernel BuildVoxelPageReleaseIndirectArgs
 
-int3 _VoxelPagePoolSize;
+int3 _VoxelPageCountInXYZ;
 int _NumThreadsForPageRelease;
 
 StructuredBuffer<int> _VoxelPageReleaseList;
@@ -12,7 +12,7 @@ RWStructuredBuffer<int> _RWVoxelPageFreeList;
 [numthreads(1, 1, 1)]
 void BuildVoxelPageReleaseIndirectArgs(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
-    int maxPageNum = _VoxelPagePoolSize.x * _VoxelPagePoolSize.y * _VoxelPagePoolSize.z;
+    int maxPageNum = _VoxelPageCountInXYZ.x * _VoxelPageCountInXYZ.y * _VoxelPageCountInXYZ.z;
     int freePointer = min(_RWVoxelPageAllocator[FREE_PAGE_POINTER], maxPageNum);
     int releasePointer = _RWVoxelPageAllocator[RELEASE_PAGE_POINTER];
     int numPagesToRelease = releasePointer;

@@ -7,10 +7,9 @@ float4x4 _InvViewProjMat;
 
 int _VisualizeMode;
 int _VisualizeUpdateChunk;
-
 int _CascadeCount;
-int3 _VoxelPagePoolSize;
-int _SurfaceCacheAtlasResolution;
+int3 _VoxelPageCountInXYZ;
+
 float4 _CascadeCenterArray[MAX_CASCADE_COUNT];
 float4 _CascadeSizeArray[MAX_CASCADE_COUNT];
 float4 _CascadeResolutionArray[MAX_CASCADE_COUNT];
@@ -18,13 +17,15 @@ float4 _CascadeMoveOffsetArray[MAX_CASCADE_COUNT];
 
 Texture3D<uint2> _BitOccupyClipmap;
 Texture3D<int> _VoxelPageClipmap;
-Texture3D<float4> _VoxelPagePool;
-Texture3D<float4> _VoxelRadiancePool;
-Texture2D<float> _SceneDepthTexture;
-Texture2D<float4> _SurfaceCacheAtlasToVisualize;
-Texture3D<int> _VoxelOccupy;
+Texture3D<float4> _VoxelPoolBaseColor;
+Texture3D<float4> _VoxelPoolNormal;
+Texture3D<float4> _VoxelPoolEmissive;
+Texture3D<float4> _VoxelPoolRadiance;
 
+Texture2D<float> _SceneDepthTexture;
 RWTexture2D<float4> _RWSceneColorTexture;
+
+Texture3D<int> _VoxelOccupy;
 
 int _UpdateChunkCount;
 float3 _UpdateChunkResolution;
@@ -58,7 +59,7 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     
     float3 rayDir = normalize(pixelWorldPosition - _CameraPosition.xyz);
     float3 rayEnd = rayDir * 1000000;
-    float3 color = float3(0, 0, 0) + _VoxelOccupy[uint3(0, 0, 0)]; // used to debug, make sure it's (0, 0, 0)
+    float3 color = float3(0, 0, 0);
 
     ClipmapInfo clipmapInfo;
     clipmapInfo.cascadeCount = _CascadeCount;
@@ -76,31 +77,26 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
         
         if (voxelPageId != PAGE_ID_INVALID)
         {
-            int3 indexInPool = PageAddressMapping(voxelPageId, _VoxelPagePoolSize, hit.voxelIndex);
+            int3 indexInPool = PageAddressMapping(voxelPageId, _VoxelPageCountInXYZ, hit.voxelIndex);
             
-            // radiance
-            if (_VisualizeMode == 5)
+            if (_VisualizeMode == 1)  // base color
             {
-                debugColor = _VoxelRadiancePool.Load(uint4(indexInPool, 0)).rgb;
+                debugColor = _VoxelPoolBaseColor.Load(uint4(indexInPool, 0)).rgb;
             }
-            else
+            if (_VisualizeMode == 2)  // normal
             {
-                float4 rawPageData = _VoxelPagePool.Load(uint4(indexInPool, 0));
-                VoxelPageData pageData = DecodeVoxelPage(rawPageData);
-
-                ObjectInfo objectInfo = _ObjectsInfo[pageData.objectId];
-                debugColor = SurfaceCacheSampleColor(
-                    _SurfaceCacheAtlasToVisualize, sampler_LinearClamp,
-                    pageData.uvInAtlas, _SurfaceCacheAtlasResolution, pageData.bilinearValidMask
-                );
-
-                // is normal, decode it
-                if (_VisualizeMode == 2)
-                {
-                    float3 localSpaceNormal = debugColor.xyz * 2 - 1;
-                    float3 worldNormal = normalize(mul(float4(localSpaceNormal, 0), objectInfo.localToWorldMatrix).xyz);
-                    debugColor += worldNormal * 0.5 + 0.5;
-                }
+                debugColor = _VoxelPoolNormal.Load(uint4(indexInPool, 0)).rgb;
+            }
+            if (_VisualizeMode == 3)  // emissive
+            {
+                debugColor = _VoxelPoolEmissive.Load(uint4(indexInPool, 0)).rgb;
+            }
+            if (_VisualizeMode == 4)  // radiance
+            {
+                float3 worldNormal = _VoxelPoolNormal.Load(uint4(indexInPool, 0)).rgb * 2 - 1;
+                int isBackFace = dot(worldNormal, -rayDir) < 0;
+                int3 twoSideIndex = TwoSideAddressMapping(indexInPool, isBackFace);
+                debugColor = _VoxelPoolRadiance.Load(uint4(twoSideIndex, 0)).rgb;
             }
         }
         // for invalid page maybe runout of space, we just give it a warning color

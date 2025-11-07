@@ -49,14 +49,6 @@ struct CardInfo
     float4x4 localToCardMatrix;
     float4 cardUVTransform;
 };
-    
-struct VoxelPageData
-{
-    float2 uvInAtlas;
-    int objectId;
-    int cardId;
-    float4 bilinearValidMask;
-};
 
 StructuredBuffer<ObjectInfo>    _ObjectsInfo;
 StructuredBuffer<MeshInfo>      _MeshInfo;
@@ -269,6 +261,7 @@ int BitCount32(uint u)
     return ((uCount + (uCount >> 3)) & 030707070707) % 63;
 }
 
+// return index to sample clipmap
 int3 ClipmapAddressMapping(int3 voxelIndex, int3 cascadeResolution, int3 cascadeMoveOffset, int cascadeIndex)
 {
 	// [0 ~ 128] --> [0 ~ 32]
@@ -283,6 +276,7 @@ int3 ClipmapAddressMapping(int3 voxelIndex, int3 cascadeResolution, int3 cascade
     return accessIndex;
 }
 
+// map voxel index to voxel pool's physic address
 int3 PageAddressMapping(int pageId, int3 numPagesInXYZ, int3 voxelIndex)
 {
 	// note: each "page" is same size as "block", which 4x4x4
@@ -295,64 +289,9 @@ int3 PageAddressMapping(int pageId, int3 numPagesInXYZ, int3 voxelIndex)
     return indexInPool;
 }
 
-float IntToR16(int intVal)
-{
-    return float(intVal) / 65535.0f;
-}
-
-int R16ToInt(float R16Val)
-{
-    return R16Val * 65535.0f;
-}
-
-float4 EncodeVoxelPage(VoxelPageData pageData)
-{
-    float4 result;
-    result.xy = pageData.uvInAtlas;
-    result.z = IntToR16(pageData.objectId);
-
-    int validMask = 0;
-    validMask += pageData.bilinearValidMask[0] == 0 ? 0 : (1 << 0);
-    validMask += pageData.bilinearValidMask[1] == 0 ? 0 : (1 << 1);
-    validMask += pageData.bilinearValidMask[2] == 0 ? 0 : (1 << 2);
-    validMask += pageData.bilinearValidMask[3] == 0 ? 0 : (1 << 3);
-
-    int cardIdAndMask = (pageData.cardId << 4) + validMask;
-    result.w = IntToR16(cardIdAndMask);
-
-    return result;
-}
-
-VoxelPageData DecodeVoxelPage(float4 encodedPage)
-{
-    VoxelPageData result;
-    result.uvInAtlas = encodedPage.xy;
-    result.objectId = R16ToInt(encodedPage.z);
-
-    int cardIdAndMask = R16ToInt(encodedPage.w);
-    int encodedMask = cardIdAndMask & 0x0F;
-
-    result.cardId = (cardIdAndMask >> 4) & 0x0F;
-
-    float4 validMask = float4(0, 0, 0, 0);
-    result.bilinearValidMask[0] = (encodedMask >> 0) & 0x01;
-    result.bilinearValidMask[1] = (encodedMask >> 1) & 0x01;
-    result.bilinearValidMask[2] = (encodedMask >> 2) & 0x01;
-    result.bilinearValidMask[3] = (encodedMask >> 3) & 0x01;
-
-    return result;
-}
-
-VoxelPageData GetEmptyPageData()
-{
-    VoxelPageData result = (VoxelPageData) 0;
-    result.objectId = OBJECT_ID_INVALID;
-    return result;
-}
-
-// VoxelRadiancePool share address with VoxelPagePool, but double the size for two side voxel
+// VoxelPoolRadiance share address with other voxel pool, but double the size for two side voxel
 // we pack front-back size nearby in z axis to reduce cache miss when access
-int3 VoxelPoolTwoSideAddressMapping(int3 indexInPool, int isBackFace)
+int3 TwoSideAddressMapping(int3 indexInPool, int isBackFace)
 {
     return indexInPool * int3(1, 1, VOXEL_FACE_NUM) + int3(0, 0, isBackFace);
 }

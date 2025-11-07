@@ -86,21 +86,18 @@ void BuildVoxelLightingIndirectArgs(uint3 threadId : SV_DispatchThreadID, uint3 
 // -------------------------------------------------------------------------------- //
 #pragma kernel VoxelLighting
 
-int3 _VoxelPagePoolSize;
+int3 _VoxelPageCountInXYZ;
 float3 _MainLightDirection;
 float4 _MainLightColor;
-int _SurfaceCacheAtlasResolution;
 
 StructuredBuffer<int> _ValidVoxelBuffer;
 
-SamplerState sampler_LinearClamp;
-Texture3D<float4> _VoxelPagePool;
 Texture3D<int> _VoxelPageClipmap;
-Texture2D<float4> _SurfaceCacheBaseColor;
-Texture2D<float4> _SurfaceCacheNormal;
-Texture2D<float4> _SurfaceCacheEmissive;
+Texture3D<float4> _VoxelPoolBaseColor;
+Texture3D<float4> _VoxelPoolNormal;
+Texture3D<float4> _VoxelPoolEmissive;
 
-RWTexture3D<float3> _RWVoxelRadiancePool;
+RWTexture3D<float3> _RWVoxelPoolRadiance;
 
 [numthreads(8, 1, 1)]
 void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
@@ -110,7 +107,7 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
         return;
     }
 
-    // 1. read page data, note that 4x4x4 voxel in same block will share 4x4x4 page data in VoxelPagePool
+    // 1. read page data, note that 4x4x4 voxel in same block will share 4x4x4 page data in pool
     int voxelIndex1D = _ValidVoxelBuffer[threadId.x];
     int3 voxelIndex = Index1DTo3D(voxelIndex1D, _CascadeResolution);
     int3 clipmapAccessIndex = ClipmapAddressMapping(voxelIndex, _CascadeResolution, _CascadeMoveOffset, _CascadeIndex);
@@ -120,33 +117,22 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
     {
         return;
     }
-
-    int3 indexInPool = PageAddressMapping(voxelPageId, _VoxelPagePoolSize, voxelIndex);
-    float4 rawPageData = _VoxelPagePool.Load(uint4(indexInPool, 0));
-    VoxelPageData pageData = DecodeVoxelPage(rawPageData);
-    ObjectInfo objectInfo = _ObjectsInfo[pageData.objectId];
-
-    // 2. decode surface attribute from surface cache atlas
-    float3 baseColor = SurfaceCacheSampleColor(
-        _SurfaceCacheBaseColor, sampler_LinearClamp,
-        pageData.uvInAtlas, _SurfaceCacheAtlasResolution, pageData.bilinearValidMask
-    );
-
-    float3 localSpaceNormal = SurfaceCacheSampleColor(
-        _SurfaceCacheNormal, sampler_LinearClamp,
-        pageData.uvInAtlas, _SurfaceCacheAtlasResolution, pageData.bilinearValidMask
-    ) * 2 - 1;
-    float3 worldNormal = normalize(mul(float4(localSpaceNormal, 0), objectInfo.localToWorldMatrix).xyz);
-
-    float3 emissive = SurfaceCacheSampleColor(
-        _SurfaceCacheEmissive, sampler_LinearClamp,
-        pageData.uvInAtlas, _SurfaceCacheAtlasResolution, pageData.bilinearValidMask
-    );
+    
+    // 2. read surface attribute
+    int3 indexInPool = PageAddressMapping(voxelPageId, _VoxelPageCountInXYZ, voxelIndex);
+    float3 baseColor = _VoxelPoolBaseColor.Load(int4(indexInPool, 0));
+    float3 worldNormal = _VoxelPoolNormal.Load(int4(indexInPool, 0)) * 2 - 1;
+    float3 emissive = _VoxelPoolEmissive.Load(int4(indexInPool, 0));
 
     // 3. evaluate direct lighting
-    float3 radiance = emissive;
-    radiance += saturate(dot(worldNormal, _MainLightDirection)) * _MainLightColor * baseColor / (3.1415926);
+    for (int face = VOXEL_FACE_FRONT; face <= VOXEL_FACE_BACK; face++)
+    {
+        float3 radiance = emissive;
+        float3 faceNormal = worldNormal * lerp(1, -1, face); // -WorldNormal if back face
 
-    // 4. write result to pool
-    _RWVoxelRadiancePool[indexInPool] = radiance;
+        radiance += saturate(dot(faceNormal, _MainLightDirection)) * _MainLightColor * baseColor / (3.1415926);
+
+        int3 writeIndex = TwoSideAddressMapping(indexInPool, face);
+        _RWVoxelPoolRadiance[writeIndex] = radiance;
+    }    
 }

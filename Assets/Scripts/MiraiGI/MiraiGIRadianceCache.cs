@@ -13,7 +13,7 @@ public class MiraiGIRadianceCache
     ComputeBuffer m_ValidVoxelBuffer;
     ComputeBuffer m_VoxelLightingIndirectArgs;
 
-    RenderTexture m_VoxelRadiancePool;
+    RenderTexture m_VoxelPoolRadiance;
 
     ComputeShader m_VoxelLightingCS;
 
@@ -21,7 +21,7 @@ public class MiraiGIRadianceCache
     int[] m_ValidVoxelCounterInitData;
     int[] m_ValidVoxelBufferInitData;
 
-    public RenderTexture GetVoxelRadiancePool() => m_VoxelRadiancePool;
+    public RenderTexture GetVoxelPoolRadiance() => m_VoxelPoolRadiance;
 
     public void Init()
     {
@@ -34,13 +34,13 @@ public class MiraiGIRadianceCache
         m_ValidVoxelBuffer?.Release();
         m_VoxelLightingIndirectArgs?.Release();
 
-        m_VoxelRadiancePool?.Release();
+        m_VoxelPoolRadiance?.Release();
 
         m_ValidVoxelCounter = null;
         m_ValidVoxelBuffer = null;
         m_VoxelLightingIndirectArgs = null;
 
-        m_VoxelRadiancePool = null;
+        m_VoxelPoolRadiance = null;
     }
 
     public void Update(MiraiGIGPUScene scene)
@@ -63,16 +63,17 @@ public class MiraiGIRadianceCache
     {
         MiraiGIClipmap clipmap = scene.miraiGIClipmap;
 
-        Vector3Int pageCountInXYZ = clipmap.voxelPagePoolSize;
-        Vector3Int voxelRadiancePoolSize = pageCountInXYZ * GlobalShared.VOXEL_BLOCK_SIZE * 2; // for two side voxel
+        Vector3Int pageCountInXYZ = clipmap.voxelPageCountInXYZ;
+        Vector3Int voxelRadiancePoolSize = pageCountInXYZ * GlobalShared.VOXEL_BLOCK_SIZE;
+        voxelRadiancePoolSize.z *= 2;// for two side voxel
         // TODO: pool size change
-        if (m_VoxelRadiancePool == null)
+        if (m_VoxelPoolRadiance == null)
         {
-            m_VoxelRadiancePool = new RenderTexture(voxelRadiancePoolSize.x, voxelRadiancePoolSize.y, 0, RenderTextureFormat.RGB111110Float);
-            m_VoxelRadiancePool.dimension = TextureDimension.Tex3D;
-            m_VoxelRadiancePool.volumeDepth = voxelRadiancePoolSize.z;
-            m_VoxelRadiancePool.enableRandomWrite = true;
-            m_VoxelRadiancePool.Create();
+            m_VoxelPoolRadiance = new RenderTexture(voxelRadiancePoolSize.x, voxelRadiancePoolSize.y, 0, RenderTextureFormat.RGB111110Float);
+            m_VoxelPoolRadiance.dimension = TextureDimension.Tex3D;
+            m_VoxelPoolRadiance.volumeDepth = voxelRadiancePoolSize.z;
+            m_VoxelPoolRadiance.enableRandomWrite = true;
+            m_VoxelPoolRadiance.Create();
         }
 
         if (m_ValidVoxelCounter == null)
@@ -157,21 +158,18 @@ public class MiraiGIRadianceCache
             cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeIndex"), cascadeId);
             cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeResolution"), (Vector3) clipmap.voxelResolution);
             cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeMoveOffset"), (Vector3) clipmapInfo.moveOffset);
-            cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_VoxelPagePoolSize"), (Vector3) clipmap.voxelPagePoolSize);
+            cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_VoxelPageCountInXYZ"), (Vector3) clipmap.voxelPageCountInXYZ);
             cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_MainLightDirection"), mainLightDirection);
             cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_MainLightColor"), mainLightColor);
-            cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_SurfaceCacheAtlasResolution"), scene.surfaceCache.atlasResolution);
 
-            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ObjectsInfo"), scene.GPUSceneData.objectInfoBuffer);
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ValidVoxelCounter"), m_ValidVoxelCounter);
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ValidVoxelBuffer"), m_ValidVoxelBuffer);
 
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelPagePool"), clipmap.GetVoxelPagePool());
+            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelPoolBaseColor"), clipmap.GetVoxelPoolBaseColor());
+            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelPoolNormal"), clipmap.GetVoxelPoolNormal());
+            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelPoolEmissive"), clipmap.GetVoxelPoolEmissive());
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelPageClipmap"), clipmap.GetVoxelPageClipmap());
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_SurfaceCacheBaseColor"), scene.surfaceCache.GetSurfaceCacheTexture((int)CardCaptureRTSlot.BaseColor));
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_SurfaceCacheNormal"), scene.surfaceCache.GetSurfaceCacheTexture((int)CardCaptureRTSlot.Normal));
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_SurfaceCacheEmissive"), scene.surfaceCache.GetSurfaceCacheTexture((int)CardCaptureRTSlot.Emissive));
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWVoxelRadiancePool"), m_VoxelRadiancePool);
+            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWVoxelPoolRadiance"), m_VoxelPoolRadiance);
 
             cmd.DispatchCompute(m_VoxelLightingCS, kernel, m_VoxelLightingIndirectArgs, 0);
         }

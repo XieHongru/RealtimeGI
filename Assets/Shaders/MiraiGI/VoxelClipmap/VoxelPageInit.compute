@@ -3,7 +3,9 @@
 
 RWTexture3D<uint2> _RWVoxelMap;
 RWTexture3D<int> _RWVoxelPageClipmap;
-RWTexture3D<float4> _RWVoxelPagePool;
+RWTexture3D<float4> _RWVoxelPoolBaseColor;
+RWTexture3D<float4> _RWVoxelPoolNormal;
+RWTexture3D<float4> _RWVoxelPoolEmissive;
 
 [numthreads(4, 4, 4)]
 void VoxelPageInit(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
@@ -15,7 +17,9 @@ void VoxelPageInit(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
     {
         for (int j = 0; j < 4; j++)
         {
-            _RWVoxelPagePool[uint3(threadId.x * 4 + i, threadId.y * 4 + j, threadId.z)] = float4(0, 0, 0, 0);
+            _RWVoxelPoolBaseColor[uint3(threadId.x * 4 + i, threadId.y * 4 + j, threadId.z)] = float4(0, 0, 0, 0);
+            _RWVoxelPoolNormal[uint3(threadId.x * 4 + i, threadId.y * 4 + j, threadId.z)] = float4(0, 0, 0, 0);
+            _RWVoxelPoolEmissive[uint3(threadId.x * 4 + i, threadId.y * 4 + j, threadId.z)] = float4(0, 0, 0, 0);
         }
     }
 }

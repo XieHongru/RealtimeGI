@@ -18,7 +18,7 @@ cbuffer _Params
 int _SurfaceCacheAtlasResolution;
 int _CascadeIndex;
 int3 _CascadeMoveOffset;
-int3 _VoxelPagePoolSize;
+int3 _VoxelPageCountInXYZ;
 
 StructuredBuffer<int> _UpdateChunkList;
 StructuredBuffer<int> _UpdateChunkCullingResult;
@@ -26,17 +26,22 @@ StructuredBuffer<int> _UpdateChunkObjectCounter;
 StructuredBuffer<SurfaceCacheInfo> _SurfaceCacheInfoBuffer;
 StructuredBuffer<CardInfo> _CardInfoBuffer;
 
+Texture2D _SurfaceCacheAtlasBaseColor;
+Texture2D _SurfaceCacheAtlasNormal;
+Texture2D _SurfaceCacheAtlasEmissive;
 Texture2D _SurfaceCacheAtlasDepth;
 SamplerState sampler_LinearClamp;
 
 RWTexture3D<uint2> _RWVoxelBitOccupyClipmap;
-RWTexture3D<uint> _RWVoxelOccupy;
+//RWTexture3D<uint> _RWVoxelOccupy;
 
 RWTexture3D<int> _RWVoxelPageClipmap;
 RWStructuredBuffer<int> _RWVoxelPageAllocator;
 RWStructuredBuffer<int> _RWVoxelPageFreeList;
 RWStructuredBuffer<int> _RWVoxelPageReleaseList;
-RWTexture3D<float4> _RWVoxelPagePool;
+RWTexture3D<float3> _RWVoxelPoolBaseColor;
+RWTexture3D<float3> _RWVoxelPoolNormal;
+RWTexture3D<float3> _RWVoxelPoolEmissive;
 
 groupshared bool gs_ThreadVoxelOccupy[64];
 groupshared int gs_VoxelPageId;
@@ -57,11 +62,14 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
 
     int cullingResultStart = chunkIndex * _MaxObjectNumPerUpdateChunk; // access 2d logic data in 1d buffer
     int numObjectsInUpdateChunk = min(_UpdateChunkObjectCounter[chunkIndex], _MaxObjectNumPerUpdateChunk);
-    
-    bool hasVoxel = false;
-    VoxelPageData voxelPageData = GetEmptyPageData();
 
-    // 1. loop all objects in update chunk, see if clipmap's voxel intersect with per object voxel
+    // if hit voxel, we record hit point's info in this var
+    bool hasVoxel = false;
+    float2 uvInAtlas = (float2) 0;
+    float4x4 localToWorldMatrix = (float4x4) 0; // for transform hit normal to world
+    float4 bilinearValidMask = (float4) 0; // valid pixel mask when doing bilinear filter in surface cache atlas
+
+    // 1. loop all objects in update chunk, see if clipmap's voxel intersect with object
     for (int i = 0; i < numObjectsInUpdateChunk; i++)
     {
         int objectId = _UpdateChunkCullingResult[cullingResultStart + i];
@@ -113,10 +121,10 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
             float4 UVTransform = cardSizeAndOffset / float(_SurfaceCacheAtlasResolution);
             cardUVZ.xy = cardUVZ.xy * UVTransform.xy + UVTransform.zw;
             cardUVZ.y = 1.0 - cardUVZ.y;
+            uvInAtlas = cardUVZ.xy;
 
             // 1.2.3. sample mesh card depth atlas, do "height field" intersection
-            float4 outBilinearValidMask = float4(0, 0, 0, 0);
-            float cardDepth = SurfaceCacheSampleDepth(_SurfaceCacheAtlasDepth, sampler_LinearClamp, cardUVZ.xy, _SurfaceCacheAtlasResolution, outBilinearValidMask);
+            float cardDepth = SurfaceCacheSampleDepth(_SurfaceCacheAtlasDepth, sampler_LinearClamp, uvInAtlas, _SurfaceCacheAtlasResolution, bilinearValidMask);
             float voxelDepth = (cardUVZ.z * 0.5f) + 0.5f;
 
             if (cardDepth == 0)
@@ -128,11 +136,9 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
             if (worldDistancce < voxelCellSize * 0.5)  // tolerance radius is sqrt(2) / 2, for unit cube
             {
                 hasVoxel = true;
-                voxelPageData.uvInAtlas = cardUVZ.xy;
-                voxelPageData.objectId = objectId;
-                voxelPageData.cardId = cardIndex;
-                voxelPageData.bilinearValidMask = outBilinearValidMask;
-                _RWVoxelOccupy[voxelIndex + uint3(0, 0, 128 * _CascadeIndex)] = 1;
+                localToWorldMatrix = objectInfo.localToWorldMatrix;
+                
+                //_RWVoxelOccupy[voxelIndex + uint3(0, 0, 128 * _CascadeIndex)] = 1;
                 break;
             }
         }
@@ -172,7 +178,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
             int freePointer = 0;
             InterlockedAdd(_RWVoxelPageAllocator[FREE_PAGE_POINTER], 1, freePointer);
             
-            int maxPageNum = _VoxelPagePoolSize.x * _VoxelPagePoolSize.y * _VoxelPagePoolSize.z;
+            int maxPageNum = _VoxelPageCountInXYZ.x * _VoxelPageCountInXYZ.y * _VoxelPageCountInXYZ.z;
             if (freePointer < maxPageNum)
             {
                 pageId = _RWVoxelPageFreeList[freePointer];
@@ -196,9 +202,17 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
     GroupMemoryBarrierWithGroupSync();
 
     // 5. every voxel write it's intersect result into voxel pool
-    if (gs_VoxelPageId != PAGE_ID_INVALID)
+    if (gs_VoxelPageId != PAGE_ID_INVALID && hasVoxel)
     {
-        int3 writeIndex = PageAddressMapping(gs_VoxelPageId, _VoxelPagePoolSize, voxelIndex);
-        _RWVoxelPagePool[writeIndex] = EncodeVoxelPage(voxelPageData);
+        float3 baseColor = SurfaceCacheSampleColor(_SurfaceCacheAtlasBaseColor, sampler_LinearClamp, uvInAtlas, _SurfaceCacheAtlasResolution, bilinearValidMask);
+        float3 emissive = SurfaceCacheSampleColor(_SurfaceCacheAtlasEmissive, sampler_LinearClamp, uvInAtlas, _SurfaceCacheAtlasResolution, bilinearValidMask);
+        float3 localSpaceNormal = SurfaceCacheSampleColor(_SurfaceCacheAtlasNormal, sampler_LinearClamp, uvInAtlas, _SurfaceCacheAtlasResolution, bilinearValidMask) * 2 - 1;
+        //float3 worldNormal = normalize(mul(float4(localSpaceNormal, 0), localToWorldMatrix).xyz) * 0.5 + 0.5;
+        float3 worldNormal = normalize(mul(localToWorldMatrix, float4(localSpaceNormal, 0)).xyz) * 0.5 + 0.5;
+
+        int3 writeIndex = PageAddressMapping(gs_VoxelPageId, _VoxelPageCountInXYZ, voxelIndex);
+        _RWVoxelPoolBaseColor[writeIndex] = baseColor;
+        _RWVoxelPoolNormal[writeIndex] = worldNormal;
+        _RWVoxelPoolEmissive[writeIndex] = emissive;
     }
 }
