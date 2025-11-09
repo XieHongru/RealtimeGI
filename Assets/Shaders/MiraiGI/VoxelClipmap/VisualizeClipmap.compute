@@ -9,11 +9,11 @@ int _VisualizeMode;
 int _VisualizeUpdateChunk;
 int _CascadeCount;
 int3 _VoxelPageCountInXYZ;
+int3 _CascadeResolution;
 
-float4 _CascadeCenterArray[MAX_CASCADE_COUNT];
-float4 _CascadeSizeArray[MAX_CASCADE_COUNT];
-float4 _CascadeResolutionArray[MAX_CASCADE_COUNT];
-float4 _CascadeMoveOffsetArray[MAX_CASCADE_COUNT];
+float3 _CascadeCenterArray[MAX_CASCADE_COUNT];
+float3 _CascadeSizeArray[MAX_CASCADE_COUNT];
+int3 _CascadeMoveOffsetArray[MAX_CASCADE_COUNT];
 
 Texture3D<uint2> _BitOccupyClipmap;
 Texture3D<int> _VoxelPageClipmap;
@@ -61,14 +61,22 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     float3 rayEnd = rayDir * 1000000;
     float3 color = float3(0, 0, 0);
 
-    ClipmapInfo clipmapInfo;
+    ClipmapInfo clipmapInfo = (ClipmapInfo) 0;
     clipmapInfo.cascadeCount = _CascadeCount;
+    clipmapInfo.cascadeResolution = _CascadeResolution;
     clipmapInfo.cascadeCenterArray = _CascadeCenterArray;
     clipmapInfo.cascadeSizeArray = _CascadeSizeArray;
-    clipmapInfo.cascadeResolutionArray = _CascadeResolutionArray;
     clipmapInfo.cascadeMoveOffsetArray = _CascadeMoveOffsetArray;
     
-    VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _BitOccupyClipmap, _CameraPosition, rayDir);
+    VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
+    RTRequest.rayStart = _CameraPosition;
+    RTRequest.rayDir = rayDir;
+    RTRequest.minCascadeIndex = 0;
+    RTRequest.maxCascadeIndex = _CascadeCount - 1;
+    RTRequest.maxStepNum = 128000;
+    RTRequest.maxDistance = 200000000;
+    
+    VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _BitOccupyClipmap, RTRequest);
     
     if (hit.isHit)
     {
@@ -113,11 +121,11 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
         //int cascadeIndex = _VisualizeUpdateChunk - 1;
         //for (int i = 0; i < _UpdateChunkCount; i++)
         //{
-        //    int3 chunkNumXYZ = _CascadeResolutionArray[cascadeIndex] / _UpdateChunkResolution;
+        //    int3 chunkNumXYZ = _CascadeResolution / _UpdateChunkResolution;
         //    int chunkId_1D = _UpdateChunkList[i];
         //    float3 chunkId_3D = Index1DTo3D(chunkId_1D, chunkNumXYZ);
         //    float3 chunkCenter = CalcVoxelCenterPos(chunkId_3D, chunkNumXYZ, _CascadeCenterArray[cascadeIndex], _CascadeSizeArray[cascadeIndex]);
-        //    float3 chunkCoverRange = _CascadeSizeArray[cascadeIndex] * _UpdateChunkResolution / _CascadeResolutionArray[cascadeIndex];
+        //    float3 chunkCoverRange = _CascadeSizeArray[cascadeIndex] * _UpdateChunkResolution / _CascadeResolution;
 
         //    float3 boxMin = chunkCenter - chunkCoverRange * 0.5;
         //    float3 boxMax = chunkCenter + chunkCoverRange * 0.5;

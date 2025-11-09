@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 using static UnityEditor.Searcher.SearcherWindow.Alignment;
 
 public class MiraiGIGPUScene
@@ -39,7 +40,7 @@ public class MiraiGIGPUScene
         miraiGIClipmap.radianceCache = miraiGIRadianceCache; // friend class
     }
 
-    public void UpdateScene()
+    public void UpdateScene(ref RenderingData renderingData)
     {
         foreach (Camera camera in Camera.allCameras)
         {
@@ -47,7 +48,7 @@ public class MiraiGIGPUScene
             miraiGIClipmap.UpdateClipmap(camera, this);
             // voxel lighting
             // TODO: multi-view
-            miraiGIRadianceCache.Update(this);
+            miraiGIRadianceCache.Update(ref renderingData, this);
 
             CommandBuffer cmd = CommandBufferPool.Get("Visualize GI Scene");
             miraiGIClipmap.VisualizeMiraiGIScene(cmd, this, camera);

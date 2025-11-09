@@ -13,13 +13,24 @@ struct CascadeInfo
     float3 voxelSize;
 };
 
+struct VoxelRaytracingRequest
+{
+    float3 rayStart;
+    float3 rayDir;
+    int minCascadeIndex;
+    int maxCascadeIndex;
+    int maxStepNum;
+    float rayDistance;
+    float maxDistance;
+};
+
 struct ClipmapInfo
 {
     int cascadeCount;
-    float4 cascadeCenterArray[MAX_CASCADE_COUNT];
-    float4 cascadeSizeArray[MAX_CASCADE_COUNT];
-    float4 cascadeResolutionArray[MAX_CASCADE_COUNT];
-    float4 cascadeMoveOffsetArray[MAX_CASCADE_COUNT];
+    int3 cascadeResolution;
+    float3 cascadeCenterArray[MAX_CASCADE_COUNT];
+    float3 cascadeSizeArray[MAX_CASCADE_COUNT];
+    int3 cascadeMoveOffsetArray[MAX_CASCADE_COUNT];
 };
 
 struct VoxelRayTracingHitPayload
@@ -30,6 +41,18 @@ struct VoxelRayTracingHitPayload
     int cascadeIndex;
     int3 clipmapAccessIndex;
 };
+
+CascadeInfo ResolveCascadeInfo(ClipmapInfo clipmapInfo, int cascadeId)
+{
+    CascadeInfo cascadeInfo;
+    cascadeInfo.cascadeIndex = cascadeId;
+    cascadeInfo.resolution = clipmapInfo.cascadeResolution;
+    cascadeInfo.center = clipmapInfo.cascadeCenterArray[cascadeId];
+    cascadeInfo.size = clipmapInfo.cascadeSizeArray[cascadeId];
+    cascadeInfo.moveOffset = clipmapInfo.cascadeMoveOffsetArray[cascadeId];
+    cascadeInfo.voxelSize = cascadeInfo.size / cascadeInfo.resolution;
+    return cascadeInfo;
+}
 
 // copy from UE
 float2 LineBoxIntersect(float3 RayOrigin, float3 RayEnd, float3 BoxMin, float3 BoxMax)
@@ -121,20 +144,20 @@ bool IsTwoPointInDifferentBlock(in CascadeInfo cascadeInfo, float3 pointA, float
     return any(blockIndexA != blockIndexB);
 }
 
-VoxelRayTracingHitPayload VoxelRaytracingSingleCascade(CascadeInfo cascadeInfo, Texture3D<uint2> bitOccupyClipmap, float3 rayStart, float3 rayDir)
+VoxelRayTracingHitPayload VoxelRaytracingSingleCascade(CascadeInfo cascadeInfo, Texture3D<uint2> bitOccupyClipmap, inout VoxelRaytracingRequest RTRequest)
 {
-    float3 samplePoint = rayStart - cascadeInfo.center;
+    float3 samplePoint = RTRequest.rayStart - cascadeInfo.center;
     int3 voxelIndex = int3(0, 0, 0);
     int mipLevel = 0;
     bool hitMask = false;
     bool needReadBitOccupy = true;
     int3 clipmapAccessIndex = uint3(0, 0, 0);
 
-    for (int i = 0; i < 128; i++)
+    for (int i = 0; i < 128; i++, RTRequest.maxStepNum--)
     {
         voxelIndex = CalcVoxelIndexFromPosition(cascadeInfo, samplePoint);
 
-        if (any(voxelIndex < 0) || any(voxelIndex >= cascadeInfo.resolution))
+        if (any(voxelIndex < 0) || any(voxelIndex >= cascadeInfo.resolution) || RTRequest.maxStepNum <= 0 || RTRequest.rayDistance > RTRequest.maxDistance)
         {
             break;
         }
@@ -153,8 +176,9 @@ VoxelRayTracingHitPayload VoxelRaytracingSingleCascade(CascadeInfo cascadeInfo, 
         }
 
 		// 3. if not hit in cur mip, we can skip entire cell by DDA march 1 step
-        float moveDistance = isHitMip ? 0 : MoveToNextCellDDA(cascadeInfo, samplePoint, rayDir, mipLevel);
-        samplePoint += rayDir * moveDistance;
+        float moveDistance = isHitMip ? 0 : MoveToNextCellDDA(cascadeInfo, samplePoint, RTRequest.rayDir, mipLevel);
+        samplePoint += RTRequest.rayDir * moveDistance;
+        RTRequest.rayDistance += moveDistance;
 
 		// 4. if hit in cur mip, we stay in place, just go down to more accurate mip level
         mipLevel += isHitMip ? -1 : 1;
@@ -171,20 +195,13 @@ VoxelRayTracingHitPayload VoxelRaytracingSingleCascade(CascadeInfo cascadeInfo, 
     return payload;
 }
 
-VoxelRayTracingHitPayload VoxelRaytracing(ClipmapInfo clipmapInfo, Texture3D<uint2> bitOccupyClipmap, float3 cameraPosition, float3 rayDir)
+VoxelRayTracingHitPayload VoxelRaytracing(ClipmapInfo clipmapInfo, Texture3D<uint2> bitOccupyClipmap, inout VoxelRaytracingRequest RTRequest)
 {
-    float3 rayStart = cameraPosition;
-    for (int cascadeId = 0; cascadeId < clipmapInfo.cascadeCount; cascadeId++)
+    for (int cascadeId = RTRequest.minCascadeIndex; cascadeId < RTRequest.maxCascadeIndex; cascadeId++)
     {
-        CascadeInfo cascadeInfo;
-        cascadeInfo.cascadeIndex = cascadeId;
-        cascadeInfo.center = clipmapInfo.cascadeCenterArray[cascadeId];
-        cascadeInfo.size = clipmapInfo.cascadeSizeArray[cascadeId];
-        cascadeInfo.resolution = clipmapInfo.cascadeResolutionArray[cascadeId];
-        cascadeInfo.moveOffset = clipmapInfo.cascadeMoveOffsetArray[cascadeId];
-        cascadeInfo.voxelSize = cascadeInfo.size / cascadeInfo.resolution;
+        CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, cascadeId);
 
-        VoxelRayTracingHitPayload hit = VoxelRaytracingSingleCascade(cascadeInfo, bitOccupyClipmap, rayStart, rayDir);
+        VoxelRayTracingHitPayload hit = VoxelRaytracingSingleCascade(cascadeInfo, bitOccupyClipmap, RTRequest);
 
         if (hit.isHit)
         {
@@ -192,7 +209,7 @@ VoxelRayTracingHitPayload VoxelRaytracing(ClipmapInfo clipmapInfo, Texture3D<uin
         }
 
 		// trace from last clip's ray start
-        rayStart = hit.position;
+        RTRequest.rayStart = hit.position;
     }
 
     return (VoxelRayTracingHitPayload) 0;

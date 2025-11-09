@@ -28,4 +28,8 @@ public class GlobalSettings : ScriptableObject
     public float clipmapObjectCullingRejectFactor2 = 2.0f;
     public float clipmapObjectCullingRejectFactor3 = 3.0f;
     public float clipmapObjectCullingRejectFactor4 = 4.0f;
+    public float shadowRayMaxDistance = 64;
+    public int shadowRayBoostClipmapOffset = 1;
+    public int voxelLightingCheckerBoardSize = 2;
+    public int freezeLightingForDebug = 0;
 }

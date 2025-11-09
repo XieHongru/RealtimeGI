@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Experimental.GlobalIllumination;
 using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 
 public class MiraiGIRadianceCache
 {
@@ -43,7 +45,7 @@ public class MiraiGIRadianceCache
         m_VoxelPoolRadiance = null;
     }
 
-    public void Update(MiraiGIGPUScene scene)
+    public void Update(ref RenderingData renderingData, MiraiGIGPUScene scene)
     {
         CommandBuffer cmd = CommandBufferPool.Get("Update radiance cache");
 
@@ -52,7 +54,13 @@ public class MiraiGIRadianceCache
         for (int i = 0; i < MiraiGIClipmap.CASCADE_COUNT; i++)
         {
             PickValidVoxel(cmd, scene, i);
-            VoxelLighting(cmd, scene, i);
+
+            if (GlobalSettings.Instance.freezeLightingForDebug > 0)
+            {
+                continue;
+            }
+
+            VoxelLighting(cmd, ref renderingData, scene, i);
         }
 
         Graphics.ExecuteCommandBuffer(cmd);
@@ -109,6 +117,10 @@ public class MiraiGIRadianceCache
         MiraiGIClipmap clipmap = scene.miraiGIClipmap;
         MiraiGICascadeInfo clipmapInfo = clipmap.cascadeInfos[cascadeId];
 
+        m_CheckerBoardSize = GlobalSettings.Instance.voxelLightingCheckerBoardSize;
+        m_CheckerBoardSize = Mathf.NextPowerOfTwo(m_CheckerBoardSize);
+        m_CheckerBoardSize = Mathf.Clamp(m_CheckerBoardSize, 1, 4);
+
         Vector3Int blockCountInXYZ = clipmap.voxelResolution / GlobalShared.VOXEL_BLOCK_SIZE;
         Vector3Int blockCountToLightInXYZ = blockCountInXYZ / m_CheckerBoardSize;
         int maxFrameNum = m_CheckerBoardSize * m_CheckerBoardSize * m_CheckerBoardSize;
@@ -130,15 +142,38 @@ public class MiraiGIRadianceCache
         cmd.DispatchCompute(m_VoxelLightingCS, kernel, blockCountToLightInXYZ.x / 4, blockCountToLightInXYZ.y / 4, blockCountToLightInXYZ.z / 4);
     }
 
-    public void VoxelLighting(CommandBuffer cmd, MiraiGIGPUScene scene, int cascadeId)
+    public void VoxelLighting(CommandBuffer cmd, ref RenderingData renderingData, MiraiGIGPUScene scene, int cascadeId)
     {
         MiraiGIClipmap clipmap = scene.miraiGIClipmap;
         MiraiGICascadeInfo clipmapInfo = clipmap.cascadeInfos[cascadeId];
+        MiraiGICascadeInfo[] cascadeInfos = clipmap.cascadeInfos;
 
-        GameObject lightObject = GameObject.Find("Directional Light");
-        Light directionalLight = lightObject.GetComponent<Light>();
-        Vector3 mainLightDirection = directionalLight.transform.forward;
-        Color mainLightColor = directionalLight.color;
+        // get main light
+        GameObject mainLightObject = GameObject.Find("Directional Light");
+        Light mainLight = mainLightObject.GetComponent<Light>();
+        Vector3 mainLightDirection = mainLight.transform.forward;
+        Color mainLightColor = mainLight.color;
+
+        // get main light shadow
+        Matrix4x4[] worldToShadowMatrices = new Matrix4x4[4];
+        Vector4[] shadowBounds = new Vector4[4];
+        RenderTexture shadowDepthTexture = null;
+        if (mainLight)
+        {
+            GetMainLightShadowInfos(mainLight, ref renderingData, out worldToShadowMatrices, out shadowBounds, out shadowDepthTexture);
+        }
+
+        Vector4[] cascadeCenterArray = new Vector4[MiraiGIClipmap.MAX_CASCADE_COUNT];
+        Vector4[] cascadeSizeArray = new Vector4[MiraiGIClipmap.MAX_CASCADE_COUNT];
+        Vector4[] cascadeMoveOffsetArray = new Vector4[MiraiGIClipmap.MAX_CASCADE_COUNT];
+
+        for (int cascadeIndex = 0; cascadeIndex < cascadeInfos.Length; cascadeIndex++)
+        {
+            MiraiGICascadeInfo cascadeInfo = cascadeInfos[cascadeIndex];
+            cascadeCenterArray[cascadeIndex] = cascadeInfo.cascadeCenter;
+            cascadeSizeArray[cascadeIndex] = cascadeInfo.cascadeSize;
+            cascadeMoveOffsetArray[cascadeIndex] = (Vector3)cascadeInfo.moveOffset;
+        }
 
         // 1. build indirect args cause valid voxel num is unpredictable
         {
@@ -158,20 +193,70 @@ public class MiraiGIRadianceCache
             cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeIndex"), cascadeId);
             cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeResolution"), (Vector3) clipmap.voxelResolution);
             cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeMoveOffset"), (Vector3) clipmapInfo.moveOffset);
-            cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_VoxelPageCountInXYZ"), (Vector3) clipmap.voxelPageCountInXYZ);
+
+            cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_VoxelPageCountInXYZ"), (Vector3)clipmap.voxelPageCountInXYZ);
+            cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeCount"), MiraiGIClipmap.CASCADE_COUNT);
+            cmd.SetComputeVectorArrayParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeCenterArray"), cascadeCenterArray);
+            cmd.SetComputeVectorArrayParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeSizeArray"), cascadeSizeArray);
+            cmd.SetComputeVectorArrayParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeMoveOffsetArray"), cascadeMoveOffsetArray);
+
+            cmd.SetComputeMatrixParam(m_VoxelLightingCS, Shader.PropertyToID("_CameraViewMatrix"), Camera.main.worldToCameraMatrix);
             cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_MainLightDirection"), mainLightDirection);
             cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_MainLightColor"), mainLightColor);
+            cmd.SetComputeFloatParam(m_VoxelLightingCS, Shader.PropertyToID("_ShadowRayMaxDistance"), GlobalSettings.Instance.shadowRayMaxDistance);
+            cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_ShadowRayBoostClipmapOffset"), GlobalSettings.Instance.shadowRayBoostClipmapOffset);
+            cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_CSMNumCascades"), 4);
+            cmd.SetComputeVectorArrayParam(m_VoxelLightingCS, Shader.PropertyToID("_CSMShadowBounds"), shadowBounds);
+            cmd.SetComputeMatrixArrayParam(m_VoxelLightingCS, Shader.PropertyToID("_CSMWorldToShadowMatrices"), worldToShadowMatrices);
 
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ValidVoxelCounter"), m_ValidVoxelCounter);
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ValidVoxelBuffer"), m_ValidVoxelBuffer);
 
+            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ShadowDepthTexture"), shadowDepthTexture);
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelPoolBaseColor"), clipmap.GetVoxelPoolBaseColor());
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelPoolNormal"), clipmap.GetVoxelPoolNormal());
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelPoolEmissive"), clipmap.GetVoxelPoolEmissive());
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelPageClipmap"), clipmap.GetVoxelPageClipmap());
+            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelBitOccupyClipmap"), clipmap.GetVoxelMap());
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWVoxelPoolRadiance"), m_VoxelPoolRadiance);
 
             cmd.DispatchCompute(m_VoxelLightingCS, kernel, m_VoxelLightingIndirectArgs, 0);
         }
+    }
+
+    void GetMainLightShadowInfos(Light light, ref RenderingData renderingData,
+        out Matrix4x4[] outWorldToShadowMatrices, out Vector4[] outShadowBounds, out RenderTexture outShadowDepthTexture)
+    {
+        outWorldToShadowMatrices = new Matrix4x4[4];
+        outShadowBounds = new Vector4[4];
+
+        Light mainLight = GameObject.Find("Directional Light").GetComponent<Light>();
+        int shadowLightIndex = renderingData.lightData.mainLightIndex;
+        int renderTargetWidth = renderingData.shadowData.mainLightShadowmapWidth;
+        int renderTargetHeight = renderingData.shadowData.mainLightShadowmapHeight;
+        int shadowResolution = ShadowUtils.GetMaxTileResolutionInAtlas(renderingData.shadowData.mainLightShadowmapWidth,
+                renderingData.shadowData.mainLightShadowmapHeight, 4);
+
+        ShadowSliceData[] cascadeSlices = new ShadowSliceData[4];
+        Vector4[] cascadeSplitDistances = new Vector4[4];
+
+        for (int cascadeIndex = 0; cascadeIndex < 4; cascadeIndex++)
+        {
+            bool success = ShadowUtils.ExtractDirectionalLightMatrix(ref renderingData.cullResults, ref renderingData.shadowData,
+                    shadowLightIndex, cascadeIndex, renderTargetWidth, renderTargetHeight, shadowResolution, mainLight.shadowNearPlane,
+                    out cascadeSplitDistances[cascadeIndex], out cascadeSlices[cascadeIndex]);
+
+            if (success)
+            {
+                // TODO: check reverse is right or not in unity?
+
+                // world to shadow matrices
+                outWorldToShadowMatrices[3 - cascadeIndex] = cascadeSlices[cascadeIndex].shadowTransform;
+                // shadow bounds
+                outShadowBounds[3 - cascadeIndex] = outShadowBounds[cascadeIndex];
+            }
+        }
+
+        outShadowDepthTexture = (RenderTexture) Shader.GetGlobalTexture("_MainLightShadowmapTexture");
     }
 }

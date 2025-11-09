@@ -78,6 +78,7 @@ public class MiraiGIClipmap
     public MiraiGIRadianceCache radianceCache;
 
     public const int CASCADE_COUNT = 4;
+    public const int MAX_CASCADE_COUNT = 4;
     public Vector3Int voxelResolution = new Vector3Int(128, 128, 128);
     public Vector3Int voxelPageCountInXYZ = new Vector3Int(32, 32, 32);
 
@@ -86,10 +87,9 @@ public class MiraiGIClipmap
     const int MAX_OBJECT_NUM_PER_CASCADE = 2048;
     const int MAX_UPDATE_CHUNK_PER_FRAME = 16;
     const int MAX_OBJECT_NUM_PER_UPDATE_CHUNK = 64;
-    const int MAX_CASCADE_COUNT = 4;
     const int VOXEL_BLOCK_SIZE = 4;
     const int PAGE_ID_INVALID = (0x3FFFFFFF);
-    const int VISUALIZE_MODE = 4;
+    const int VISUALIZE_MODE = 1;
 
     RenderTexture m_VoxelMap;
     RenderTexture m_VoxelPageClipmap;
@@ -132,6 +132,7 @@ public class MiraiGIClipmap
     public RenderTexture GetVoxelPoolBaseColor() => m_VoxelPoolBaseColor;
     public RenderTexture GetVoxelPoolNormal() => m_VoxelPoolNormal;
     public RenderTexture GetVoxelPoolEmissive() => m_VoxelPoolEmissive;
+    public RenderTexture GetVisualizeColorTarget() => m_VisualizeColorTarget;
 
     public void CreateClipmap()
     {
@@ -630,7 +631,6 @@ public class MiraiGIClipmap
     {
         Vector4[] cascadeCenterArray = new Vector4[MAX_CASCADE_COUNT];
         Vector4[] cascadeSizeArray = new Vector4[MAX_CASCADE_COUNT];
-        Vector4[] cascadeResolutionArray = new Vector4[MAX_CASCADE_COUNT];
         Vector4[] cascadeMoveOffsetArray = new Vector4[MAX_CASCADE_COUNT];
 
         for (int cascadeId = 0; cascadeId < cascadeInfos.Length; cascadeId++)
@@ -638,7 +638,6 @@ public class MiraiGIClipmap
             MiraiGICascadeInfo cascadeInfo = cascadeInfos[cascadeId];
             cascadeCenterArray[cascadeId] = cascadeInfo.cascadeCenter;
             cascadeSizeArray[cascadeId] = cascadeInfo.cascadeSize;
-            cascadeResolutionArray[cascadeId] = (Vector3)voxelResolution;
             cascadeMoveOffsetArray[cascadeId] = (Vector3)cascadeInfo.moveOffset;
         }
 
@@ -653,9 +652,9 @@ public class MiraiGIClipmap
         cmd.SetComputeIntParam(m_VisualizeClipmapCS, Shader.PropertyToID("_VisualizeMode"), VISUALIZE_MODE);
         cmd.SetComputeIntParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeCount"), CASCADE_COUNT);
         cmd.SetComputeVectorParam(m_VisualizeClipmapCS, Shader.PropertyToID("_VoxelPageCountInXYZ"), (Vector3)voxelPageCountInXYZ);
+        cmd.SetComputeVectorParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeResolution"), (Vector3)voxelResolution);
         cmd.SetComputeVectorArrayParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeCenterArray"), cascadeCenterArray);
         cmd.SetComputeVectorArrayParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeSizeArray"), cascadeSizeArray);
-        cmd.SetComputeVectorArrayParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeResolutionArray"), cascadeResolutionArray);
         cmd.SetComputeVectorArrayParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeMoveOffsetArray"), cascadeMoveOffsetArray);
 
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_BitOccupyClipmap"), m_VoxelMap);

@@ -1,4 +1,5 @@
 #include "../../GICommon.hlsl"
+#include "../RayTracing/VoxelRayTracing.hlsl"
 
 #pragma kernel PickValidVoxel
 
@@ -87,11 +88,25 @@ void BuildVoxelLightingIndirectArgs(uint3 threadId : SV_DispatchThreadID, uint3 
 #pragma kernel VoxelLighting
 
 int3 _VoxelPageCountInXYZ;
+int _CascadeCount;
+float3 _CascadeCenterArray[MAX_CASCADE_COUNT];
+float3 _CascadeSizeArray[MAX_CASCADE_COUNT];
+int3 _CascadeMoveOffsetArray[MAX_CASCADE_COUNT];
+
+float4x4 _CameraViewMatrix;
 float3 _MainLightDirection;
 float4 _MainLightColor;
+float _ShadowRayMaxDistance;
+int _ShadowRayBoostClipmapOffset;
+int _CSMNumCascades;
+float4 _CSMShadowBounds[4];
+float4x4 _CSMWorldToShadowMatrices[4];
 
 StructuredBuffer<int> _ValidVoxelBuffer;
 
+SamplerState sampler_PointClamp;
+
+Texture2D<float> _ShadowDepthTexture;
 Texture3D<int> _VoxelPageClipmap;
 Texture3D<float4> _VoxelPoolBaseColor;
 Texture3D<float4> _VoxelPoolNormal;
@@ -106,11 +121,20 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
     {
         return;
     }
+    
+    ClipmapInfo clipmapInfo;
+    clipmapInfo.cascadeCount = _CascadeCount;
+    clipmapInfo.cascadeResolution = _CascadeResolution;
+    clipmapInfo.cascadeCenterArray = _CascadeCenterArray;
+    clipmapInfo.cascadeSizeArray = _CascadeSizeArray;
+    clipmapInfo.cascadeMoveOffsetArray = _CascadeMoveOffsetArray;
+
+    CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, _CascadeIndex);
 
     // 1. read page data, note that 4x4x4 voxel in same block will share 4x4x4 page data in pool
     int voxelIndex1D = _ValidVoxelBuffer[threadId.x];
     int3 voxelIndex = Index1DTo3D(voxelIndex1D, _CascadeResolution);
-    int3 clipmapAccessIndex = ClipmapAddressMapping(voxelIndex, _CascadeResolution, _CascadeMoveOffset, _CascadeIndex);
+    int3 clipmapAccessIndex = ClipmapAddressMapping(voxelIndex, _CascadeResolution, cascadeInfo.moveOffset, _CascadeIndex);
     int voxelPageId = _VoxelPageClipmap.Load(uint4(clipmapAccessIndex, 0)).r;
 
     if (voxelPageId == PAGE_ID_INVALID)
@@ -124,13 +148,59 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
     float3 worldNormal = _VoxelPoolNormal.Load(int4(indexInPool, 0)) * 2 - 1;
     float3 emissive = _VoxelPoolEmissive.Load(int4(indexInPool, 0));
 
-    // 3. evaluate direct lighting
+    // 3. evaluate directional light shadow
+    float mainLightShadow = 1.0;
+    float3 voxelPosition = CalcVoxelCenterPos(voxelIndex, _CascadeResolution, cascadeInfo.center, cascadeInfo.size);
+    //float3 voxelPositionView = mul(float4(voxelPosition, 1), _CameraViewMatrix);
+    float3 voxelPositionView = mul(_CameraViewMatrix, float4(voxelPosition, 1));
+    bool isVoxelBehindCamera = voxelPositionView.z < -128; // voxel may behind camera frustum where csm is invalid
+
+    // 3.1. use whole scene shadow map
+    int cascadeIndex;
+    for (cascadeIndex = 0; cascadeIndex < _CSMNumCascades; cascadeIndex++)
+    {
+        float4 boundSphere = _CSMShadowBounds[cascadeIndex];
+        if (length(voxelPosition - boundSphere.xyz) < boundSphere.w)
+        {
+            break;
+        }
+    }
+
+    bool isVoxelInsideCSM = cascadeIndex < _CSMNumCascades;
+    if (isVoxelInsideCSM && !isVoxelBehindCamera)
+    {
+        //float4 shadowPosition = mul(float4(voxelPosition, 1), _CSMWorldToShadowMatrixs[cascadeIndex]);
+        float4 shadowPosition = mul(_CSMWorldToShadowMatrices[cascadeIndex], float4(voxelPosition, 1));
+        shadowPosition.xyz /= shadowPosition.w;
+        float sampleZ = _ShadowDepthTexture.SampleLevel(sampler_PointClamp, shadowPosition.xy, 0).r;
+        mainLightShadow = shadowPosition.z < sampleZ;
+    }
+
+    // 3.2. trace shadow ray as fallback
+    if (!isVoxelInsideCSM || isVoxelBehindCamera)
+    {
+        int rayBoostClipmapOffset = _CascadeIndex < (MAX_CASCADE_COUNT / 2) ? _ShadowRayBoostClipmapOffset : 0;
+        float3 positionOffset = worldNormal * cascadeInfo.voxelSize * (1 << rayBoostClipmapOffset); // offset 1 voxel to avoid self shadow
+
+        VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
+        RTRequest.rayStart = voxelPosition + positionOffset;
+        RTRequest.rayDir = _MainLightDirection;
+        RTRequest.maxCascadeIndex = _CascadeCount - 1;
+        RTRequest.minCascadeIndex = min(cascadeIndex + rayBoostClipmapOffset, RTRequest.maxCascadeIndex);
+        RTRequest.maxStepNum = 128000;
+        RTRequest.maxDistance = _ShadowRayMaxDistance;
+
+        VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _VoxelBitOccupyClipmap, RTRequest);
+        mainLightShadow = hit.isHit ? 0 : 1;
+    }
+
+    // 4. evaluate direct lighting
     for (int face = VOXEL_FACE_FRONT; face <= VOXEL_FACE_BACK; face++)
     {
         float3 radiance = emissive;
         float3 faceNormal = worldNormal * lerp(1, -1, face); // -WorldNormal if back face
 
-        radiance += saturate(dot(faceNormal, _MainLightDirection)) * _MainLightColor * baseColor / (3.1415926);
+        radiance += saturate(dot(faceNormal, _MainLightDirection)) * _MainLightColor * mainLightShadow * baseColor / (3.1415926);
 
         int3 writeIndex = TwoSideAddressMapping(indexInPool, face);
         _RWVoxelPoolRadiance[writeIndex] = radiance;
