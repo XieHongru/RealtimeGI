@@ -114,6 +114,18 @@ Texture3D<float4> _VoxelPoolEmissive;
 
 RWTexture3D<float3> _RWVoxelPoolRadiance;
 
+ClipmapInfo ResolveClipmapInfo()
+{
+    ClipmapInfo clipmapInfo = (ClipmapInfo) 0;
+    clipmapInfo.cascadeCount = _CascadeCount;
+    clipmapInfo.cascadeResolution = _CascadeResolution;
+    clipmapInfo.cascadeCenterArray = _CascadeCenterArray;
+    clipmapInfo.cascadeSizeArray = _CascadeSizeArray;
+    clipmapInfo.cascadeMoveOffsetArray = _CascadeMoveOffsetArray;
+    
+    return clipmapInfo;
+}
+
 [numthreads(8, 1, 1)]
 void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
@@ -122,13 +134,7 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
         return;
     }
     
-    ClipmapInfo clipmapInfo;
-    clipmapInfo.cascadeCount = _CascadeCount;
-    clipmapInfo.cascadeResolution = _CascadeResolution;
-    clipmapInfo.cascadeCenterArray = _CascadeCenterArray;
-    clipmapInfo.cascadeSizeArray = _CascadeSizeArray;
-    clipmapInfo.cascadeMoveOffsetArray = _CascadeMoveOffsetArray;
-
+    ClipmapInfo clipmapInfo = ResolveClipmapInfo();
     CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, _CascadeIndex);
 
     // 1. read page data, note that 4x4x4 voxel in same block will share 4x4x4 page data in pool
@@ -207,4 +213,82 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
         int3 writeIndex = TwoSideAddressMapping(indexInPool, face);
         _RWVoxelPoolRadiance[writeIndex] = radiance;
     }    
+}
+
+// -------------------------------------------------------------------------------- //
+#pragma kernel FarFieldProbeGather
+
+int _ProbeResolution;
+int3 _ProbeCountInXYZ;
+int2 _ProbeCountInAtlasXY;
+float _MaxRayDistance;
+
+Texture3D<float3> _VoxelPoolRadiance;
+RWTexture2D<float3> _RWFarFieldProbeAtlas;
+
+[numthreads(8, 8, 1)]
+void FarFieldProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    ClipmapInfo clipmapInfo = ResolveClipmapInfo();
+    CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, _CascadeIndex);
+
+    // use checker board 2x2 for average update to 4 frame
+    int2 probeIndex2D = threadId.xy / _ProbeResolution;
+    probeIndex2D = probeIndex2D * _CheckerBoardInfo.w + _CheckerBoardInfo.xy;
+
+    int probeIndex1D = probeIndex2D.x + probeIndex2D.y * _ProbeCountInAtlasXY.x;
+    int3 probeIndex3D = Index1DTo3D(probeIndex1D, _ProbeCountInXYZ);
+    float3 probeLocation = CalcVoxelCenterPos(probeIndex3D, _ProbeCountInXYZ, cascadeInfo.center, cascadeInfo.size);
+
+    // 1. calculate octahedral uv and ray direction
+    int2 probePixelIndex = threadId.xy % _ProbeResolution; // [0 ~ 16]
+    float2 probeUV = float2(probePixelIndex - 1) / float(_ProbeResolution - 2); // [0 ~ 1], 2 is for padding
+    probeUV += 0.5 / float(_ProbeResolution - 2); // align to texel center
+    float3 rayDirection = OctahedralDirection(probeUV);
+
+    // skip border pixel
+    if (probePixelIndex.x == 0 || probePixelIndex.x == (_ProbeResolution - 1) ||
+       probePixelIndex.y == 0 || probePixelIndex.y == (_ProbeResolution - 1))
+    {
+        return;
+    }
+
+    // trace ray
+    VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
+    RTRequest.rayStart = probeLocation;
+    RTRequest.rayDir = rayDirection;
+    RTRequest.minCascadeIndex = _CascadeIndex;
+    RTRequest.maxCascadeIndex = _CascadeCount - 1;
+    RTRequest.maxStepNum = 128000;
+    RTRequest.maxDistance = _MaxRayDistance;
+
+    VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _VoxelBitOccupyClipmap, RTRequest);
+
+    // 3. fetch radiance
+    float3 hitRadiance = float3(0, 0, 0);
+    if (hit.isHit)
+    {
+        int voxelPageId = _VoxelPageClipmap.Load(uint4(hit.clipmapAccessIndex, 0)).r;
+        if (voxelPageId != PAGE_ID_INVALID)
+        {
+            int3 indexInPool = PageAddressMapping(voxelPageId, _VoxelPageCountInXYZ, hit.voxelIndex);
+
+            float3 worldNormal = _VoxelPoolNormal.Load(uint4(indexInPool, 0)).rgb * 2 - 1;
+            int isBackFace = dot(worldNormal, -RTRequest.rayDir) < 0;
+
+            int3 twoSideIndex = TwoSideAddressMapping(indexInPool, isBackFace);
+            hitRadiance = _VoxelPoolRadiance.Load(uint4(twoSideIndex, 0)).rgb;
+        }
+    }
+    else
+    {
+        // TODO: sample skybox
+        hitRadiance = float3(1, 1, 1);
+    }
+
+    // 4. write to probe atlas
+    int2 pixelCountInAtlasXY = _ProbeCountInAtlasXY * _ProbeResolution;
+    int2 writeIndex = probeIndex2D * _ProbeResolution + probePixelIndex;
+    writeIndex += pixelCountInAtlasXY * int2(0, _CascadeIndex);
+    _RWFarFieldProbeAtlas[writeIndex] = hitRadiance;
 }

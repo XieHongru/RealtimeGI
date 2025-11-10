@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Unity.VisualScripting;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Experimental.GlobalIllumination;
@@ -9,13 +10,18 @@ using UnityEngine.Rendering.Universal;
 public class MiraiGIRadianceCache
 {
     public uint frameNumberRenderThread;
-    int m_CheckerBoardSize = 2;
+    int m_VoxelLightingCheckerBoardSize = 2;
+    int m_ProbeGatherCheckerBoardSize = 2;
+    int m_ProbeResolution = 16;
+    Vector3Int m_ProbeCountInXYZ = new Vector3Int(8, 8, 8);
+    Vector2Int m_ProbeCountInAtlasXY = new Vector2Int(32, 16);
 
     ComputeBuffer m_ValidVoxelCounter;
     ComputeBuffer m_ValidVoxelBuffer;
     ComputeBuffer m_VoxelLightingIndirectArgs;
 
     RenderTexture m_VoxelPoolRadiance;
+    RenderTexture m_FarFieldProbeAtlas;
 
     ComputeShader m_VoxelLightingCS;
     ComputeShader m_VoxelPoolInitCS;
@@ -65,6 +71,8 @@ public class MiraiGIRadianceCache
             }
 
             VoxelLighting(cmd, ref renderingData, scene, i);
+
+            FarFieldProbeGather(cmd, scene, i);
         }
 
         Graphics.ExecuteCommandBuffer(cmd);
@@ -78,12 +86,14 @@ public class MiraiGIRadianceCache
     {
         MiraiGIClipmap clipmap = scene.miraiGIClipmap;
 
-        Vector3Int pageCountInXYZ = clipmap.voxelPageCountInXYZ;
-        Vector3Int voxelRadiancePoolSize = pageCountInXYZ * GlobalShared.VOXEL_BLOCK_SIZE;
-        voxelRadiancePoolSize.z *= 2;// for two side voxel
+        // texture prepare
         // TODO: pool size change
         if (m_VoxelPoolRadiance == null)
         {
+            Vector3Int pageCountInXYZ = clipmap.voxelPageCountInXYZ;
+            Vector3Int voxelRadiancePoolSize = pageCountInXYZ * GlobalShared.VOXEL_BLOCK_SIZE;
+            voxelRadiancePoolSize.z *= 2;// for two side voxel
+
             m_VoxelPoolRadiance = new RenderTexture(voxelRadiancePoolSize.x, voxelRadiancePoolSize.y, 0, RenderTextureFormat.RGB111110Float);
             m_VoxelPoolRadiance.dimension = TextureDimension.Tex3D;
             m_VoxelPoolRadiance.volumeDepth = voxelRadiancePoolSize.z;
@@ -97,6 +107,17 @@ public class MiraiGIRadianceCache
             CommandBufferPool.Release(cmd);
         }
 
+        if (m_FarFieldProbeAtlas == null)
+        {
+            Vector2Int atlasResolution = m_ProbeCountInAtlasXY * m_ProbeResolution;
+            atlasResolution.y *= MiraiGIClipmap.CASCADE_COUNT;
+
+            m_FarFieldProbeAtlas = new RenderTexture(atlasResolution.x, atlasResolution.y, 0, RenderTextureFormat.RGB111110Float);
+            m_FarFieldProbeAtlas.enableRandomWrite = true;
+            m_FarFieldProbeAtlas.Create();
+        }
+
+        // buffer prepare
         if (m_ValidVoxelCounter == null)
         {
             m_ValidVoxelCounter = new ComputeBuffer(1, sizeof(int));
@@ -130,22 +151,22 @@ public class MiraiGIRadianceCache
         MiraiGIClipmap clipmap = scene.miraiGIClipmap;
         MiraiGICascadeInfo clipmapInfo = clipmap.cascadeInfos[cascadeId];
 
-        m_CheckerBoardSize = GlobalSettings.Instance.voxelLightingCheckerBoardSize;
-        m_CheckerBoardSize = Mathf.NextPowerOfTwo(m_CheckerBoardSize);
-        m_CheckerBoardSize = Mathf.Clamp(m_CheckerBoardSize, 1, 4);
+        m_VoxelLightingCheckerBoardSize = GlobalSettings.Instance.voxelLightingCheckerBoardSize;
+        m_VoxelLightingCheckerBoardSize = Mathf.NextPowerOfTwo(m_VoxelLightingCheckerBoardSize);
+        m_VoxelLightingCheckerBoardSize = Mathf.Clamp(m_VoxelLightingCheckerBoardSize, 1, 4);
 
         Vector3Int blockCountInXYZ = clipmap.voxelResolution / GlobalShared.VOXEL_BLOCK_SIZE;
-        Vector3Int blockCountToLightInXYZ = blockCountInXYZ / m_CheckerBoardSize;
-        int maxFrameNum = m_CheckerBoardSize * m_CheckerBoardSize * m_CheckerBoardSize;
+        Vector3Int blockCountToLightInXYZ = blockCountInXYZ / m_VoxelLightingCheckerBoardSize;
+        int maxFrameNum = m_VoxelLightingCheckerBoardSize * m_VoxelLightingCheckerBoardSize * m_VoxelLightingCheckerBoardSize;
         Vector3Int checkerBoardOffset = GlobalShared.Index1DTo3DLinear((int)frameNumberRenderThread % maxFrameNum, 
-                                                                        new Vector3Int(m_CheckerBoardSize, m_CheckerBoardSize, m_CheckerBoardSize));
+                                                                        new Vector3Int(m_VoxelLightingCheckerBoardSize, m_VoxelLightingCheckerBoardSize, m_VoxelLightingCheckerBoardSize));
 
         int kernel = m_VoxelLightingCS.FindKernel("PickValidVoxel");
 
         cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeIndex"), cascadeId);
         cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeResolution"), (Vector3) clipmap.voxelResolution);
         cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeMoveOffset"), (Vector3) clipmapInfo.moveOffset);
-        cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_CheckerBoardInfo"), new Vector4(checkerBoardOffset.x, checkerBoardOffset.y, checkerBoardOffset.z, m_CheckerBoardSize));
+        cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_CheckerBoardInfo"), new Vector4(checkerBoardOffset.x, checkerBoardOffset.y, checkerBoardOffset.z, m_VoxelLightingCheckerBoardSize));
 
         cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelBitOccupyClipmap"), clipmap.GetVoxelMap());
 
@@ -235,6 +256,64 @@ public class MiraiGIRadianceCache
 
             cmd.DispatchCompute(m_VoxelLightingCS, kernel, m_VoxelLightingIndirectArgs, 0);
         }
+    }
+
+    void FarFieldProbeGather(CommandBuffer cmd, MiraiGIGPUScene scene, int cascadeId)
+    {
+        MiraiGIClipmap clipmap = scene.miraiGIClipmap;
+        MiraiGICascadeInfo[] cascadeInfos = clipmap.cascadeInfos;
+
+        m_ProbeGatherCheckerBoardSize = GlobalSettings.Instance.probeGatherCheckerBoardSize;
+        m_ProbeGatherCheckerBoardSize = Mathf.NextPowerOfTwo(m_ProbeGatherCheckerBoardSize);
+        m_ProbeGatherCheckerBoardSize = Mathf.Clamp(m_ProbeGatherCheckerBoardSize, 1, 4);
+
+        int maxFrameNum = m_ProbeGatherCheckerBoardSize * m_ProbeGatherCheckerBoardSize * 1;
+        Vector3Int checkerBoardOffset = GlobalShared.Index1DTo3DLinear((int) frameNumberRenderThread % maxFrameNum, 
+                                                                        new Vector3Int(m_ProbeGatherCheckerBoardSize, m_ProbeGatherCheckerBoardSize, 1));
+        Vector2Int probeCountToUpdateInAtlasXY = m_ProbeCountInAtlasXY / m_ProbeGatherCheckerBoardSize;
+
+        Vector4[] cascadeCenterArray = new Vector4[MiraiGIClipmap.MAX_CASCADE_COUNT];
+        Vector4[] cascadeSizeArray = new Vector4[MiraiGIClipmap.MAX_CASCADE_COUNT];
+        Vector4[] cascadeMoveOffsetArray = new Vector4[MiraiGIClipmap.MAX_CASCADE_COUNT];
+
+        for (int cascadeIndex = 0; cascadeIndex < cascadeInfos.Length; cascadeIndex++)
+        {
+            MiraiGICascadeInfo cascadeInfo = cascadeInfos[cascadeIndex];
+            cascadeCenterArray[cascadeIndex] = cascadeInfo.cascadeCenter;
+            cascadeSizeArray[cascadeIndex] = cascadeInfo.cascadeSize;
+            cascadeMoveOffsetArray[cascadeIndex] = (Vector3)cascadeInfo.moveOffset;
+        }
+
+        int kernel = m_VoxelLightingCS.FindKernel("FarFieldProbeGather");
+
+        cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_ProbeResolution"), m_ProbeResolution);
+        cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_ProbeCountInXYZ"), (Vector3) m_ProbeCountInXYZ);
+        cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_ProbeCountInAtlasXY"), (Vector2) m_ProbeCountInAtlasXY);
+        cmd.SetComputeFloatParam(m_VoxelLightingCS, Shader.PropertyToID("_MaxRayDistance"), GlobalSettings.Instance.farFieldProbeRayMaxDistance);
+        cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_CheckerBoardInfo"),
+                                new Vector4(checkerBoardOffset.x, checkerBoardOffset.y, checkerBoardOffset.z, m_ProbeGatherCheckerBoardSize));
+
+        // cascade
+        cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeIndex"), cascadeId);
+        cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeCount"), MiraiGIClipmap.CASCADE_COUNT);
+        cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeResolution"), (Vector3) clipmap.voxelResolution);
+        cmd.SetComputeVectorArrayParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeCenterArray"), cascadeCenterArray);
+        cmd.SetComputeVectorArrayParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeSizeArray"), cascadeSizeArray);
+        cmd.SetComputeVectorArrayParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeMoveOffsetArray"), cascadeMoveOffsetArray);
+
+
+        // voxel
+        cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_VoxelPageCountInXYZ"), (Vector3)clipmap.voxelPageCountInXYZ);
+        cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelBitOccupyClipmap"), clipmap.GetVoxelMap());
+        cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelPageClipmap"), clipmap.GetVoxelPageClipmap());
+        cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelPoolBaseColor"), clipmap.GetVoxelPoolBaseColor());
+        cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelPoolNormal"), clipmap.GetVoxelPoolNormal());
+        cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelPoolEmissive"), clipmap.GetVoxelPoolEmissive());
+        cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelPoolRadiance"), m_VoxelPoolRadiance);
+        cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWFarFieldProbeAtlas"), m_FarFieldProbeAtlas);
+
+        Vector2Int pixelCountToUpdateInAtlasXY = probeCountToUpdateInAtlasXY * m_ProbeResolution;
+        cmd.DispatchCompute(m_VoxelLightingCS, kernel, pixelCountToUpdateInAtlasXY.x / 8, pixelCountToUpdateInAtlasXY.y / 8, 1);
     }
 
     void GetMainLightShadowInfos(Light light, ref RenderingData renderingData,
