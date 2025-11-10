@@ -261,12 +261,10 @@ public class MiraiGIRadianceCache
 
             if (success)
             {
-                // TODO: check reverse is right or not in unity?
-
                 // world to shadow matrices
-                outWorldToShadowMatrices[3 - cascadeIndex] = cascadeSlices[cascadeIndex].shadowTransform;
+                outWorldToShadowMatrices[cascadeIndex] = cascadeSlices[cascadeIndex].shadowTransform;
                 // shadow bounds
-                outShadowBounds[3 - cascadeIndex] = outShadowBounds[cascadeIndex];
+                outShadowBounds[cascadeIndex] = cascadeSplitDistances[cascadeIndex];
             }
         }
 

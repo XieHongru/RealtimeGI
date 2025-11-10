@@ -172,8 +172,10 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
         //float4 shadowPosition = mul(float4(voxelPosition, 1), _CSMWorldToShadowMatrixs[cascadeIndex]);
         float4 shadowPosition = mul(_CSMWorldToShadowMatrices[cascadeIndex], float4(voxelPosition, 1));
         shadowPosition.xyz /= shadowPosition.w;
+        shadowPosition.y = 0.5f - shadowPosition.y;
+        shadowPosition.z = (shadowPosition.z * 0.5f) + 0.5f;
         float sampleZ = _ShadowDepthTexture.SampleLevel(sampler_PointClamp, shadowPosition.xy, 0).r;
-        mainLightShadow = shadowPosition.z < sampleZ;
+        mainLightShadow = (shadowPosition.z >= sampleZ);
     }
 
     // 3.2. trace shadow ray as fallback
