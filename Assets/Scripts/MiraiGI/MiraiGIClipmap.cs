@@ -158,7 +158,7 @@ public class MiraiGIClipmap
         m_VisualizeDepthTarget = new RenderTexture(Camera.main.pixelWidth, Camera.main.pixelHeight, 0, RenderTextureFormat.RFloat);
         m_VisualizeDepthTarget.Create();
 
-        m_VoxelOccupy = new RenderTexture(128, 128, 0, RenderTextureFormat.RInt);
+        m_VoxelOccupy = new RenderTexture(128, 128, 0, RenderTextureFormat.RFloat);
         m_VoxelOccupy.dimension = TextureDimension.Tex3D;
         m_VoxelOccupy.volumeDepth = 128 * CASCADE_COUNT;
         m_VoxelOccupy.enableRandomWrite = true;

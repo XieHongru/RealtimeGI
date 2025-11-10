@@ -33,7 +33,7 @@ Texture2D _SurfaceCacheAtlasDepth;
 SamplerState sampler_LinearClamp;
 
 RWTexture3D<uint2> _RWVoxelBitOccupyClipmap;
-//RWTexture3D<uint> _RWVoxelOccupy;
+//RWTexture3D<float> _RWVoxelOccupy;
 
 RWTexture3D<int> _RWVoxelPageClipmap;
 RWStructuredBuffer<int> _RWVoxelPageAllocator;
@@ -41,7 +41,7 @@ RWStructuredBuffer<int> _RWVoxelPageFreeList;
 RWStructuredBuffer<int> _RWVoxelPageReleaseList;
 RWTexture3D<float3> _RWVoxelPoolBaseColor;
 RWTexture3D<float3> _RWVoxelPoolNormal;
-RWTexture3D<float3> _RWVoxelPoolEmissive;
+//RWTexture3D<float3> _RWVoxelPoolEmissive;
 
 groupshared bool gs_ThreadVoxelOccupy[64];
 groupshared int gs_VoxelPageId;
@@ -58,7 +58,6 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
     int3 voxelIndex = chunkId_3D * _UpdateChunkResolution + voxelIndexInChunk; // [0 ~ CascadeResolution]
     float3 voxelPosition = CalcVoxelCenterPos(voxelIndex, _CascadeResolution, _CascadeCenter, _CascadeSize);
     float voxelCellSize = _CascadeSize / _CascadeResolution.xyz;
-    int voxelId1D = Index3DTo1D(voxelIndexInChunk, uint3(16, 16, 16));
 
     int cullingResultStart = chunkIndex * _MaxObjectNumPerUpdateChunk; // access 2d logic data in 1d buffer
     int numObjectsInUpdateChunk = min(_UpdateChunkObjectCounter[chunkIndex], _MaxObjectNumPerUpdateChunk);
@@ -132,13 +131,13 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
                 continue;
             }
 
-            float worldDistancce = abs(cardDepth - voxelDepth) * orthoDepthWorldSize;
-            if (worldDistancce < voxelCellSize * 0.5)  // tolerance radius is sqrt(2) / 2, for unit cube
+            float worldDistance = abs(cardDepth - voxelDepth) * orthoDepthWorldSize;
+            if (worldDistance < voxelCellSize * 0.5)  // tolerance radius is sqrt(2) / 2, for unit cube
             {
                 hasVoxel = true;
                 localToWorldMatrix = objectInfo.localToWorldMatrix;
                 
-                //_RWVoxelOccupy[voxelIndex + uint3(0, 0, 128 * _CascadeIndex)] = 1;
+                //_RWVoxelOccupy[voxelIndex + uint3(0, 0, 128 * _CascadeIndex)] = uvInAtlas.y;
                 break;
             }
         }
@@ -213,6 +212,6 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         int3 writeIndex = PageAddressMapping(gs_VoxelPageId, _VoxelPageCountInXYZ, voxelIndex);
         _RWVoxelPoolBaseColor[writeIndex] = baseColor;
         _RWVoxelPoolNormal[writeIndex] = worldNormal;
-        _RWVoxelPoolEmissive[writeIndex] = emissive;
+        //_RWVoxelPoolEmissive[writeIndex] = emissive;
     }
 }

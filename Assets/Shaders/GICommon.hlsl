@@ -159,7 +159,7 @@ float MaskedBilinearFilter(float4 gatherResult, float2 uv, float atlasResolution
     float2 lerpFactor = frac(uv * atlasResolution + 0.5 / atlasResolution);
 
 	// find min value from all valid value
-    float minValue = 1e5;
+    float minValue = 100000;
     for (int i = 0; i < 4; i++)
     {
         if (validMask[i] != 0)
@@ -194,7 +194,8 @@ float SurfaceCacheSampleDepth(Texture2D depthTextureAtlas, SamplerState linearSa
     float4 rawDepth = depthTextureAtlas.GatherRed(linearSampler, uv);
 
 	// depth tex represent rim detect result of mesh card, so we record and reuse it later when sample BaseColor, Normal and Emission
-    outValidMask = (rawDepth != 0);
+    // clip depth less than 0.5, which is the behind half part of object space, may cause inject artifacts when mesh is hollow
+    outValidMask = (rawDepth > 0.5);
 
 	// hit background color, nothing in voxel
     if (all(rawDepth == 0))
