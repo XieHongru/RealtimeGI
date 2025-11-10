@@ -41,7 +41,7 @@ RWStructuredBuffer<int> _RWVoxelPageFreeList;
 RWStructuredBuffer<int> _RWVoxelPageReleaseList;
 RWTexture3D<float3> _RWVoxelPoolBaseColor;
 RWTexture3D<float3> _RWVoxelPoolNormal;
-//RWTexture3D<float3> _RWVoxelPoolEmissive;
+RWTexture3D<float3> _RWVoxelPoolEmissive;
 
 groupshared bool gs_ThreadVoxelOccupy[64];
 groupshared int gs_VoxelPageId;
@@ -212,6 +212,6 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         int3 writeIndex = PageAddressMapping(gs_VoxelPageId, _VoxelPageCountInXYZ, voxelIndex);
         _RWVoxelPoolBaseColor[writeIndex] = baseColor;
         _RWVoxelPoolNormal[writeIndex] = worldNormal;
-        //_RWVoxelPoolEmissive[writeIndex] = emissive;
+        _RWVoxelPoolEmissive[writeIndex] = emissive;
     }
 }

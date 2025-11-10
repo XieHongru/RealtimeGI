@@ -23,3 +23,17 @@ void VoxelPageInit(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
         }
     }
 }
+
+// -------------------------------------------------------------------------------- //
+#pragma kernel VoxelPoolRadianceInit
+
+RWTexture3D<float3> _RWVoxelPoolRadiance;
+
+[numthreads(4, 4, 4)]
+void VoxelPoolRadianceInit(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    for (int face = VOXEL_FACE_FRONT; face <= VOXEL_FACE_BACK; face++)
+    {
+        _RWVoxelPoolRadiance[threadId * int3(1, 1, VOXEL_FACE_NUM) + int3(0, 0, face)] = float3(0, 0, 0);
+    }
+}

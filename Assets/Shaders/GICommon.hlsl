@@ -195,7 +195,7 @@ float SurfaceCacheSampleDepth(Texture2D depthTextureAtlas, SamplerState linearSa
 
 	// depth tex represent rim detect result of mesh card, so we record and reuse it later when sample BaseColor, Normal and Emission
     // clip depth less than 0.5, which is the behind half part of object space, may cause inject artifacts when mesh is hollow
-    outValidMask = (rawDepth > 0.5);
+    outValidMask = (rawDepth > 0.499);
 
 	// hit background color, nothing in voxel
     if (all(rawDepth == 0))

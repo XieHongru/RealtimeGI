@@ -18,6 +18,7 @@ public class MiraiGIRadianceCache
     RenderTexture m_VoxelPoolRadiance;
 
     ComputeShader m_VoxelLightingCS;
+    ComputeShader m_VoxelPoolInitCS;
 
     // init date
     int[] m_ValidVoxelCounterInitData;
@@ -27,7 +28,10 @@ public class MiraiGIRadianceCache
 
     public void Init()
     {
+        frameNumberRenderThread = 0;
+
         m_VoxelLightingCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelLighting/VoxelLighting.compute");
+        m_VoxelPoolInitCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelClipmap/VoxelPoolInit.compute");
     }
 
     public void Release()
@@ -65,6 +69,9 @@ public class MiraiGIRadianceCache
 
         Graphics.ExecuteCommandBuffer(cmd);
         CommandBufferPool.Release(cmd);
+
+        // forbid overflow
+        frameNumberRenderThread = (frameNumberRenderThread + 1) % 8;
     }
 
     public void PrepareRenderResources(MiraiGIGPUScene scene)
@@ -82,6 +89,12 @@ public class MiraiGIRadianceCache
             m_VoxelPoolRadiance.volumeDepth = voxelRadiancePoolSize.z;
             m_VoxelPoolRadiance.enableRandomWrite = true;
             m_VoxelPoolRadiance.Create();
+
+            CommandBuffer cmd = CommandBufferPool.Get("Init Voxel Pool Radiance");
+            cmd.SetComputeTextureParam(m_VoxelPoolInitCS, 1, Shader.PropertyToID("_RWVoxelPoolRadiance"), m_VoxelPoolRadiance);
+            cmd.DispatchCompute(m_VoxelPoolInitCS, 1, voxelRadiancePoolSize.x / 4, voxelRadiancePoolSize.y / 4, voxelRadiancePoolSize.z / 8);
+            Graphics.ExecuteCommandBuffer(cmd);
+            CommandBufferPool.Release(cmd);
         }
 
         if (m_ValidVoxelCounter == null)
@@ -151,7 +164,7 @@ public class MiraiGIRadianceCache
         // get main light
         GameObject mainLightObject = GameObject.Find("Directional Light");
         Light mainLight = mainLightObject.GetComponent<Light>();
-        Vector3 mainLightDirection = mainLight.transform.forward;
+        Vector3 mainLightDirection = mainLight.transform.forward * -1;
         Color mainLightColor = mainLight.color;
 
         // get main light shadow
