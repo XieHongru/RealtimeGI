@@ -39,8 +39,6 @@ float3 ReconstructWorldPositionFromDepth(float2 uv, float depth)
     float realDepth = depth;
     float4 worldPosition = mul(_InvViewProjMat, float4(ndcPosition * realDepth, realDepth, 1.0f));
     return worldPosition.xyz / worldPosition.w;
-
-    return worldPosition;
 }
 
 [numthreads(8, 8, 1)]

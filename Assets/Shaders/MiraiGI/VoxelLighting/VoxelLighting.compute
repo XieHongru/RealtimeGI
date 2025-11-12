@@ -93,7 +93,7 @@ float3 _CascadeCenterArray[MAX_CASCADE_COUNT];
 float3 _CascadeSizeArray[MAX_CASCADE_COUNT];
 int3 _CascadeMoveOffsetArray[MAX_CASCADE_COUNT];
 
-float4x4 _CameraViewMatrix;
+float4x4 _CameraViewProjectionMatrix;
 float3 _MainLightDirection;
 float4 _MainLightColor;
 float _ShadowRayMaxDistance;
@@ -157,35 +157,30 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
     // 3. evaluate directional light shadow
     float mainLightShadow = 1.0;
     float3 voxelPosition = CalcVoxelCenterPos(voxelIndex, _CascadeResolution, cascadeInfo.center, cascadeInfo.size);
-    //float3 voxelPositionView = mul(float4(voxelPosition, 1), _CameraViewMatrix);
-    float3 voxelPositionView = mul(_CameraViewMatrix, float4(voxelPosition, 1));
-    bool isVoxelBehindCamera = voxelPositionView.z < -128; // voxel may behind camera frustum where csm is invalid
+    float3 voxelClipPosition = mul(_CameraViewProjectionMatrix, float4(voxelPosition, 1));
+    voxelClipPosition.xyz /= voxelClipPosition.b;
+    bool isVoxelInFrustum = all(abs(voxelClipPosition.xy) < 1) && voxelClipPosition.z > 0; // voxel may behind camera frustum where csm is invalid
 
     // 3.1. use whole scene shadow map
-    int cascadeIndex;
-    for (cascadeIndex = 0; cascadeIndex < _CSMNumCascades; cascadeIndex++)
+    for (int cascadeIndex = 0; cascadeIndex < _CSMNumCascades; cascadeIndex++)
     {
         float4 boundSphere = _CSMShadowBounds[cascadeIndex];
-        if (length(voxelPosition - boundSphere.xyz) < boundSphere.w)
+        if (length(voxelPosition - boundSphere.xyz) > boundSphere.w || !isVoxelInFrustum)
         {
-            break;
+            continue;
         }
-    }
-
-    bool isVoxelInsideCSM = cascadeIndex < _CSMNumCascades;
-    if (isVoxelInsideCSM && !isVoxelBehindCamera)
-    {
+        
         //float4 shadowPosition = mul(float4(voxelPosition, 1), _CSMWorldToShadowMatrixs[cascadeIndex]);
         float4 shadowPosition = mul(_CSMWorldToShadowMatrices[cascadeIndex], float4(voxelPosition, 1));
         shadowPosition.xyz /= shadowPosition.w;
         shadowPosition.y = 0.5f - shadowPosition.y;
         shadowPosition.z = (shadowPosition.z * 0.5f) + 0.5f;
         float sampleZ = _ShadowDepthTexture.SampleLevel(sampler_PointClamp, shadowPosition.xy, 0).r;
-        mainLightShadow = (shadowPosition.z >= sampleZ);
+        mainLightShadow *= (shadowPosition.z >= sampleZ);
     }
 
     // 3.2. trace shadow ray as fallback
-    if (!isVoxelInsideCSM || isVoxelBehindCamera)
+    if (!isVoxelInFrustum)
     {
         int rayBoostClipmapOffset = _CascadeIndex < (MAX_CASCADE_COUNT / 2) ? _ShadowRayBoostClipmapOffset : 0;
         float3 positionOffset = worldNormal * cascadeInfo.voxelSize * (1 << rayBoostClipmapOffset); // offset 1 voxel to avoid self shadow
@@ -226,32 +221,66 @@ float _MaxRayDistance;
 Texture3D<float3> _VoxelPoolRadiance;
 RWTexture2D<float3> _RWFarFieldProbeAtlas;
 
+int2 RedirectBorderPixel(int2 pixelIndexInProbe)
+{
+    int2 result = pixelIndexInProbe;
+    int pixelIndexMax = _ProbeResolution - 1; // 15
+
+    // row
+    if (pixelIndexInProbe.y == 0 || pixelIndexInProbe.y == pixelIndexMax)
+    {
+        result.x = pixelIndexMax - pixelIndexInProbe.x;
+        result.y += (pixelIndexInProbe.y == 0) ? 1 : -1; // top or bottom row
+    }
+    // col
+    if (pixelIndexInProbe.x == 0 || pixelIndexInProbe.x == pixelIndexMax)
+    {
+        result.x += (pixelIndexInProbe.x == 0) ? 1 : -1; // left or right col
+        result.y = pixelIndexMax - pixelIndexInProbe.y;
+    }
+
+    // left top
+    if (pixelIndexInProbe.x == 0 && pixelIndexInProbe.y == 0)
+    {
+        result = int2(pixelIndexMax - 1, pixelIndexMax - 1);
+    }
+    // right top
+    if (pixelIndexInProbe.x == pixelIndexMax && pixelIndexInProbe.y == 0)
+    {
+        result = int2(1, pixelIndexMax - 1);
+    }
+    // left bottom
+    if (pixelIndexInProbe.x == 0 && pixelIndexInProbe.y == pixelIndexMax)
+    {
+        result = int2(pixelIndexMax - 1, 1);
+    }
+    // right bottom
+    if (pixelIndexInProbe.x == pixelIndexMax && pixelIndexInProbe.y == pixelIndexMax)
+    {
+        result = int2(1, 1);
+    }
+
+    return result;
+}
+
 [numthreads(8, 8, 1)]
 void FarFieldProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
     ClipmapInfo clipmapInfo = ResolveClipmapInfo();
     CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, _CascadeIndex);
 
-    // use checker board 2x2 for average update to 4 frame
-    int2 probeIndex2D = threadId.xy / _ProbeResolution;
-    probeIndex2D = probeIndex2D * _CheckerBoardInfo.w + _CheckerBoardInfo.xy;
-
-    int probeIndex1D = probeIndex2D.x + probeIndex2D.y * _ProbeCountInAtlasXY.x;
-    int3 probeIndex3D = Index1DTo3D(probeIndex1D, _ProbeCountInXYZ);
+    // use checker board 2x2x2 for average update to 8 frame
+    int3 probeIndex3D = int3(threadId.xy / _ProbeResolution, threadId.z);
+    probeIndex3D = probeIndex3D * _CheckerBoardInfo.w + _CheckerBoardInfo.xyz;
     float3 probeLocation = CalcVoxelCenterPos(probeIndex3D, _ProbeCountInXYZ, cascadeInfo.center, cascadeInfo.size);
 
     // 1. calculate octahedral uv and ray direction
-    int2 probePixelIndex = threadId.xy % _ProbeResolution; // [0 ~ 16]
-    float2 probeUV = float2(probePixelIndex - 1) / float(_ProbeResolution - 2); // [0 ~ 1], 2 is for padding
+    int2 pixelIndexInProbe = threadId.xy % _ProbeResolution; // [0 ~ 16]
+    int2 pixelIndexRedirect = RedirectBorderPixel(pixelIndexInProbe);
+    
+    float2 probeUV = float2(pixelIndexRedirect - 1) / float(_ProbeResolution - 2); // [0 ~ 1], 2 is for padding
     probeUV += 0.5 / float(_ProbeResolution - 2); // align to texel center
     float3 rayDirection = OctahedralDirection(probeUV);
-
-    // skip border pixel
-    if (probePixelIndex.x == 0 || probePixelIndex.x == (_ProbeResolution - 1) ||
-       probePixelIndex.y == 0 || probePixelIndex.y == (_ProbeResolution - 1))
-    {
-        return;
-    }
 
     // trace ray
     VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
@@ -287,8 +316,8 @@ void FarFieldProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThread
     }
 
     // 4. write to probe atlas
-    int2 pixelCountInAtlasXY = _ProbeCountInAtlasXY * _ProbeResolution;
-    int2 writeIndex = probeIndex2D * _ProbeResolution + probePixelIndex;
-    writeIndex += pixelCountInAtlasXY * int2(0, _CascadeIndex);
+    int2 writeOffset = GetProbePixelOffsetInAtlas(probeIndex3D, _ProbeCountInXYZ, _ProbeCountInAtlasXY, _ProbeResolution);
+    int2 writeIndex = writeOffset + pixelIndexInProbe;
+    
     _RWFarFieldProbeAtlas[writeIndex] = hitRadiance;
 }

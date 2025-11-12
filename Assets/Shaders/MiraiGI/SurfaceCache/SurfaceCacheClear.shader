@@ -16,7 +16,7 @@ Shader "Mirai/SurfaceCacheClear"
     };
 
     float _CardAtlasResolution;
-    StructuredBuffer<float4> cardClearQuadUVTransformBuffer;
+    StructuredBuffer<float4> _CardClearQuadUVTransformBuffer;
 
     FragmentInput SurfaceCacheClearVS(VertexInput input)
     {

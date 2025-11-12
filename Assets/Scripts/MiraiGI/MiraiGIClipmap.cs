@@ -89,7 +89,7 @@ public class MiraiGIClipmap
     const int MAX_OBJECT_NUM_PER_UPDATE_CHUNK = 64;
     const int VOXEL_BLOCK_SIZE = 4;
     const int PAGE_ID_INVALID = (0x3FFFFFFF);
-    const int VISUALIZE_MODE = 4;
+    const int VISUALIZE_MODE = 1;
 
     RenderTexture m_VoxelMap;
     RenderTexture m_VoxelPageClipmap;
@@ -133,6 +133,7 @@ public class MiraiGIClipmap
     public RenderTexture GetVoxelPoolNormal() => m_VoxelPoolNormal;
     public RenderTexture GetVoxelPoolEmissive() => m_VoxelPoolEmissive;
     public RenderTexture GetVisualizeColorTarget() => m_VisualizeColorTarget;
+    public RenderTexture GetVisualizeDepthTarget() => m_VisualizeDepthTarget;
 
     public void CreateClipmap()
     {

@@ -34,4 +34,5 @@ public class GlobalSettings : ScriptableObject
     public int freezeLightingForDebug = 0;
     public int probeGatherCheckerBoardSize = 2;
     public float farFieldProbeRayMaxDistance = 64.0f;
+    public int visualizeFarFieldProbe = 1;
 }

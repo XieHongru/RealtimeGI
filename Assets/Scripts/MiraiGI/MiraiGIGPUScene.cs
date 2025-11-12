@@ -49,9 +49,16 @@ public class MiraiGIGPUScene
             // voxel lighting
             // TODO: multi-view
             miraiGIRadianceCache.Update(ref renderingData, this);
+        }
+    }
 
+    public void VisualizeGIScene(ref RenderingData renderingData)
+    {
+        foreach (Camera camera in Camera.allCameras)
+        {
             CommandBuffer cmd = CommandBufferPool.Get("Visualize GI Scene");
             miraiGIClipmap.VisualizeMiraiGIScene(cmd, this, camera);
+            miraiGIRadianceCache.VisualizeFarFieldProbe(cmd, this);
             Graphics.ExecuteCommandBuffer(cmd);
             CommandBufferPool.Release(cmd);
         }

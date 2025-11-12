@@ -6,6 +6,7 @@ using UnityEngine;
 using UnityEngine.Experimental.GlobalIllumination;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
+using static UnityEditor.Rendering.ShadowCascadeGUI;
 
 public class MiraiGIRadianceCache
 {
@@ -21,12 +22,14 @@ public class MiraiGIRadianceCache
     ComputeBuffer m_VoxelLightingIndirectArgs;
 
     RenderTexture m_VoxelPoolRadiance;
-    RenderTexture m_FarFieldProbeAtlas;
+    RenderTexture[] m_FarFieldProbeAtlas;
 
     ComputeShader m_VoxelLightingCS;
     ComputeShader m_VoxelPoolInitCS;
 
-    // init date
+    Mesh m_ProbeSphereMesh;
+
+    // init data
     int[] m_ValidVoxelCounterInitData;
     int[] m_ValidVoxelBufferInitData;
 
@@ -38,6 +41,10 @@ public class MiraiGIRadianceCache
 
         m_VoxelLightingCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelLighting/VoxelLighting.compute");
         m_VoxelPoolInitCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelClipmap/VoxelPoolInit.compute");
+
+        GameObject sphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        m_ProbeSphereMesh = sphere.GetComponent<MeshFilter>().mesh;
+        //sphere.SetActive(false);
     }
 
     public void Release()
@@ -47,12 +54,20 @@ public class MiraiGIRadianceCache
         m_VoxelLightingIndirectArgs?.Release();
 
         m_VoxelPoolRadiance?.Release();
+        for (int i = 0; i < m_FarFieldProbeAtlas.Length; i++)
+        {
+            m_FarFieldProbeAtlas[i].Release();
+        }
 
         m_ValidVoxelCounter = null;
         m_ValidVoxelBuffer = null;
         m_VoxelLightingIndirectArgs = null;
 
         m_VoxelPoolRadiance = null;
+        for (int i = 0; i < m_FarFieldProbeAtlas.Length; i++)
+        {
+            m_FarFieldProbeAtlas[i] = null;
+        }
     }
 
     public void Update(ref RenderingData renderingData, MiraiGIGPUScene scene)
@@ -109,12 +124,17 @@ public class MiraiGIRadianceCache
 
         if (m_FarFieldProbeAtlas == null)
         {
+            m_FarFieldProbeAtlas = new RenderTexture[MiraiGIClipmap.CASCADE_COUNT];
+
             Vector2Int atlasResolution = m_ProbeCountInAtlasXY * m_ProbeResolution;
             atlasResolution.y *= MiraiGIClipmap.CASCADE_COUNT;
 
-            m_FarFieldProbeAtlas = new RenderTexture(atlasResolution.x, atlasResolution.y, 0, RenderTextureFormat.RGB111110Float);
-            m_FarFieldProbeAtlas.enableRandomWrite = true;
-            m_FarFieldProbeAtlas.Create();
+            for (int cascadeId = 0; cascadeId < MiraiGIClipmap.CASCADE_COUNT; cascadeId++)
+            {
+                m_FarFieldProbeAtlas[cascadeId] = new RenderTexture(atlasResolution.x, atlasResolution.y, 0, RenderTextureFormat.RGB111110Float);
+                m_FarFieldProbeAtlas[cascadeId].enableRandomWrite = true;
+                m_FarFieldProbeAtlas[cascadeId].Create();
+            }
         }
 
         // buffer prepare
@@ -234,7 +254,7 @@ public class MiraiGIRadianceCache
             cmd.SetComputeVectorArrayParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeSizeArray"), cascadeSizeArray);
             cmd.SetComputeVectorArrayParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeMoveOffsetArray"), cascadeMoveOffsetArray);
 
-            cmd.SetComputeMatrixParam(m_VoxelLightingCS, Shader.PropertyToID("_CameraViewMatrix"), Camera.main.worldToCameraMatrix);
+            cmd.SetComputeMatrixParam(m_VoxelLightingCS, Shader.PropertyToID("_CameraViewProjectionMatrix"), Camera.main.projectionMatrix * Camera.main.worldToCameraMatrix);
             cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_MainLightDirection"), mainLightDirection);
             cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_MainLightColor"), mainLightColor);
             cmd.SetComputeFloatParam(m_VoxelLightingCS, Shader.PropertyToID("_ShadowRayMaxDistance"), GlobalSettings.Instance.shadowRayMaxDistance);
@@ -267,10 +287,10 @@ public class MiraiGIRadianceCache
         m_ProbeGatherCheckerBoardSize = Mathf.NextPowerOfTwo(m_ProbeGatherCheckerBoardSize);
         m_ProbeGatherCheckerBoardSize = Mathf.Clamp(m_ProbeGatherCheckerBoardSize, 1, 4);
 
-        int maxFrameNum = m_ProbeGatherCheckerBoardSize * m_ProbeGatherCheckerBoardSize * 1;
+        int maxFrameNum = m_ProbeGatherCheckerBoardSize * m_ProbeGatherCheckerBoardSize * m_ProbeGatherCheckerBoardSize;
         Vector3Int checkerBoardOffset = GlobalShared.Index1DTo3DLinear((int) frameNumberRenderThread % maxFrameNum, 
                                                                         new Vector3Int(m_ProbeGatherCheckerBoardSize, m_ProbeGatherCheckerBoardSize, 1));
-        Vector2Int probeCountToUpdateInAtlasXY = m_ProbeCountInAtlasXY / m_ProbeGatherCheckerBoardSize;
+        Vector3Int probeCountToUpdateInXYZ = m_ProbeCountInXYZ / m_ProbeGatherCheckerBoardSize;
 
         Vector4[] cascadeCenterArray = new Vector4[MiraiGIClipmap.MAX_CASCADE_COUNT];
         Vector4[] cascadeSizeArray = new Vector4[MiraiGIClipmap.MAX_CASCADE_COUNT];
@@ -310,10 +330,57 @@ public class MiraiGIRadianceCache
         cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelPoolNormal"), clipmap.GetVoxelPoolNormal());
         cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelPoolEmissive"), clipmap.GetVoxelPoolEmissive());
         cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelPoolRadiance"), m_VoxelPoolRadiance);
-        cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWFarFieldProbeAtlas"), m_FarFieldProbeAtlas);
+        cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWFarFieldProbeAtlas"), m_FarFieldProbeAtlas[cascadeId]);
 
-        Vector2Int pixelCountToUpdateInAtlasXY = probeCountToUpdateInAtlasXY * m_ProbeResolution;
-        cmd.DispatchCompute(m_VoxelLightingCS, kernel, pixelCountToUpdateInAtlasXY.x / 8, pixelCountToUpdateInAtlasXY.y / 8, 1);
+        Vector3Int pixelCountToUpdateInAtlas = probeCountToUpdateInXYZ;
+        pixelCountToUpdateInAtlas.x *= m_ProbeResolution;
+        pixelCountToUpdateInAtlas.y *= m_ProbeResolution;
+        
+        cmd.DispatchCompute(m_VoxelLightingCS, kernel, pixelCountToUpdateInAtlas.x / 8, pixelCountToUpdateInAtlas.y / 8, pixelCountToUpdateInAtlas.z);
+    }
+
+    public void VisualizeFarFieldProbe(CommandBuffer cmd, MiraiGIGPUScene scene)
+    {
+        if (GlobalSettings.Instance.visualizeFarFieldProbe <= 0)
+        {
+            return;
+        }
+
+        MiraiGIClipmap clipmap = scene.miraiGIClipmap;
+        MiraiGICascadeInfo[] cascadeInfos = clipmap.cascadeInfos;
+
+        int cascadeId = GlobalSettings.Instance.visualizeFarFieldProbe - 1;
+
+        Shader farFieldProbeVisualizeShader = Shader.Find("Mirai/VisualizeProbe");
+        Material farFieldProbeVisualizeMaterial = new Material(farFieldProbeVisualizeShader);
+        farFieldProbeVisualizeMaterial.enableInstancing = true;
+
+        Shader testShader = Shader.Find("Mirai/SurfaceCacheCapture");
+        Material testMaterial = new Material(testShader);
+        testMaterial.enableInstancing = true;
+
+        cmd.SetRenderTarget(clipmap.GetVisualizeColorTarget(), Shader.GetGlobalTexture("_CameraDepthTexture"));
+
+        farFieldProbeVisualizeMaterial.SetInt(Shader.PropertyToID("_ProbeResolution"), m_ProbeResolution);
+        farFieldProbeVisualizeMaterial.SetVector(Shader.PropertyToID("_ProbeCountInXYZ"), (Vector3)m_ProbeCountInXYZ);
+        farFieldProbeVisualizeMaterial.SetVector(Shader.PropertyToID("_ProbeCountInAtlasXY"), (Vector2)m_ProbeCountInAtlasXY);
+        farFieldProbeVisualizeMaterial.SetInt(Shader.PropertyToID("_CascadeIndex"), cascadeId);
+        farFieldProbeVisualizeMaterial.SetInt(Shader.PropertyToID("_CascadeCount"), MiraiGIClipmap.CASCADE_COUNT);
+        farFieldProbeVisualizeMaterial.SetVector(Shader.PropertyToID("_CascadeResolution"), (Vector3)clipmap.voxelResolution);
+        farFieldProbeVisualizeMaterial.SetVector(Shader.PropertyToID("_CascadeCenter"), cascadeInfos[cascadeId].cascadeCenter);
+        farFieldProbeVisualizeMaterial.SetVector(Shader.PropertyToID("_CascadeSize"), cascadeInfos[cascadeId].cascadeSize);
+        farFieldProbeVisualizeMaterial.SetVector(Shader.PropertyToID("_CascadeMoveOffset"), (Vector3)cascadeInfos[cascadeId].moveOffset);
+        farFieldProbeVisualizeMaterial.SetTexture(Shader.PropertyToID("_FarFieldProbeAtlas"), m_FarFieldProbeAtlas[cascadeId]);
+        farFieldProbeVisualizeMaterial.SetMatrix(Shader.PropertyToID("_CameraViewProjection"), Camera.main.projectionMatrix * Camera.main.worldToCameraMatrix);
+
+        int instanceCount = m_ProbeCountInXYZ.x * m_ProbeCountInXYZ.y * m_ProbeCountInXYZ.z;
+
+        Matrix4x4[] instanceMatrices = new Matrix4x4[instanceCount];
+        for (int i = 0; i < instanceCount; i++)
+        {
+            instanceMatrices[i] = Camera.main.projectionMatrix * Camera.main.worldToCameraMatrix;
+        }
+        cmd.DrawMeshInstanced(m_ProbeSphereMesh, 0, farFieldProbeVisualizeMaterial, 0, instanceMatrices, instanceCount);
     }
 
     void GetMainLightShadowInfos(Light light, ref RenderingData renderingData,
