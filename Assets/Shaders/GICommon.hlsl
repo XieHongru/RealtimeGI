@@ -1,6 +1,8 @@
 #ifndef GI_COMMON
 #define GI_COMMON
 
+#define PI (3.1415926f)
+
 #define OBJECT_ID_INVALID (-1)
 #define MAX_CARD_PER_MESH 12
 #define VOXEL_BLOCK_SIZE 4

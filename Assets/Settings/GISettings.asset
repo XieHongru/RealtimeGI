@@ -12,4 +12,22 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 3b75558ede718424cb55de04dcb2a0be, type: 3}
   m_Name: GISettings
   m_EditorClassIdentifier: 
-  voxelSize: 0.2
+  maxObjectCount: 16384
+  maxSurfaceCacheCount: 4096
+  meshCardDefaultResolution: 32
+  meshCardResolutionThreshold1: 4
+  meshCardResolutionThreshold2: 16
+  meshCardResolutionThreshold3: 64
+  adaptiveSurfaceCacheCount: 8
+  clipmapObjectCullingRejectFactor1: 1
+  clipmapObjectCullingRejectFactor2: 2
+  clipmapObjectCullingRejectFactor3: 3
+  clipmapObjectCullingRejectFactor4: 4
+  shadowRayMaxDistance: 64
+  shadowRayBoostClipmapOffset: 1
+  voxelLightingCheckerBoardSize: 2
+  freezeLightingForDebug: 0
+  probeGatherCheckerBoardSize: 2
+  farFieldProbeRayMaxDistance: 64
+  visualizeFarFieldProbe: 0
+  visualizeNearFieldProbe: 1

@@ -3,6 +3,7 @@ Shader "Mirai/VisualizeProbe"
     HLSLINCLUDE
     #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
     #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+    #include "../RayTracing/SHCommon.hlsl"
     #include "../../GICommon.hlsl"
 
     struct VertexInput
@@ -66,6 +67,68 @@ Shader "Mirai/VisualizeProbe"
 
         return float4(outColor, 1);
     }
+    
+    // -------------------------------------------------------------------------------- //
+    Texture3D<uint2> _VoxelBitOccupyClipmap;
+    Texture3D<float4> _NearFieldProbeVolume;
+
+    FragmentInput VisualizeNearFieldProbeVS(VertexInput input)
+    {
+        FragmentInput output;
+
+        output.positionWS = TransformObjectToWorld(input.positionOS.xyz);
+        float3 localPosition = input.positionOS.xyz;
+        int3 probeCountInXYZ = _CascadeResolution / VOXEL_BLOCK_SIZE;
+        int3 probeIndex3D = Index1DTo3D(input.instanceID, probeCountInXYZ);
+
+        float3 probeLocation = CalcVoxelCenterPos(probeIndex3D, probeCountInXYZ, _CascadeCenter, _CascadeSize);
+        float3 worldPosition = probeLocation + localPosition * 15.0f / 100.f * pow(2, _CascadeIndex);
+
+        int3 clipmapAccessIndex = ClipmapAddressMapping(probeIndex3D * VOXEL_BLOCK_SIZE, _CascadeResolution, _CascadeMoveOffset, _CascadeIndex);
+        int2 bitOccupy = _VoxelBitOccupyClipmap.Load(int4(clipmapAccessIndex, 0)).xy;
+        bool isProbeValid = any(bitOccupy != 0);
+        if(!isProbeValid)
+        {
+            worldPosition *= 0.0;
+        }
+
+        output.probeIndex3D = probeIndex3D;
+        output.rayDirection = normalize(localPosition);
+        output.positionCS = mul(_CameraViewProjection, float4(worldPosition, 1));
+        output.positionCS.z /= output.positionCS.w;
+        output.positionCS.y = -output.positionCS.y;
+
+        return output;
+    }
+
+    float4 VisualizeNearFieldProbeFS(FragmentInput input) : SV_Target
+    {
+        int3 probeCountInXYZ = _CascadeResolution / VOXEL_BLOCK_SIZE;
+        int3 probeCascadeAccessIndex = (input.probeIndex3D + _CascadeMoveOffset) % probeCountInXYZ;
+        int3 readIndexBase = probeCascadeAccessIndex * int3(1, 1, 7);
+    
+	    ThreeBandSHVectorRGB irradianceSH;
+	    irradianceSH.R.V0 = _NearFieldProbeVolume.Load(int4(readIndexBase + float3(0, 0, 0), 0));
+	    irradianceSH.R.V1 = _NearFieldProbeVolume.Load(int4(readIndexBase + float3(0, 0, 1), 0));
+	    irradianceSH.G.V0 = _NearFieldProbeVolume.Load(int4(readIndexBase + float3(0, 0, 2), 0));
+	    irradianceSH.G.V1 = _NearFieldProbeVolume.Load(int4(readIndexBase + float3(0, 0, 3), 0));
+	    irradianceSH.B.V0 = _NearFieldProbeVolume.Load(int4(readIndexBase + float3(0, 0, 4), 0));
+	    irradianceSH.B.V1 = _NearFieldProbeVolume.Load(int4(readIndexBase + float3(0, 0, 5), 0));
+
+	    float4 temp = _NearFieldProbeVolume.Load(int4(readIndexBase + float3(0, 0, 6), 0));
+	    irradianceSH.R.V2 = temp.x;
+	    irradianceSH.G.V2 = temp.y;
+	    irradianceSH.B.V2 = temp.z;
+
+        ThreeBandSHVector diffuseTransferSH = CalcDiffuseTransferSH3(input.rayDirection, 1);
+	    float3 color = max(float3(0,0,0), DotSH3(irradianceSH, diffuseTransferSH)) / PI;
+
+        // ThreeBandSHVector Sh3Basis = SHBasisFunction3(input.rayDirection);
+        // float3 color = DotSH3(radianceSH3, Sh3Basis);
+
+	    return float4(color, 1);
+    }
+
     ENDHLSL
     
     SubShader
@@ -81,6 +144,19 @@ Shader "Mirai/VisualizeProbe"
             #pragma enable_d3d11_debug_symbols
             #pragma vertex VisualizeFarFieldProbeVS
             #pragma fragment VisualizeFarFieldProbeFS
+            #pragma multi_compile_instancing
+
+            ENDHLSL
+        }
+
+        Pass
+        {
+            Name "VisualizeNearFieldProbe"
+            
+            HLSLPROGRAM
+            #pragma enable_d3d11_debug_symbols
+            #pragma vertex VisualizeNearFieldProbeVS
+            #pragma fragment VisualizeNearFieldProbeFS
             #pragma multi_compile_instancing
 
             ENDHLSL

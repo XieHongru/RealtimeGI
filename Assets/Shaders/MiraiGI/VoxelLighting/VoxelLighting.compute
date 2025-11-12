@@ -1,5 +1,6 @@
 #include "../../GICommon.hlsl"
 #include "../RayTracing/VoxelRayTracing.hlsl"
+#include "../RayTracing/SHCommon.hlsl"
 
 #pragma kernel PickValidVoxel
 
@@ -203,7 +204,7 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
         float3 radiance = emissive;
         float3 faceNormal = worldNormal * lerp(1, -1, face); // -WorldNormal if back face
 
-        radiance += saturate(dot(faceNormal, _MainLightDirection)) * _MainLightColor * mainLightShadow * baseColor / (3.1415926);
+        radiance += saturate(dot(faceNormal, _MainLightDirection)) * _MainLightColor /** mainLightShadow*/ * baseColor / (3.1415926);
 
         int3 writeIndex = TwoSideAddressMapping(indexInPool, face);
         _RWVoxelPoolRadiance[writeIndex] = radiance;
@@ -320,4 +321,193 @@ void FarFieldProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThread
     int2 writeIndex = writeOffset + pixelIndexInProbe;
     
     _RWFarFieldProbeAtlas[writeIndex] = hitRadiance;
+}
+
+// -------------------------------------------------------------------------------- //
+#pragma kernel PickValidProbe
+
+RWStructuredBuffer<int> _RWValidProbeCounter;
+RWStructuredBuffer<int> _RWValidProbeBuffer;
+
+groupshared bool gs_ThreadProbeValidMask[64];
+
+[numthreads(4,4,4)]
+void PickValidProbe(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    int groupThreadIndex = Index3DTo1D(groupThreadId, int3(4,4,4));
+
+    // one thread for one block (probe num == block num)
+    int3 blockIndex = threadId.xyz;
+    blockIndex = blockIndex * _CheckerBoardInfo.w + _CheckerBoardInfo.xyz;
+
+    // 1. judge if current block is empty, if not empty we spawn a probe
+    int3 clipmapAccessIndex = ClipmapAddressMapping(blockIndex * VOXEL_BLOCK_SIZE, _CascadeResolution, _CascadeMoveOffset, _CascadeIndex);
+    int2 bitOccupy = _VoxelBitOccupyClipmap.Load(int4(clipmapAccessIndex, 0)).xy;
+    bool isProbeValid = any(bitOccupy != 0);
+    gs_ThreadProbeValidMask[groupThreadIndex] = isProbeValid;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // 2. allocate space in RWValidProbeBuffer, boardcast write index to thread
+    if (groupThreadIndex == 0)
+    {
+        int probeCounter = 0;
+        for (int i = 0; i < 64; i++)
+        {
+            if (gs_ThreadProbeValidMask[i])
+            {
+                probeCounter += 1;
+            }
+        }
+
+        int startIndex;
+        InterlockedAdd(_RWValidProbeCounter[0], probeCounter, startIndex);
+
+        for (int i = 0; i < 64; i++)
+        {
+            if (gs_ThreadProbeValidMask[i])
+            {
+                gs_ThreadWriteIndex[i] = startIndex;
+                startIndex += 1;
+            }
+        }
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // 3. write probe index to buffer
+    int writeIndex = gs_ThreadWriteIndex[groupThreadIndex];
+    if (isProbeValid)
+    {
+        int3 blockCountInXYZ = _CascadeResolution / VOXEL_BLOCK_SIZE;
+        _RWValidProbeBuffer[writeIndex] = Index3DTo1D(blockIndex, blockCountInXYZ);
+    }
+}
+
+// -------------------------------------------------------------------------------- //
+#pragma kernel BuildNearFieldProbeGatherIndirectArgs
+
+StructuredBuffer<int> _ValidProbeCounter;
+
+[numthreads(1,1,1)]
+void BuildNearFieldProbeGatherIndirectArgs(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    _RWIndirectArgs[0] = _ValidProbeCounter[0];
+    _RWIndirectArgs[1] = 1;
+    _RWIndirectArgs[2] = 1;
+}
+
+// -------------------------------------------------------------------------------- //
+#pragma kernel NearFieldProbeGather
+
+groupshared float3 gs_ProbeLocation;
+groupshared int3 gs_ProbeCascadeAccessIndex;
+groupshared ThreeBandSHVectorRGB gs_ThreadSHVector[64];
+
+StructuredBuffer<int> _ValidProbeBuffer;
+
+RWTexture3D<float4> _RWNearFieldProbeVolume;
+
+float3 SphericalFibonacciSample(float i, float n)
+{
+    float theta = 2 * PI * i / ((1 + sqrt(5)) * 0.5);
+    float phi = acos(1 - 2 * (i) / n);
+    return float3(
+		sin(phi) * cos(theta),
+		sin(phi) * sin(theta),
+		cos(phi)
+	);
+}
+
+[numthreads(64, 1, 1)]
+void NearFieldProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    ClipmapInfo clipmapInfo = ResolveClipmapInfo();
+    CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, _CascadeIndex);
+
+    int groupThreadIndex = groupThreadId.x;
+    int3 probeCountInXYZ = cascadeInfo.resolution / VOXEL_BLOCK_SIZE;
+
+    // 1. fetch probe info
+    if (groupThreadIndex == 0)
+    {
+        int probeIndex1D = _ValidProbeBuffer[groupId.x];
+        int3 probeIndex3D = Index1DTo3D(probeIndex1D, probeCountInXYZ);
+        gs_ProbeLocation = CalcVoxelCenterPos(probeIndex3D, probeCountInXYZ, cascadeInfo.center, cascadeInfo.size);
+        gs_ProbeCascadeAccessIndex = (probeIndex3D + cascadeInfo.moveOffset) % probeCountInXYZ;
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // 2. trace ray
+    float uniformSampleSolidAngle = 4 * PI / float(64);
+    float3 rayDirection = SphericalFibonacciSample(groupThreadIndex, 64);
+
+    VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
+    RTRequest.rayStart = gs_ProbeLocation;
+    RTRequest.rayDir = rayDirection;
+    RTRequest.minCascadeIndex = _CascadeIndex;
+    RTRequest.maxCascadeIndex = _CascadeCount - 1;
+    RTRequest.maxStepNum = 128000;
+    RTRequest.maxDistance = 12800000;
+
+    VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _VoxelBitOccupyClipmap, RTRequest);
+
+    // 3. fetch radiance
+    float3 hitRadiance = float3(0, 0, 0);
+    if (hit.isHit)
+    {
+        int voxelPageId = _VoxelPageClipmap.Load(uint4(hit.clipmapAccessIndex, 0)).r;
+        if (voxelPageId != PAGE_ID_INVALID)
+        {
+            int3 indexInPool = PageAddressMapping(voxelPageId, _VoxelPageCountInXYZ, hit.voxelIndex);
+
+            float3 worldNormal = _VoxelPoolNormal.Load(uint4(indexInPool, 0)).rgb * 2 - 1;
+            int isBackFace = dot(worldNormal, -RTRequest.rayDir) < 0;
+
+            int3 twoSideIndex = TwoSideAddressMapping(indexInPool, isBackFace);
+            hitRadiance = _VoxelPoolRadiance.Load(uint4(twoSideIndex, 0)).rgb;
+        }
+    }
+    else
+    {
+        // TODO: sample skybox
+        hitRadiance = float3(1, 1, 1);
+    }
+
+    // 4. SH projection
+    ThreeBandSHVector SHBasis = SHBasisFunction3(rayDirection);
+    ThreeBandSHVectorRGB SHRadiance;
+    SHRadiance.R = MulSH3(SHBasis, hitRadiance.r * uniformSampleSolidAngle);
+    SHRadiance.G = MulSH3(SHBasis, hitRadiance.g * uniformSampleSolidAngle);
+    SHRadiance.B = MulSH3(SHBasis, hitRadiance.b * uniformSampleSolidAngle);
+    gs_ThreadSHVector[groupThreadIndex] = SHRadiance;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // 5. SH reduction
+    for (int reductionSize = (64 / 2); reductionSize >= 1; reductionSize /= 2)
+    {
+        if (groupThreadIndex < reductionSize)
+        {
+            gs_ThreadSHVector[groupThreadIndex] = AddSH(gs_ThreadSHVector[groupThreadIndex], gs_ThreadSHVector[groupThreadIndex + reductionSize]);
+        }
+
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    // 6. write to volume
+    if (groupThreadIndex == 0)
+    {
+        ThreeBandSHVectorRGB SHSum = gs_ThreadSHVector[0];
+
+        int3 writeIndexBase = gs_ProbeCascadeAccessIndex * int3(1, 1, 7);
+        _RWNearFieldProbeVolume[writeIndexBase + int3(0, 0, 0)] = SHSum.R.V0;
+        _RWNearFieldProbeVolume[writeIndexBase + int3(0, 0, 1)] = SHSum.R.V1;
+        _RWNearFieldProbeVolume[writeIndexBase + int3(0, 0, 2)] = SHSum.G.V0;
+        _RWNearFieldProbeVolume[writeIndexBase + int3(0, 0, 3)] = SHSum.G.V1;
+        _RWNearFieldProbeVolume[writeIndexBase + int3(0, 0, 4)] = SHSum.B.V0;
+        _RWNearFieldProbeVolume[writeIndexBase + int3(0, 0, 5)] = SHSum.B.V1;
+        _RWNearFieldProbeVolume[writeIndexBase + int3(0, 0, 6)] = float4(SHSum.R.V2, SHSum.G.V2, SHSum.B.V2, 0);
+    }
 }
