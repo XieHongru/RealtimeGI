@@ -212,118 +212,6 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
 }
 
 // -------------------------------------------------------------------------------- //
-#pragma kernel FarFieldProbeGather
-
-int _ProbeResolution;
-int3 _ProbeCountInXYZ;
-int2 _ProbeCountInAtlasXY;
-float _MaxRayDistance;
-
-Texture3D<float3> _VoxelPoolRadiance;
-RWTexture2D<float3> _RWFarFieldProbeAtlas;
-
-int2 RedirectBorderPixel(int2 pixelIndexInProbe)
-{
-    int2 result = pixelIndexInProbe;
-    int pixelIndexMax = _ProbeResolution - 1; // 15
-
-    // row
-    if (pixelIndexInProbe.y == 0 || pixelIndexInProbe.y == pixelIndexMax)
-    {
-        result.x = pixelIndexMax - pixelIndexInProbe.x;
-        result.y += (pixelIndexInProbe.y == 0) ? 1 : -1; // top or bottom row
-    }
-    // col
-    if (pixelIndexInProbe.x == 0 || pixelIndexInProbe.x == pixelIndexMax)
-    {
-        result.x += (pixelIndexInProbe.x == 0) ? 1 : -1; // left or right col
-        result.y = pixelIndexMax - pixelIndexInProbe.y;
-    }
-
-    // left top
-    if (pixelIndexInProbe.x == 0 && pixelIndexInProbe.y == 0)
-    {
-        result = int2(pixelIndexMax - 1, pixelIndexMax - 1);
-    }
-    // right top
-    if (pixelIndexInProbe.x == pixelIndexMax && pixelIndexInProbe.y == 0)
-    {
-        result = int2(1, pixelIndexMax - 1);
-    }
-    // left bottom
-    if (pixelIndexInProbe.x == 0 && pixelIndexInProbe.y == pixelIndexMax)
-    {
-        result = int2(pixelIndexMax - 1, 1);
-    }
-    // right bottom
-    if (pixelIndexInProbe.x == pixelIndexMax && pixelIndexInProbe.y == pixelIndexMax)
-    {
-        result = int2(1, 1);
-    }
-
-    return result;
-}
-
-[numthreads(8, 8, 1)]
-void FarFieldProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
-{
-    ClipmapInfo clipmapInfo = ResolveClipmapInfo();
-    CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, _CascadeIndex);
-
-    // use checker board 2x2x2 for average update to 8 frame
-    int3 probeIndex3D = int3(threadId.xy / _ProbeResolution, threadId.z);
-    probeIndex3D = probeIndex3D * _CheckerBoardInfo.w + _CheckerBoardInfo.xyz;
-    float3 probeLocation = CalcVoxelCenterPos(probeIndex3D, _ProbeCountInXYZ, cascadeInfo.center, cascadeInfo.size);
-
-    // 1. calculate octahedral uv and ray direction
-    int2 pixelIndexInProbe = threadId.xy % _ProbeResolution; // [0 ~ 16]
-    int2 pixelIndexRedirect = RedirectBorderPixel(pixelIndexInProbe);
-    
-    float2 probeUV = float2(pixelIndexRedirect - 1) / float(_ProbeResolution - 2); // [0 ~ 1], 2 is for padding
-    probeUV += 0.5 / float(_ProbeResolution - 2); // align to texel center
-    float3 rayDirection = OctahedralDirection(probeUV);
-
-    // trace ray
-    VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
-    RTRequest.rayStart = probeLocation;
-    RTRequest.rayDir = rayDirection;
-    RTRequest.minCascadeIndex = _CascadeIndex;
-    RTRequest.maxCascadeIndex = _CascadeCount - 1;
-    RTRequest.maxStepNum = 128000;
-    RTRequest.maxDistance = _MaxRayDistance;
-
-    VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _VoxelBitOccupyClipmap, RTRequest);
-
-    // 3. fetch radiance
-    float3 hitRadiance = float3(0, 0, 0);
-    if (hit.isHit)
-    {
-        int voxelPageId = _VoxelPageClipmap.Load(uint4(hit.clipmapAccessIndex, 0)).r;
-        if (voxelPageId != PAGE_ID_INVALID)
-        {
-            int3 indexInPool = PageAddressMapping(voxelPageId, _VoxelPageCountInXYZ, hit.voxelIndex);
-
-            float3 worldNormal = _VoxelPoolNormal.Load(uint4(indexInPool, 0)).rgb * 2 - 1;
-            int isBackFace = dot(worldNormal, -RTRequest.rayDir) < 0;
-
-            int3 twoSideIndex = TwoSideAddressMapping(indexInPool, isBackFace);
-            hitRadiance = _VoxelPoolRadiance.Load(uint4(twoSideIndex, 0)).rgb;
-        }
-    }
-    else
-    {
-        // TODO: sample skybox
-        hitRadiance = float3(1, 1, 1);
-    }
-
-    // 4. write to probe atlas
-    int2 writeOffset = GetProbePixelOffsetInAtlas(probeIndex3D, _ProbeCountInXYZ, _ProbeCountInAtlasXY, _ProbeResolution);
-    int2 writeIndex = writeOffset + pixelIndexInProbe;
-    
-    _RWFarFieldProbeAtlas[writeIndex] = hitRadiance;
-}
-
-// -------------------------------------------------------------------------------- //
 #pragma kernel PickValidProbe
 
 RWStructuredBuffer<int> _RWValidProbeCounter;
@@ -385,12 +273,12 @@ void PickValidProbe(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : 
 }
 
 // -------------------------------------------------------------------------------- //
-#pragma kernel BuildNearFieldProbeGatherIndirectArgs
+#pragma kernel BuildProbeGatherIndirectArgs
 
 StructuredBuffer<int> _ValidProbeCounter;
 
 [numthreads(1,1,1)]
-void BuildNearFieldProbeGatherIndirectArgs(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+void BuildProbeGatherIndirectArgs(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
     _RWIndirectArgs[0] = _ValidProbeCounter[0];
     _RWIndirectArgs[1] = 1;
@@ -398,15 +286,21 @@ void BuildNearFieldProbeGatherIndirectArgs(uint3 threadId : SV_DispatchThreadID,
 }
 
 // -------------------------------------------------------------------------------- //
-#pragma kernel NearFieldProbeGather
+#pragma kernel ProbeGather
+
+int _ProbeResolution;
+int3 _ProbeCountInXYZ;
+int2 _ProbeCountInAtlasXY;
+float _MaxRayDistance;
 
 groupshared float3 gs_ProbeLocation;
 groupshared int3 gs_ProbeCascadeAccessIndex;
 groupshared ThreeBandSHVectorRGB gs_ThreadSHVector[64];
 
+SamplerState sampler_LinearClamp;
 StructuredBuffer<int> _ValidProbeBuffer;
-
-RWTexture3D<float4> _RWNearFieldProbeVolume;
+Texture3D<float3> _VoxelPoolRadiance;
+RWTexture3D<float4> _RWProbeIrradianceCascade;
 
 float3 SphericalFibonacciSample(float i, float n)
 {
@@ -420,7 +314,7 @@ float3 SphericalFibonacciSample(float i, float n)
 }
 
 [numthreads(64, 1, 1)]
-void NearFieldProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+void ProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
     ClipmapInfo clipmapInfo = ResolveClipmapInfo();
     CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, _CascadeIndex);
@@ -502,12 +396,12 @@ void NearFieldProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThrea
         ThreeBandSHVectorRGB SHSum = gs_ThreadSHVector[0];
 
         int3 writeIndexBase = gs_ProbeCascadeAccessIndex * int3(1, 1, 7);
-        _RWNearFieldProbeVolume[writeIndexBase + int3(0, 0, 0)] = SHSum.R.V0;
-        _RWNearFieldProbeVolume[writeIndexBase + int3(0, 0, 1)] = SHSum.R.V1;
-        _RWNearFieldProbeVolume[writeIndexBase + int3(0, 0, 2)] = SHSum.G.V0;
-        _RWNearFieldProbeVolume[writeIndexBase + int3(0, 0, 3)] = SHSum.G.V1;
-        _RWNearFieldProbeVolume[writeIndexBase + int3(0, 0, 4)] = SHSum.B.V0;
-        _RWNearFieldProbeVolume[writeIndexBase + int3(0, 0, 5)] = SHSum.B.V1;
-        _RWNearFieldProbeVolume[writeIndexBase + int3(0, 0, 6)] = float4(SHSum.R.V2, SHSum.G.V2, SHSum.B.V2, 0);
+        _RWProbeIrradianceCascade[writeIndexBase + int3(0, 0, 0)] = SHSum.R.V0;
+        _RWProbeIrradianceCascade[writeIndexBase + int3(0, 0, 1)] = SHSum.R.V1;
+        _RWProbeIrradianceCascade[writeIndexBase + int3(0, 0, 2)] = SHSum.G.V0;
+        _RWProbeIrradianceCascade[writeIndexBase + int3(0, 0, 3)] = SHSum.G.V1;
+        _RWProbeIrradianceCascade[writeIndexBase + int3(0, 0, 4)] = SHSum.B.V0;
+        _RWProbeIrradianceCascade[writeIndexBase + int3(0, 0, 5)] = SHSum.B.V1;
+        _RWProbeIrradianceCascade[writeIndexBase + int3(0, 0, 6)] = float4(SHSum.R.V2, SHSum.G.V2, SHSum.B.V2, 0);
     }
 }

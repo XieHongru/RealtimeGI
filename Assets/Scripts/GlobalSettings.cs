@@ -33,7 +33,5 @@ public class GlobalSettings : ScriptableObject
     public int voxelLightingCheckerBoardSize = 2;
     public int freezeLightingForDebug = 0;
     public int probeGatherCheckerBoardSize = 2;
-    public float farFieldProbeRayMaxDistance = 64.0f;
-    public int visualizeFarFieldProbe = 0;
-    public int visualizeNearFieldProbe = 1;
+    public int visualizeProbe = 1;
 }

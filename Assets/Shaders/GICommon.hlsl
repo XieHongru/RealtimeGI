@@ -19,8 +19,6 @@
 #define VOXEL_FACE_BACK (1)
 #define VOXEL_FACE_NUM (2)
 
-#define PROBE_BORDER (1)
-
 struct ObjectInfo
 {
     int objectId;
@@ -343,39 +341,6 @@ float2 OctahedralCoordinates(float3 direction)
         uv = (1.f - abs(uv.yx)) * SignNotZero(uv.xy);
     }
     return uv * 0.5 + 0.5;
-}
-
-int3 GetProbeIndexScrolling(int3 ProbeIndex3D, int3 NumProbesInXYZ, int3 VolumeRollingInfo, int3 VolumeResolution)
-{
-    int3 VoxelRollingInfo = VolumeRollingInfo * VOXEL_BLOCK_SIZE; // VolumeInfo.RollingInfo unit is voxel block (4x4x4)
-    int3 ProbeRollingInfo = VoxelRollingInfo * NumProbesInXYZ / VolumeResolution;
-    int3 Index = (ProbeIndex3D + ProbeRollingInfo) % NumProbesInXYZ;
-    return Index;
-}
-
-int2 GetProbePixelOffsetInAtlas(int3 probeIndex3D, int3 probeCountInXYZ, int2 probeCountInAtlasXY, int probeResolution)
-{
-    int probeIndex1D = Index3DTo1D(probeIndex3D, probeCountInXYZ);
-    int2 probeIndex2D = Index1DTo2D(probeIndex1D, probeCountInAtlasXY);
-    int2 result = probeIndex2D * probeResolution;
-    return result;
-}
-
-float2 FarFieldProbeAddressMapping(
-	float3 rayDirection,
-	int3 probeIndex3D, int3 probeCountInXYZ,
-	int2 probeCountInAtlasXY, int probeResolution)
-{
-    float2 uvInProbe = OctahedralCoordinates(rayDirection);
-    float2 pixelInProbe = uvInProbe * (probeResolution - PROBE_BORDER * 2);
-
-    float2 pixelOffset = GetProbePixelOffsetInAtlas(probeIndex3D, probeCountInXYZ, probeCountInAtlasXY, probeResolution);
-    pixelOffset += PROBE_BORDER;
-
-    float2 atlasResolution = probeCountInAtlasXY * probeResolution;
-    float2 uv = (pixelOffset + pixelInProbe) / atlasResolution;
-	
-    return uv;
 }
 
 #endif
