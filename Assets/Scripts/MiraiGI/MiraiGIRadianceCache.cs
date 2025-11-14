@@ -436,12 +436,16 @@ public class MiraiGIRadianceCache
         Vector3Int blockCountInXYZ = clipmap.voxelResolution / GlobalShared.VOXEL_BLOCK_SIZE;
         int instanceCount = blockCountInXYZ.x * blockCountInXYZ.y * blockCountInXYZ.z;
 
+        // TODO: low efficience, limited with Unity of DrawMeshInstanced (max 511 instances per drawcall)
         Matrix4x4[] instanceMatrices = new Matrix4x4[instanceCount];
+        MaterialPropertyBlock props = new MaterialPropertyBlock();
         for (int i = 0; i < instanceCount; i++)
         {
             instanceMatrices[i] = Camera.main.projectionMatrix * Camera.main.worldToCameraMatrix;
+            props.SetInt(Shader.PropertyToID("_ProbeIndex"), i);
+            cmd.DrawMesh(m_ProbeSphereMesh, instanceMatrices[i], probeVisualizeMaterial, 0, 0, props);
         }
-        cmd.DrawMeshInstanced(m_ProbeSphereMesh, 0, probeVisualizeMaterial, 0, instanceMatrices, instanceCount);
+        //cmd.DrawMeshInstanced(m_ProbeSphereMesh, 0, probeVisualizeMaterial, 0, instanceMatrices, instanceCount);
     }
 
     void GetMainLightShadowInfos(Light light, ref RenderingData renderingData,

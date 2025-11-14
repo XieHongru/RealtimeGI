@@ -20,6 +20,7 @@ Shader "Mirai/VisualizeProbe"
         float4 positionCS : SV_POSITION;
     };
 
+    int _ProbeIndex;
     int _ProbeResolution;
     int3 _ProbeCountInXYZ;
     int2 _ProbeCountInAtlasXY;
@@ -42,7 +43,7 @@ Shader "Mirai/VisualizeProbe"
         output.positionWS = TransformObjectToWorld(input.positionOS.xyz);
         float3 localPosition = input.positionOS.xyz;
         int3 probeCountInXYZ = _CascadeResolution / VOXEL_BLOCK_SIZE;
-        int3 probeIndex3D = Index1DTo3D(input.instanceID, probeCountInXYZ);
+        int3 probeIndex3D = Index1DTo3D(_ProbeIndex, probeCountInXYZ);
 
         float3 probeLocation = CalcVoxelCenterPos(probeIndex3D, probeCountInXYZ, _CascadeCenter, _CascadeSize);
         float3 worldPosition = probeLocation + localPosition * 15.0f / 100.f * pow(2, _CascadeIndex);
