@@ -23,6 +23,7 @@ public class MiraiGIRadianceCache
 
     RenderTexture m_VoxelPoolRadiance;
     RenderTexture[] m_ProbeIrradianceCascade;
+    RenderTexture[] m_ProbePositionOffsetCascade;
 
     ComputeShader m_VoxelLightingCS;
     ComputeShader m_VoxelPoolInitCS;
@@ -62,6 +63,7 @@ public class MiraiGIRadianceCache
         for (int i = 0; i < m_ProbeIrradianceCascade.Length; i++)
         {
             m_ProbeIrradianceCascade[i].Release();
+            m_ProbePositionOffsetCascade[i].Release();
         }
 
         m_ValidVoxelCounter = null;
@@ -75,6 +77,7 @@ public class MiraiGIRadianceCache
         for (int i = 0; i < m_ProbeIrradianceCascade.Length; i++)
         {
             m_ProbeIrradianceCascade[i] = null;
+            m_ProbePositionOffsetCascade[i] = null;
         }
     }
 
@@ -165,6 +168,7 @@ public class MiraiGIRadianceCache
         if (m_ProbeIrradianceCascade == null)
         {
             m_ProbeIrradianceCascade = new RenderTexture[MiraiGIClipmap.CASCADE_COUNT];
+            m_ProbePositionOffsetCascade = new RenderTexture[MiraiGIClipmap.CASCADE_COUNT];
 
             for (int cascadeId = 0; cascadeId < MiraiGIClipmap.CASCADE_COUNT; cascadeId++)
             {
@@ -173,6 +177,12 @@ public class MiraiGIRadianceCache
                 m_ProbeIrradianceCascade[cascadeId].volumeDepth = probeAtlasResolution.z;
                 m_ProbeIrradianceCascade[cascadeId].enableRandomWrite = true;
                 m_ProbeIrradianceCascade[cascadeId].Create();
+
+                m_ProbePositionOffsetCascade[cascadeId] = new RenderTexture(blockCountInXYZ.x, blockCountInXYZ.y, 0, RenderTextureFormat.ARGB32);
+                m_ProbePositionOffsetCascade[cascadeId].dimension = TextureDimension.Tex3D;
+                m_ProbePositionOffsetCascade[cascadeId].volumeDepth = probeAtlasResolution.z;
+                m_ProbePositionOffsetCascade[cascadeId].enableRandomWrite = true;
+                m_ProbePositionOffsetCascade[cascadeId].Create();
 
                 // TODO: init
             }
@@ -343,6 +353,7 @@ public class MiraiGIRadianceCache
                                 new Vector4(checkerBoardOffset.x, checkerBoardOffset.y, checkerBoardOffset.z, checkerBoardSize));
 
         cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelBitOccupyClipmap"), clipmap.GetVoxelMap());
+        cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWProbePositionOffsetCascade"), m_ProbePositionOffsetCascade[cascadeId]);
         cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWValidProbeCounter"), m_ValidProbeCounter);
         cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWValidProbeBuffer"), m_ValidProbeBuffer);
 
@@ -382,6 +393,7 @@ public class MiraiGIRadianceCache
             int kernel = m_VoxelLightingCS.FindKernel("ProbeGather");
 
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ValidProbeBuffer"), m_ValidProbeBuffer);
+            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ProbePositionOffsetCascade"), m_ProbePositionOffsetCascade[cascadeId]);
 
             // cascade
             cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeIndex"), cascadeId);
@@ -431,6 +443,7 @@ public class MiraiGIRadianceCache
         probeVisualizeMaterial.SetVector(Shader.PropertyToID("_CascadeMoveOffset"), (Vector3)cascadeInfos[cascadeId].moveOffset);
         probeVisualizeMaterial.SetTexture(Shader.PropertyToID("_VoxelBitOccupyClipmap"), clipmap.GetVoxelMap());
         probeVisualizeMaterial.SetTexture(Shader.PropertyToID("_ProbeIrradianceCascade"), m_ProbeIrradianceCascade[cascadeId]);
+        probeVisualizeMaterial.SetTexture(Shader.PropertyToID("_ProbePositionOffsetCascade"), m_ProbePositionOffsetCascade[cascadeId]);
         probeVisualizeMaterial.SetMatrix(Shader.PropertyToID("_CameraViewProjection"), Camera.main.projectionMatrix * Camera.main.worldToCameraMatrix);
 
         Vector3Int blockCountInXYZ = clipmap.voxelResolution / GlobalShared.VOXEL_BLOCK_SIZE;

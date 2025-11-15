@@ -28,6 +28,4 @@ MonoBehaviour:
   voxelLightingCheckerBoardSize: 2
   freezeLightingForDebug: 0
   probeGatherCheckerBoardSize: 2
-  farFieldProbeRayMaxDistance: 64
-  visualizeFarFieldProbe: 0
-  visualizeNearFieldProbe: 1
+  visualizeProbe: 0

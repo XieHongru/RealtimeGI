@@ -14,7 +14,7 @@ Shader "Mirai/VisualizeProbe"
 
     struct FragmentInput
     {
-        nointerpolation int3 probeIndex3D : TEXCOORD0;
+        nointerpolation int3 probeCascadeAccessIndex : TEXCOORD0;
         float3 rayDirection : TEXCOORD1;
         float3 positionWS : TEXCOORD2;
         float4 positionCS : SV_POSITION;
@@ -35,29 +35,32 @@ Shader "Mirai/VisualizeProbe"
 
     Texture3D<uint2> _VoxelBitOccupyClipmap;
     Texture3D<float4> _ProbeIrradianceCascade;
+    Texture3D<float4> _ProbePositionOffsetCascade;
 
     FragmentInput VisualizeProbeVS(VertexInput input)
     {
         FragmentInput output;
 
-        output.positionWS = TransformObjectToWorld(input.positionOS.xyz);
         float3 localPosition = input.positionOS.xyz;
+
         int3 probeCountInXYZ = _CascadeResolution / VOXEL_BLOCK_SIZE;
         int3 probeIndex3D = Index1DTo3D(_ProbeIndex, probeCountInXYZ);
+        int3 probeCascadeAccessIndex = (probeIndex3D + _CascadeMoveOffset) % probeCountInXYZ;
 
-        float3 probeLocation = CalcVoxelCenterPos(probeIndex3D, probeCountInXYZ, _CascadeCenter, _CascadeSize);
-        float3 worldPosition = probeLocation + localPosition * 15.0f / 100.f * pow(2, _CascadeIndex);
+        float3 probePositionBase = CalcVoxelCenterPos(probeIndex3D, probeCountInXYZ, _CascadeCenter, _CascadeSize);
+        float4 probePositionOffsetRaw = _ProbePositionOffsetCascade[probeCascadeAccessIndex];
+        float3 probePositionOffset = DecodeProbePositionOffset(probePositionOffsetRaw.xyz, _CascadeSize / float3(_CascadeResolution));
+        float3 probePosition = probePositionBase + probePositionOffset;
 
-        int3 clipmapAccessIndex = ClipmapAddressMapping(probeIndex3D * VOXEL_BLOCK_SIZE, _CascadeResolution, _CascadeMoveOffset, _CascadeIndex);
-        int2 bitOccupy = _VoxelBitOccupyClipmap.Load(int4(clipmapAccessIndex, 0)).xy;
-        bool isProbeValid = any(bitOccupy != 0);
-        if(!isProbeValid)
+        float3 worldPosition = probeLocation + localPosition * 10.0f / 100.f * pow(2, _CascadeIndex);
+        if(probePositionOffsetRaw.w == 0)
         {
             worldPosition *= 0.0;
         }
 
-        output.probeIndex3D = probeIndex3D;
+        output.probeCascadeAccessIndex = probeCascadeAccessIndex;
         output.rayDirection = normalize(localPosition);
+        output.positionWS = TransformObjectToWorld(input.positionOS.xyz);
         output.positionCS = mul(_CameraViewProjection, float4(worldPosition, 1));
         output.positionCS.z /= output.positionCS.w;
         output.positionCS.y = -output.positionCS.y;
@@ -67,9 +70,8 @@ Shader "Mirai/VisualizeProbe"
 
     float4 VisualizeProbeFS(FragmentInput input) : SV_Target
     {
-        int3 probeCountInXYZ = _CascadeResolution / VOXEL_BLOCK_SIZE;
-        int3 probeCascadeAccessIndex = (input.probeIndex3D + _CascadeMoveOffset) % probeCountInXYZ;
-        int3 readIndexBase = probeCascadeAccessIndex * int3(1, 1, 7);
+        float3 rayDirection = normalize(input.rayDirection);
+        int3 readIndexBase = input.probeCascadeAccessIndex * int3(1, 1, 7);
     
 	    ThreeBandSHVectorRGB irradianceSH;
 	    irradianceSH.R.V0 = _ProbeIrradianceCascade.Load(int4(readIndexBase + float3(0, 0, 0), 0));
@@ -84,7 +86,7 @@ Shader "Mirai/VisualizeProbe"
 	    irradianceSH.G.V2 = temp.y;
 	    irradianceSH.B.V2 = temp.z;
 
-        ThreeBandSHVector diffuseTransferSH = CalcDiffuseTransferSH3(input.rayDirection, 1);
+        ThreeBandSHVector diffuseTransferSH = CalcDiffuseTransferSH3(rayDirection, 1);
 	    float3 color = max(float3(0,0,0), DotSH3(irradianceSH, diffuseTransferSH)) / PI;
 
 	    return float4(color, 1);

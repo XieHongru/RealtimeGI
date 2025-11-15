@@ -216,6 +216,7 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
 
 RWStructuredBuffer<int> _RWValidProbeCounter;
 RWStructuredBuffer<int> _RWValidProbeBuffer;
+RWTexture3D<float4> _RWProbePositionOffsetCascade;
 
 groupshared bool gs_ThreadProbeValidMask[64];
 
@@ -225,13 +226,25 @@ void PickValidProbe(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : 
     int groupThreadIndex = Index3DTo1D(groupThreadId, int3(4,4,4));
 
     // one thread for one block (probe num == block num)
+    int3 probeCountInXYZ = _CascadeResolution / VOXEL_BLOCK_SIZE;
     int3 blockIndex = threadId.xyz;
     blockIndex = blockIndex * _CheckerBoardInfo.w + _CheckerBoardInfo.xyz;
 
-    // 1. judge if current block is empty, if not empty we spawn a probe
-    int3 clipmapAccessIndex = ClipmapAddressMapping(blockIndex * VOXEL_BLOCK_SIZE, _CascadeResolution, _CascadeMoveOffset, _CascadeIndex);
-    int2 bitOccupy = _VoxelBitOccupyClipmap.Load(int4(clipmapAccessIndex, 0)).xy;
-    bool isProbeValid = any(bitOccupy != 0);
+    // 1. judge if current (and neighbor) block is empty, if not empty we spawn a probe
+    bool isProbeValid = false;
+    int3 offsets[7] = { int3(-1, 0, 0), int3(1, 0, 0), int3(0, -1, 0), int3(0, 1, 0), int3(0, 0, -1), int3(0, 0, 1), int3(0, 0, 0) };
+    for (int i = 0; i < 7; i++)
+    {
+        int3 neighborBlockIndex = blockIndex + offsets[i];
+        if (any(neighborBlockIndex < 0) || any(neighborBlockIndex >= probeCountInXYZ))
+        {
+            continue;
+        }
+
+        int3 clipmapAccessIndex = ClipmapAddressMapping(neighborBlockIndex * VOXEL_BLOCK_SIZE, _CascadeResolution, _CascadeMoveOffset, _CascadeIndex);
+        uint2 bitOccupy = _VoxelBitOccupyClipmap.Load(int4(clipmapAccessIndex, 0)).xy;
+        isProbeValid = isProbeValid || any(bitOccupy != 0);
+    }
     gs_ThreadProbeValidMask[groupThreadIndex] = isProbeValid;
 
     GroupMemoryBarrierWithGroupSync();
@@ -270,6 +283,41 @@ void PickValidProbe(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : 
         int3 blockCountInXYZ = _CascadeResolution / VOXEL_BLOCK_SIZE;
         _RWValidProbeBuffer[writeIndex] = Index3DTo1D(blockIndex, blockCountInXYZ);
     }
+    
+    // 4. probe relocation, we find a place where has no voxel, spawn a probe
+    int3 probeVolumeAccessIndex = (blockIndex + _CascadeMoveOffset) % probeCountInXYZ;
+    if (isProbeValid)
+    {
+        int3 clipmapAccessIndex = ClipmapAddressMapping(blockIndex * VOXEL_BLOCK_SIZE, _CascadeResolution, _CascadeMoveOffset, _CascadeIndex);
+        uint2 bitOccupy = _VoxelBitOccupyClipmap.Load(int4(clipmapAccessIndex, 0)).xy;
+
+        float3 probeCenter = float(VOXEL_BLOCK_SIZE / 2).xxx - 0.5; // 1.5 is center of [0, 1, 2, 3], unit is voxel
+        int3 probeOffset = int3(0, 0, 0);
+        float minDistance = 128000.0f;
+
+        // find a place near to block center to minimize the offset
+        for (int i = 0; i < VOXEL_COUNT_PER_BLOCK; i++)
+        {
+            bool hasVoxel = GetUint64SingleBit(bitOccupy, i);
+            if (hasVoxel)
+                continue;
+
+            int3 voxelIndexInBlock = Index1DTo3D_4x4x4(i);
+            float distanceToCenter = length(voxelIndexInBlock - probeCenter);
+            if (distanceToCenter < minDistance)
+            {
+                minDistance = distanceToCenter;
+                probeOffset = voxelIndexInBlock;
+            }
+        }
+
+        // xyz is encoded offset, w is valid probe mask
+        _RWProbePositionOffsetCascade[probeVolumeAccessIndex] = float4(float3(probeOffset) / VOXEL_BLOCK_SIZE, 1);
+    }
+    else
+    {
+        _RWProbePositionOffsetCascade[probeVolumeAccessIndex] = float4(0, 0, 0, 0);
+    }
 }
 
 // -------------------------------------------------------------------------------- //
@@ -293,12 +341,13 @@ int3 _ProbeCountInXYZ;
 int2 _ProbeCountInAtlasXY;
 float _MaxRayDistance;
 
-groupshared float3 gs_ProbeLocation;
+groupshared float3 gs_ProbePosition;
 groupshared int3 gs_ProbeCascadeAccessIndex;
 groupshared ThreeBandSHVectorRGB gs_ThreadSHVector[64];
 
 SamplerState sampler_LinearClamp;
 StructuredBuffer<int> _ValidProbeBuffer;
+Texture3D<float4> _ProbePositionOffsetCascade;
 Texture3D<float3> _VoxelPoolRadiance;
 RWTexture3D<float4> _RWProbeIrradianceCascade;
 
@@ -322,13 +371,18 @@ void ProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
     int groupThreadIndex = groupThreadId.x;
     int3 probeCountInXYZ = cascadeInfo.resolution / VOXEL_BLOCK_SIZE;
 
-    // 1. fetch probe info
+    // 1. head thread fetch probe info
     if (groupThreadIndex == 0)
     {
         int probeIndex1D = _ValidProbeBuffer[groupId.x];
         int3 probeIndex3D = Index1DTo3D(probeIndex1D, probeCountInXYZ);
-        gs_ProbeLocation = CalcVoxelCenterPos(probeIndex3D, probeCountInXYZ, cascadeInfo.center, cascadeInfo.size);
+        
         gs_ProbeCascadeAccessIndex = (probeIndex3D + cascadeInfo.moveOffset) % probeCountInXYZ;
+        
+        float3 probePositionBase = CalcVoxelCenterPos(probeIndex3D, probeCountInXYZ, cascadeInfo.center, cascadeInfo.size);
+        float3 probePositionOffsetRaw = _ProbePositionOffsetCascade[gs_ProbeCascadeAccessIndex].xyz;
+        float3 probePositionOffset = DecodeProbePositionOffset(probePositionOffsetRaw, cascadeInfo.voxelSize);
+        gs_ProbePosition = probePositionBase + probePositionOffset;
     }
 
     GroupMemoryBarrierWithGroupSync();
@@ -338,7 +392,7 @@ void ProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
     float3 rayDirection = SphericalFibonacciSample(groupThreadIndex, 64);
 
     VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
-    RTRequest.rayStart = gs_ProbeLocation;
+    RTRequest.rayStart = gs_ProbePosition;
     RTRequest.rayDir = rayDirection;
     RTRequest.minCascadeIndex = _CascadeIndex;
     RTRequest.maxCascadeIndex = _CascadeCount - 1;
