@@ -343,13 +343,5 @@ float2 OctahedralCoordinates(float3 direction)
     return uv * 0.5 + 0.5;
 }
 
-float3 DecodeProbePositionOffset(float3 positionOffsetRaw, float3 voxelCellSize)
-{
-    float3 positionOffsetInVoxel = positionOffsetRaw * VOXEL_BLOCK_SIZE; // [0 ~ 3]
-    float3 positionOffsetNorm = positionOffsetInVoxel - (VOXEL_BLOCK_SIZE / 2) + 0.5; // [-1.5 ~ 1.5]
-    float3 positionOffset = positionOffsetNorm * voxelCellSize;
-    return positionOffset;
-}
-
 #endif
 

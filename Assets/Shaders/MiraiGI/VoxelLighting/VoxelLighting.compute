@@ -1,6 +1,6 @@
 #include "../../GICommon.hlsl"
 #include "../RayTracing/VoxelRayTracing.hlsl"
-#include "../RayTracing/SHCommon.hlsl"
+#include "ProbeCommon.hlsl"
 
 #pragma kernel PickValidVoxel
 
@@ -108,6 +108,10 @@ StructuredBuffer<int> _ValidVoxelBuffer;
 SamplerState sampler_PointClamp;
 
 Texture2D<float> _ShadowDepthTexture;
+
+Texture3D<float4> _ProbeIrradianceCache;
+Texture3D<float4> _ProbePositionOffsetVolume;
+
 Texture3D<int> _VoxelPageClipmap;
 Texture3D<float4> _VoxelPoolBaseColor;
 Texture3D<float4> _VoxelPoolNormal;
@@ -204,8 +208,19 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
         float3 radiance = emissive;
         float3 faceNormal = worldNormal * lerp(1, -1, face); // -WorldNormal if back face
 
+        // 4.1. evaluate direct lighting
         radiance += saturate(dot(faceNormal, _MainLightDirection)) * _MainLightColor /** mainLightShadow*/ * baseColor / (3.1415926);
 
+        // TODO: pre-exposure
+
+        // 4.2. evaluate indirect lighting
+        float3 probeLighting = ProbeEvaluateIrradiance(
+            _ProbeIrradianceCache, _ProbePositionOffsetVolume,
+            cascadeInfo, voxelPosition, faceNormal
+        );
+        radiance += probeLighting * baseColor;
+
+        // 4.3. write result
         int3 writeIndex = TwoSideAddressMapping(indexInPool, face);
         _RWVoxelPoolRadiance[writeIndex] = radiance;
     }    
@@ -216,7 +231,7 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
 
 RWStructuredBuffer<int> _RWValidProbeCounter;
 RWStructuredBuffer<int> _RWValidProbeBuffer;
-RWTexture3D<float4> _RWProbePositionOffsetCascade;
+RWTexture3D<float4> _RWProbePositionOffsetVolume;
 
 groupshared bool gs_ThreadProbeValidMask[64];
 
@@ -312,11 +327,11 @@ void PickValidProbe(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : 
         }
 
         // xyz is encoded offset, w is valid probe mask
-        _RWProbePositionOffsetCascade[probeVolumeAccessIndex] = float4(float3(probeOffset) / VOXEL_BLOCK_SIZE, 1);
+        _RWProbePositionOffsetVolume[probeVolumeAccessIndex] = float4(float3(probeOffset) / VOXEL_BLOCK_SIZE, 1);
     }
     else
     {
-        _RWProbePositionOffsetCascade[probeVolumeAccessIndex] = float4(0, 0, 0, 0);
+        _RWProbePositionOffsetVolume[probeVolumeAccessIndex] = float4(0, 0, 0, 0);
     }
 }
 
@@ -347,9 +362,8 @@ groupshared ThreeBandSHVectorRGB gs_ThreadSHVector[64];
 
 SamplerState sampler_LinearClamp;
 StructuredBuffer<int> _ValidProbeBuffer;
-Texture3D<float4> _ProbePositionOffsetCascade;
 Texture3D<float3> _VoxelPoolRadiance;
-RWTexture3D<float4> _RWProbeIrradianceCascade;
+RWTexture3D<float4> _RWProbeIrradianceCache;
 
 float3 SphericalFibonacciSample(float i, float n)
 {
@@ -380,7 +394,7 @@ void ProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         gs_ProbeCascadeAccessIndex = (probeIndex3D + cascadeInfo.moveOffset) % probeCountInXYZ;
         
         float3 probePositionBase = CalcVoxelCenterPos(probeIndex3D, probeCountInXYZ, cascadeInfo.center, cascadeInfo.size);
-        float3 probePositionOffsetRaw = _ProbePositionOffsetCascade[gs_ProbeCascadeAccessIndex].xyz;
+        float3 probePositionOffsetRaw = _ProbePositionOffsetVolume[gs_ProbeCascadeAccessIndex].xyz;
         float3 probePositionOffset = DecodeProbePositionOffset(probePositionOffsetRaw, cascadeInfo.voxelSize);
         gs_ProbePosition = probePositionBase + probePositionOffset;
     }
@@ -421,6 +435,8 @@ void ProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
     {
         // TODO: sample skybox
         hitRadiance = float3(1, 1, 1);
+        
+        // TODO: pre-exposure
     }
 
     // 4. SH projection
@@ -450,12 +466,12 @@ void ProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         ThreeBandSHVectorRGB SHSum = gs_ThreadSHVector[0];
 
         int3 writeIndexBase = gs_ProbeCascadeAccessIndex * int3(1, 1, 7);
-        _RWProbeIrradianceCascade[writeIndexBase + int3(0, 0, 0)] = SHSum.R.V0;
-        _RWProbeIrradianceCascade[writeIndexBase + int3(0, 0, 1)] = SHSum.R.V1;
-        _RWProbeIrradianceCascade[writeIndexBase + int3(0, 0, 2)] = SHSum.G.V0;
-        _RWProbeIrradianceCascade[writeIndexBase + int3(0, 0, 3)] = SHSum.G.V1;
-        _RWProbeIrradianceCascade[writeIndexBase + int3(0, 0, 4)] = SHSum.B.V0;
-        _RWProbeIrradianceCascade[writeIndexBase + int3(0, 0, 5)] = SHSum.B.V1;
-        _RWProbeIrradianceCascade[writeIndexBase + int3(0, 0, 6)] = float4(SHSum.R.V2, SHSum.G.V2, SHSum.B.V2, 0);
+        _RWProbeIrradianceCache[writeIndexBase + int3(0, 0, 0)] = SHSum.R.V0;
+        _RWProbeIrradianceCache[writeIndexBase + int3(0, 0, 1)] = SHSum.R.V1;
+        _RWProbeIrradianceCache[writeIndexBase + int3(0, 0, 2)] = SHSum.G.V0;
+        _RWProbeIrradianceCache[writeIndexBase + int3(0, 0, 3)] = SHSum.G.V1;
+        _RWProbeIrradianceCache[writeIndexBase + int3(0, 0, 4)] = SHSum.B.V0;
+        _RWProbeIrradianceCache[writeIndexBase + int3(0, 0, 5)] = SHSum.B.V1;
+        _RWProbeIrradianceCache[writeIndexBase + int3(0, 0, 6)] = float4(SHSum.R.V2, SHSum.G.V2, SHSum.B.V2, 0);
     }
 }

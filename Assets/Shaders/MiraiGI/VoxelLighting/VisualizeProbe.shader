@@ -3,7 +3,7 @@ Shader "Mirai/VisualizeProbe"
     HLSLINCLUDE
     #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
     #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
-    #include "../RayTracing/SHCommon.hlsl"
+    #include "ProbeCommon.hlsl"
     #include "../../GICommon.hlsl"
 
     struct VertexInput
