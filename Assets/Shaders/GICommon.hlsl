@@ -1,6 +1,8 @@
 #ifndef GI_COMMON
 #define GI_COMMON
 
+#include "Random.hlsl"
+
 #define PI (3.1415926f)
 
 #define OBJECT_ID_INVALID (-1)
@@ -56,6 +58,17 @@ StructuredBuffer<ObjectInfo>    _ObjectsInfo;
 StructuredBuffer<MeshInfo>      _MeshInfo;
 StructuredBuffer<float3>        _VertexBuffer;
 StructuredBuffer<int>           _IndexBuffer;
+
+/** Reverses all the 32 bits. */
+uint ReverseBits32(uint bits)
+{
+    bits = (bits << 16) | (bits >> 16);
+    bits = ((bits & 0x00ff00ff) << 8) | ((bits & 0xff00ff00) >> 8);
+    bits = ((bits & 0x0f0f0f0f) << 4) | ((bits & 0xf0f0f0f0) >> 4);
+    bits = ((bits & 0x33333333) << 2) | ((bits & 0xcccccccc) >> 2);
+    bits = ((bits & 0x55555555) << 1) | ((bits & 0xaaaaaaaa) >> 1);
+    return bits;
+}
 
 // Morton
 uint Index3DTo1D_2x2x2(uint3 Index3D)

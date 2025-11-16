@@ -1,5 +1,6 @@
 #include "../../GICommon.hlsl"
 #include "../RayTracing/VoxelRayTracing.hlsl"
+#include "../RayTracing/MonteCarlo.hlsl"
 #include "ProbeCommon.hlsl"
 
 #pragma kernel PickValidVoxel
@@ -351,13 +352,16 @@ void BuildProbeGatherIndirectArgs(uint3 threadId : SV_DispatchThreadID, uint3 gr
 // -------------------------------------------------------------------------------- //
 #pragma kernel ProbeGather
 
+int _FrameCountMod8;
 int _ProbeResolution;
 int3 _ProbeCountInXYZ;
 int2 _ProbeCountInAtlasXY;
 float _MaxRayDistance;
 
+groupshared int gs_ProbeIndex1D;
+groupshared int3 gs_ProbeIndex3D;
 groupshared float3 gs_ProbePosition;
-groupshared int3 gs_ProbeCascadeAccessIndex;
+groupshared int3 gs_ProbeVolumeAccessIndex;
 groupshared ThreeBandSHVectorRGB gs_ThreadSHVector[64];
 
 SamplerState sampler_LinearClamp;
@@ -388,13 +392,13 @@ void ProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
     // 1. head thread fetch probe info
     if (groupThreadIndex == 0)
     {
-        int probeIndex1D = _ValidProbeBuffer[groupId.x];
-        int3 probeIndex3D = Index1DTo3D(probeIndex1D, probeCountInXYZ);
+        gs_ProbeIndex1D = _ValidProbeBuffer[groupId.x];
+        gs_ProbeIndex3D = Index1DTo3D(gs_ProbeIndex1D, probeCountInXYZ);
         
-        gs_ProbeCascadeAccessIndex = (probeIndex3D + cascadeInfo.moveOffset) % probeCountInXYZ;
+        gs_ProbeVolumeAccessIndex = (gs_ProbeIndex3D + cascadeInfo.moveOffset) % probeCountInXYZ;
         
-        float3 probePositionBase = CalcVoxelCenterPos(probeIndex3D, probeCountInXYZ, cascadeInfo.center, cascadeInfo.size);
-        float3 probePositionOffsetRaw = _ProbePositionOffsetVolume[gs_ProbeCascadeAccessIndex].xyz;
+        float3 probePositionBase = CalcVoxelCenterPos(gs_ProbeIndex3D, probeCountInXYZ, cascadeInfo.center, cascadeInfo.size);
+        float3 probePositionOffsetRaw = _ProbePositionOffsetVolume[gs_ProbeVolumeAccessIndex].xyz;
         float3 probePositionOffset = DecodeProbePositionOffset(probePositionOffsetRaw, cascadeInfo.voxelSize);
         gs_ProbePosition = probePositionBase + probePositionOffset;
     }
@@ -403,7 +407,10 @@ void ProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
 
     // 2. trace ray
     float uniformSampleSolidAngle = 4 * PI / float(64);
-    float3 rayDirection = SphericalFibonacciSample(groupThreadIndex, 64);
+    // float3 rayDirection = SphericalFibonacciSample(groupThreadIndex, 64);
+    uint2 randomSeed = Rand3DPCG16(uint3(groupId.x, 0, _FrameCountMod8)).xy;
+    float2 E = Hammersley16(groupThreadIndex, 64, randomSeed);
+    float3 rayDirection = UniformSampleSphere(E).xyz;
 
     VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
     RTRequest.rayStart = gs_ProbePosition;
@@ -464,8 +471,8 @@ void ProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
     if (groupThreadIndex == 0)
     {
         ThreeBandSHVectorRGB SHSum = gs_ThreadSHVector[0];
-
-        int3 writeIndexBase = gs_ProbeCascadeAccessIndex * int3(1, 1, 7);
+        int3 writeIndexBase = gs_ProbeVolumeAccessIndex * int3(1, 1, 7);
+        
         _RWProbeIrradianceCache[writeIndexBase + int3(0, 0, 0)] = SHSum.R.V0;
         _RWProbeIrradianceCache[writeIndexBase + int3(0, 0, 1)] = SHSum.R.V1;
         _RWProbeIrradianceCache[writeIndexBase + int3(0, 0, 2)] = SHSum.G.V0;
