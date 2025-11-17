@@ -39,6 +39,7 @@ public class MiraiGIRadianceCache
     int m_RadianceProbeResolution = 16;
     Vector2Int m_RadianceProbeCountInAtlasXY = new Vector2Int(128, 128);
     RenderTexture m_RadianceProbeAtlas;
+    RenderTexture m_RadianceProbeDistanceAtlas;
 
     // radiance probe need large resolution to store radiance in atlas, so we sparse allocate it
     ComputeBuffer m_RadianceProbeAllocator;
@@ -152,7 +153,8 @@ public class MiraiGIRadianceCache
 
             PickValidProbe(cmd, scene, cascadeId);
 
-            if (cascadeId == cascadeIdMax)
+            bool needRadianceProbe = GlobalSettings.Instance.irradianceProbeSampleRadianceProbe > 0;
+            if (cascadeId == cascadeIdMax && needRadianceProbe)
             {
                 RadianceProbeCapture(cmd, scene, cascadeId);
             }
@@ -277,6 +279,13 @@ public class MiraiGIRadianceCache
             m_RadianceProbeAtlas = new RenderTexture(atlasResolution.x, atlasResolution.y, 0, RenderTextureFormat.RGB111110Float);
             m_RadianceProbeAtlas.enableRandomWrite = true;
             m_RadianceProbeAtlas.Create();
+        }
+
+        if (m_RadianceProbeDistanceAtlas == null)
+        {
+            m_RadianceProbeDistanceAtlas = new RenderTexture(atlasResolution.x, atlasResolution.y, 0, RenderTextureFormat.R16);
+            m_RadianceProbeDistanceAtlas.enableRandomWrite = true;
+            m_RadianceProbeDistanceAtlas.Create();
         }
 
         if (m_RadianceProbeIdVolume == null)
@@ -536,6 +545,7 @@ public class MiraiGIRadianceCache
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ProbePositionOffsetVolume"), m_ProbePositionOffsetVolume[cascadeId]);
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RadianceProbeIdVolume"), m_RadianceProbeIdVolume);
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeAtlas"), m_RadianceProbeAtlas);
+            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeDistanceAtlas"), m_RadianceProbeDistanceAtlas);
 
             cmd.DispatchCompute(m_VoxelLightingCS, kernel, m_RadianceProbeCaptureIndirectArgs, 0);
         }
@@ -559,13 +569,28 @@ public class MiraiGIRadianceCache
         // 2. probe gather irradiance
         // note: one group for one probe, one thread for one ray
         {
+            bool sampleRadianceProbe = GlobalSettings.Instance.irradianceProbeSampleRadianceProbe > 0;
+            if (sampleRadianceProbe)
+            {
+                m_VoxelLightingCS.EnableKeyword("USE_RADIANCE_PROBE_AS_FALLBACK");
+            }
+            else
+            {
+                m_VoxelLightingCS.DisableKeyword("USE_RADIANCE_PROBE_AS_FALLBACK");
+            }
+
             int kernel = m_VoxelLightingCS.FindKernel("IrradianceProbeGather");
 
             // voxel RT
             SetupVoxelRaytracingParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
 
+            cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_RadianceProbeResolution"), m_RadianceProbeResolution);
+            cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_RadianceProbeCountInAtlasXY"), (Vector2)m_RadianceProbeCountInAtlasXY);
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ValidProbeBuffer"), m_ValidProbeBuffer);
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ProbePositionOffsetVolume"), m_ProbePositionOffsetVolume[cascadeId]);
+            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RadianceProbeAtlas"), m_RadianceProbeAtlas);
+            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RadianceProbeDistanceAtlas"), m_RadianceProbeDistanceAtlas);
+            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RadianceProbeIdVolume"), m_RadianceProbeIdVolume);
 
             // output
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWProbeIrradianceCache"), m_ProbeIrradianceCache[cascadeId]);
