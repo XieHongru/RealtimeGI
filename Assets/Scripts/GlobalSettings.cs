@@ -32,6 +32,8 @@ public class GlobalSettings : ScriptableObject
     public int shadowRayBoostClipmapOffset = 1;
     public int voxelLightingCheckerBoardSize = 2;
     public int freezeLightingForDebug = 0;
-    public int probeGatherCheckerBoardSize = 2;
-    public int visualizeProbe = 1;
+    public int probeUpdateCheckerBoardSize = 2;
+    public int visualizeIrradianceProbe = 0;
+    public int visualizeRadianceProbe = 0;
+    public int radianceProbeResolution = 16;
 }

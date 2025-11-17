@@ -5,6 +5,40 @@
 #include "../RayTracing/VoxelRayTracing.hlsl"
 #include "../RayTracing/SHCommon.hlsl"
 
+float2 SignNotZero(float2 v)
+{
+    return float2(
+		(v.x >= 0.f) ? 1.f : -1.f,
+		(v.y >= 0.f) ? 1.f : -1.f
+	);
+}
+
+// https://github.com/NVIDIAGameWorks/RTXGI-DDGI
+// give a [0 ~ 1] uv, return ray direction in octahedral map
+float3 OctahedralDirection(float2 coords)
+{
+    coords = coords * 2 - 1;
+    float3 direction = float3(coords.x, coords.y, 1.f - abs(coords.x) - abs(coords.y));
+    if (direction.z < 0.f)
+    {
+        direction.xy = (1.f - abs(direction.yx)) * SignNotZero(direction.xy);
+    }
+    return normalize(direction);
+}
+
+// https://github.com/NVIDIAGameWorks/RTXGI-DDGI
+// give a ray direction in octahedral map, return [0 ~ 1] uv
+float2 OctahedralCoordinates(float3 direction)
+{
+    float l1norm = abs(direction.x) + abs(direction.y) + abs(direction.z);
+    float2 uv = direction.xy * (1.f / l1norm);
+    if (direction.z < 0.f)
+    {
+        uv = (1.f - abs(uv.yx)) * SignNotZero(uv.xy);
+    }
+    return uv * 0.5 + 0.5;
+}
+
 float3 DecodeProbePositionOffset(float3 positionOffsetRaw, float3 voxelSize)
 {
     float3 positionOffsetInVoxel = positionOffsetRaw * VOXEL_BLOCK_SIZE; // [0 ~ 3]
@@ -69,4 +103,17 @@ float3 ProbeEvaluateIrradiance(
     return irradiance;
 }
 
+float2 RadianceProbeAddressMapping(float3 rayDirection, int probeIdInAtlas, int2 radianceProbeCountInAtlasXY, int radianceProbeResolution)
+{
+    int2 probeIdInAtlas2D = Index1DTo2D(probeIdInAtlas, radianceProbeCountInAtlasXY);
+    float2 pixelBaseInAtlas = probeIdInAtlas2D * radianceProbeResolution;
+
+    float2 uvInProbe = OctahedralCoordinates(rayDirection);
+    float2 pixelInProbe = uvInProbe * (radianceProbeResolution - 2);
+
+    float2 pixelInAtlas = pixelBaseInAtlas + pixelInProbe + 1;
+    float2 uvInAtlas = pixelInAtlas / float2(radianceProbeCountInAtlasXY * radianceProbeResolution);
+	
+    return uvInAtlas;
+}
 #endif

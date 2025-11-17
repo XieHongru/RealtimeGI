@@ -9,6 +9,7 @@ public class GlobalShared
     public static int VOXEL_COUNT_PER_BLOCK = VOXEL_BLOCK_SIZE * VOXEL_BLOCK_SIZE * VOXEL_BLOCK_SIZE;
     public static int MAX_CASCADE_COUNT = 4;
     public static int PAGE_ID_INVALID = 0x3FFFFFFF;
+    public static int PROBE_ID_INVALID = 0x3FFFFFFF;
 
     public static int Index3DTo1DLinear(Vector3Int index3D, Vector3Int size3D)
     {
@@ -33,6 +34,11 @@ public class GlobalShared
         res.x = index1D;
 
         return res;
+    }
+
+    public static void InitTexture3D(RenderTexture texture, Vector3Int size, string kernel)
+    {
+
     }
 }
 

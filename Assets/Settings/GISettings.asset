@@ -27,5 +27,7 @@ MonoBehaviour:
   shadowRayBoostClipmapOffset: 1
   voxelLightingCheckerBoardSize: 2
   freezeLightingForDebug: 0
-  probeGatherCheckerBoardSize: 2
-  visualizeProbe: 0
+  probeUpdateCheckerBoardSize: 2
+  visualizeIrradianceProbe: 0
+  visualizeRadianceProbe: 0
+  radianceProbeResolution: 16

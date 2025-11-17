@@ -58,7 +58,8 @@ public class MiraiGIGPUScene
         {
             CommandBuffer cmd = CommandBufferPool.Get("Visualize GI Scene");
             miraiGIClipmap.VisualizeMiraiGIScene(cmd, this, camera);
-            miraiGIRadianceCache.VisualizeProbe(cmd, this);
+            miraiGIRadianceCache.VisualizeProbe(cmd, this, ProbeVisualizeMode.RadianceProbe);
+            miraiGIRadianceCache.VisualizeProbe(cmd, this, ProbeVisualizeMode.IrradianceProbe);
             Graphics.ExecuteCommandBuffer(cmd);
             CommandBufferPool.Release(cmd);
         }
