@@ -592,6 +592,9 @@ public class MiraiGIRadianceCache
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RadianceProbeDistanceAtlas"), m_RadianceProbeDistanceAtlas);
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RadianceProbeIdVolume"), m_RadianceProbeIdVolume);
 
+            int maxCascadeId = cascadeInfos.Length - 1;
+            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RadianceProbePositionOffsetVolume"), m_ProbePositionOffsetVolume[maxCascadeId]);
+
             // output
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWProbeIrradianceCache"), m_ProbeIrradianceCache[cascadeId]);
 

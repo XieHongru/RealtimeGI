@@ -89,7 +89,7 @@ public class MiraiGIClipmap
     const int MAX_OBJECT_NUM_PER_UPDATE_CHUNK = 64;
     const int VOXEL_BLOCK_SIZE = 4;
     const int PAGE_ID_INVALID = (0x3FFFFFFF);
-    const int VISUALIZE_MODE = 1;
+    const int VISUALIZE_MODE = 4;
 
     RenderTexture m_VoxelMap;
     RenderTexture m_VoxelPageClipmap;

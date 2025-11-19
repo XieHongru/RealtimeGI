@@ -654,6 +654,7 @@ groupshared ThreeBandSHVectorRGB gs_SharedSHVector[64];
 
 Texture2D<float3> _RadianceProbeAtlas;
 Texture2D<float> _RadianceProbeDistanceAtlas;
+Texture3D<float4> _RadianceProbePositionOffsetVolume;
 RWTexture3D<float4> _RWProbeIrradianceCache;
 
 [numthreads(64, 1, 1)]
@@ -714,13 +715,13 @@ void IrradianceProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     {
         hitRadiance = FetchRadianceFromVoxelScene(RTRequest, hit);
     }
-    // use radiance probe as fallback
+    // hanedle ray miss
     else
     {
 #if USE_RADIANCE_PROBE_AS_FALLBACK
         hitRadiance = ProbeEvaluateRadiance(
             _RadianceProbeAtlas, _RadianceProbeDistanceAtlas, 
-            _RadianceProbeIdVolume, _ProbePositionOffsetVolume, sampler_linearClamp,
+            _RadianceProbeIdVolume, _RadianceProbePositionOffsetVolume, sampler_linearClamp,
             clipmapInfo, _RadianceProbeCountInAtlasXY, _RadianceProbeResolution, 
             gs_SharedProbePosition, rayDirection
         );

@@ -49,6 +49,28 @@ float3 DecodeProbePositionOffset(float3 positionOffsetRaw, float3 voxelSize)
     return positionOffset;
 }
 
+int3 GetTrilinearSampleOffset(float3 pixelIndex)
+{
+    pixelIndex = frac(pixelIndex);
+    return int3(
+        pixelIndex.x > 0.5 ? 0 : -1,
+        pixelIndex.y > 0.5 ? 0 : -1,
+        pixelIndex.z > 0.5 ? 0 : -1
+    );
+}
+
+float3 TrilinearInterpolationFloat3(in float3 value[8], float3 rate)
+{
+    float3 a = lerp(value[0], value[4], rate.x); // 000, 100
+    float3 b = lerp(value[2], value[6], rate.x); // 010, 110
+    float3 c = lerp(value[1], value[5], rate.x); // 001, 101
+    float3 d = lerp(value[3], value[7], rate.x); // 011, 111
+    float3 e = lerp(a, b, rate.y);
+    float3 f = lerp(c, d, rate.y);
+    float3 g = lerp(e, f, rate.z);
+    return g;
+}
+
 float3 ProbeEvaluateIrradiance(
 	in Texture3D<float4> probeIrradianceCache,
 	in Texture3D<float4> probePositionOffsetVolume,
@@ -56,18 +78,26 @@ float3 ProbeEvaluateIrradiance(
 	float3 worldPosition, float3 worldNormal)
 {
     // 1. calculate sample point inside which probe
-    float3 translatedWorldPosition = worldPosition - cascadeInfo.center;
-    int3 voxelIndex = floor(translatedWorldPosition / cascadeInfo.voxelSize) + cascadeInfo.resolution * 0.5;
-    int3 probeIndex3D = voxelIndex / VOXEL_BLOCK_SIZE;
     int3 probeCountInXYZ = cascadeInfo.resolution / VOXEL_BLOCK_SIZE;
+    float probeSize = cascadeInfo.size / float3(probeCountInXYZ);
+    float3 translatedWorldPosition = worldPosition - cascadeInfo.center;
+    float3 samplePositionNorm = translatedWorldPosition / probeSize + probeCountInXYZ * 0.5; // [0 ~ probeCountInXYZ]
+    int3 probeIndex3D = floor(samplePositionNorm);
+    float3 trilinearWeight = frac(samplePositionNorm - 0.5); // 0.5 is for align sample point to 2x2x2 probe center
+    int3 trilinearOffset = GetTrilinearSampleOffset(samplePositionNorm);
 
-    // 2. find a good probe to sample
-    int3 offsets[7] = { int3(0, 0, 0), int3(-1, 0, 0), int3(1, 0, 0), int3(0, -1, 0), int3(0, 1, 0), int3(0, 0, -1), int3(0, 0, 1) };
-    int3 probeVolumeAccessIndex = int3(0, 0, 0);
-    for (int i = 0; i < 7; i++)
+    // 2. loop all probes to sample
+    int3 offsets[8] = { int3(0, 0, 0), int3(0, 0, 1), int3(0, 1, 0), int3(0, 1, 1), int3(1, 0, 0), int3(1, 0, 1), int3(1, 1, 0), int3(1, 1, 1), };
+    float3 irradianceSum = float3(0, 0, 0);
+    float weightSum = 0.0f;
+    
+    for (int i = 0; i < 8; i++)
     {
-        int3 neighborProbeIndex = probeIndex3D + offsets[i];
-        probeVolumeAccessIndex = (neighborProbeIndex + cascadeInfo.moveOffset) % probeCountInXYZ;
+        int3 neighborProbeIndex = probeIndex3D + offsets[i] + trilinearOffset;
+        neighborProbeIndex = clamp(neighborProbeIndex, int3(0, 0, 0), probeCountInXYZ - 1);
+        
+        int3 probeVolumeAccessIndex = (neighborProbeIndex + cascadeInfo.moveOffset) % probeCountInXYZ;
+        int3 readIndexBase = probeVolumeAccessIndex * int3(1, 1, 7);
 
         // 2.1. calculate probe position (consider probe relocation)
         float3 probePositionBase = CalcVoxelCenterPos(neighborProbeIndex, probeCountInXYZ, cascadeInfo.center, cascadeInfo.size);
@@ -78,31 +108,39 @@ float3 ProbeEvaluateIrradiance(
         // 2.2. see if probe is suitable, only accept front-face probe
         float3 samplePointToProbe = probePosition - worldPosition;
         bool isProbeBehindSamplePoint = dot(samplePointToProbe, worldNormal) < 0;
-        if (!isProbeBehindSamplePoint)
+        if (isProbeBehindSamplePoint || probePositionOffsetRaw.w == 0)
         {
-            break;
+            continue;
         }
+    
+        // 2.3. calculate sample weight
+        float3 weightXYZ = lerp(1 - trilinearWeight, trilinearWeight, offsets[i]);
+        float3 weight = weightXYZ.x * weightXYZ.y * weightXYZ.z;
+        weightSum += weight;
+
+        // 2.4. sample probe irradiance 
+        ThreeBandSHVectorRGB irradianceSH;
+        irradianceSH.R.V0 = probeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 0), 0));
+        irradianceSH.R.V1 = probeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 1), 0));
+        irradianceSH.G.V0 = probeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 2), 0));
+        irradianceSH.G.V1 = probeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 3), 0));
+        irradianceSH.B.V0 = probeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 4), 0));
+        irradianceSH.B.V1 = probeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 5), 0));
+        float4 temp = probeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 6), 0));
+        irradianceSH.R.V2 = temp.x;
+        irradianceSH.G.V2 = temp.y;
+        irradianceSH.B.V2 = temp.z;
+
+        ThreeBandSHVector diffuseTransferSH = CalcDiffuseTransferSH3(worldNormal, 1);
+        float3 irradiance = max(float3(0, 0, 0), DotSH3(irradianceSH, diffuseTransferSH)) / PI;
+        irradianceSum += irradiance * weight;
     }
     
-    // 4. sample probe irradiance 
-    int3 readIndexBase = probeVolumeAccessIndex * int3(1, 1, 7);
-
-    ThreeBandSHVectorRGB irradianceSH;
-    irradianceSH.R.V0 = probeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 0), 0));
-    irradianceSH.R.V1 = probeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 1), 0));
-    irradianceSH.G.V0 = probeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 2), 0));
-    irradianceSH.G.V1 = probeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 3), 0));
-    irradianceSH.B.V0 = probeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 4), 0));
-    irradianceSH.B.V1 = probeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 5), 0));
-    float4 temp = probeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 6), 0));
-    irradianceSH.R.V2 = temp.x;
-    irradianceSH.G.V2 = temp.y;
-    irradianceSH.B.V2 = temp.z;
-
-    ThreeBandSHVector diffuseTransferSH = CalcDiffuseTransferSH3(worldNormal, 1);
-    float3 irradiance = max(float3(0, 0, 0), DotSH3(irradianceSH, diffuseTransferSH)) / PI;
-
-    return irradiance;
+    if(weightSum != 0)
+    {
+        irradianceSum /= weightSum;
+    }
+    return irradianceSum;
 }
 
 float2 RadianceProbeAddressMapping(float3 rayDirection, int probeIdInAtlas, int2 radianceProbeCountInAtlasXY, int radianceProbeResolution)
@@ -190,27 +228,6 @@ float DecodeHitDistance(float encodedDistance)
     return encodedDistance * DISTANCE_SCALE;
 }
 
-int3 GetTrilinearSampleOffset(float3 pixelIndex)
-{
-    return int3(
-        pixelIndex.x > 0.5 ? 0 : -1,
-        pixelIndex.y > 0.5 ? 0 : -1,
-        pixelIndex.z > 0.5 ? 0 : -1
-    );
-}
-
-float3 TrilinearInterpolationFloat3(in float3 value[8], float3 rate)
-{
-    float3 a = lerp(value[0], value[4], rate.x); // 000, 100
-    float3 b = lerp(value[2], value[6], rate.x); // 010, 110
-    float3 c = lerp(value[1], value[5], rate.x); // 001, 101
-    float3 d = lerp(value[3], value[7], rate.x); // 011, 111
-    float3 e = lerp(a, b, rate.y);
-    float3 f = lerp(c, d, rate.y);
-    float3 g = lerp(e, f, rate.z);
-    return g;
-}
-
 float3 ProbeEvaluateRadiance(
     in Texture2D<float3> radianceProbeAtlas,
     in Texture2D<float> radianceProbeDistanceAtlas,
@@ -224,55 +241,74 @@ float3 ProbeEvaluateRadiance(
     // radiance probe only in highest clipmap
     CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, clipmapInfo.cascadeCount - 1);
     
-    // 1. calculate sample point inside which radiance probe
+    // 1. calculate sample point inside which probe
     int3 probeCountInXYZ = cascadeInfo.resolution / VOXEL_BLOCK_SIZE;
-    float radianceProbeSize = GetRadianceProbeSize(clipmapInfo);
+    float probeSize = cascadeInfo.size / float3(probeCountInXYZ);
     float3 translatedWorldPosition = worldPosition - cascadeInfo.center;
-    int3 probeIndex3D = floor(translatedWorldPosition / radianceProbeSize) + probeCountInXYZ * 0.5;
-    float3 trilinearWeight = frac(translatedWorldPosition / radianceProbeSize);
-    int3 trilinearOffset = GetTrilinearSampleOffset(trilinearWeight);
+    float3 samplePositionNorm = translatedWorldPosition / probeSize + probeCountInXYZ * 0.5; // [0 ~ probeCountInXYZ]
+    int3 probeIndex3D = floor(samplePositionNorm);
+    float3 trilinearWeight = frac(samplePositionNorm - 0.5); // 0.5 is for align sample point to 2x2x2 probe center
+    int3 trilinearOffset = GetTrilinearSampleOffset(samplePositionNorm);
     
-    // 2. find a good radiance probe to sample
+    // 2. loop all probes to sample
     int3 offsets[8] = { int3(0, 0, 0), int3(0, 0, 1), int3(0, 1, 0), int3(0, 1, 1), int3(1, 0, 0), int3(1, 0, 1), int3(1, 1, 0), int3(1, 1, 1), };
-    int3 probeVolumeAccessIndex = int3(0, 0, 0);
-    float3 probePosition = float3(0, 0, 0);
+    float3 radianceSum = float3(0, 0, 0);
+    float weightSum = 0;
     for (int i = 0; i < 8; i++)
     {
         int3 neighborProbeIndex = probeIndex3D + offsets[i] + trilinearOffset;
-        probeVolumeAccessIndex = (neighborProbeIndex + cascadeInfo.moveOffset) % probeCountInXYZ;
+        neighborProbeIndex = clamp(neighborProbeIndex, int3(0, 0, 0), probeCountInXYZ - 1);
         
-        if (any(neighborProbeIndex >= probeCountInXYZ) || any(probeCountInXYZ < 0))
-        {
-            continue;
-        }
+        int3 probeVolumeAccessIndex = (neighborProbeIndex + cascadeInfo.moveOffset) % probeCountInXYZ;
+        int probeIdInAtlas = radianceProbeIdVolume[probeVolumeAccessIndex];
 
         // 2.1. calculate probe position (consider probe relocation)
         float3 probePositionBase = CalcVoxelCenterPos(neighborProbeIndex, probeCountInXYZ, cascadeInfo.center, cascadeInfo.size);
         float4 probePositionOffsetRaw = probePositionOffsetVolume[probeVolumeAccessIndex];
         float3 probePositionOffset = DecodeProbePositionOffset(probePositionOffsetRaw.xyz, cascadeInfo.voxelSize);
-        probePosition = probePositionBase + probePositionOffset;
+        float3 probePosition = probePositionBase + probePositionOffset;
 
         // 2.2. see if probe is suitable, only accept front-face probe
         float3 samplePointToProbe = probePosition - worldPosition;
         bool isProbeBehindSamplePoint = dot(samplePointToProbe, direction) < 0;
-        if (!isProbeBehindSamplePoint)
+        if (isProbeBehindSamplePoint || probePositionOffsetRaw.w == 0)
         {
-            break;
+            continue;
         }
+        
+        // 2.3. do depth test
+        /*
+        float2 depthTestUV = RadianceProbeAddressMapping(normalize(-samplePointToProbe), probeIdInAtlas, radianceProbeCountInAtlasXY, radianceProbeResolution);
+        float probeHitDistance = DecodeHitDistance(radianceProbeDistanceAtlas.SampleLevel(linearSampler, depthTestUV, 0).r);
+        if(probeHitDistance < length(samplePointToProbe))
+        {
+            continue;
+        }
+        */
+
+        // 2.4. calculate sample weight
+        float3 weightXYZ = lerp(1 - trilinearWeight, trilinearWeight, offsets[i]);
+        float3 weight = weightXYZ.x * weightXYZ.y * weightXYZ.z;
+        weightSum += weight;
+
+        // 2.5. calculate parallex
+        float4 radianceProbeSphere = float4(probePosition, GetRadianceProbeSize(clipmapInfo) * 2);
+        float2 sphereIntersections = RayIntersectSphere(worldPosition, direction, radianceProbeSphere);
+        float3 intersectionPosition = worldPosition + direction * sphereIntersections.y;
+        float3 parallexDirection = normalize(intersectionPosition - probePosition);
+
+        // 2.6. sample radiance
+        float2 uvInAtlas = RadianceProbeAddressMapping(parallexDirection, probeIdInAtlas, radianceProbeCountInAtlasXY, radianceProbeResolution);
+        float3 radiance = radianceProbeAtlas.SampleLevel(linearSampler, uvInAtlas, 0).rgb;
+        radianceSum += radiance * weight;
     }
 
-    // 3. calculate parallex
-    float4 radianceProbeSphere = float4(probePosition, radianceProbeSize);
-    float2 sphereIntersections = RayIntersectSphere(worldPosition, direction, radianceProbeSphere);
-    float3 intersectionPosition = worldPosition + direction * sphereIntersections.y;
-    float3 parallexDirection = normalize(intersectionPosition - probePosition);
-
-    // 4. sample radiance
-    int probeIdInAtlas = radianceProbeIdVolume[probeVolumeAccessIndex];
-    float2 uvInAtlas = RadianceProbeAddressMapping(direction, probeIdInAtlas, radianceProbeCountInAtlasXY, radianceProbeResolution);
-    float3 radiance = radianceProbeAtlas.SampleLevel(linearSampler, uvInAtlas, 0).rgb;
-
-    return radiance;
+    if (weightSum != 0)
+    {
+        radianceSum /= weightSum;
+    }
+    
+    return radianceSum;
 }
 
 #endif
