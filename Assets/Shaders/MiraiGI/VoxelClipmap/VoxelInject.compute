@@ -33,7 +33,7 @@ Texture2D _SurfaceCacheAtlasDepth;
 SamplerState sampler_LinearClamp;
 
 RWTexture3D<uint2> _RWVoxelBitOccupyClipmap;
-//RWTexture3D<float> _RWVoxelOccupy;
+RWTexture3D<float> _RWVoxelOccupy;
 
 RWTexture3D<int> _RWVoxelPageClipmap;
 RWStructuredBuffer<int> _RWVoxelPageAllocator;
@@ -41,7 +41,7 @@ RWStructuredBuffer<int> _RWVoxelPageFreeList;
 RWStructuredBuffer<int> _RWVoxelPageReleaseList;
 RWTexture3D<float3> _RWVoxelPoolBaseColor;
 RWTexture3D<float3> _RWVoxelPoolNormal;
-RWTexture3D<float3> _RWVoxelPoolEmissive;
+//RWTexture3D<float3> _RWVoxelPoolEmissive;
 
 groupshared bool gs_ThreadVoxelOccupy[64];
 groupshared int gs_VoxelPageId;
@@ -137,7 +137,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
                 hasVoxel = true;
                 localToWorldMatrix = objectInfo.localToWorldMatrix;
                 
-                //_RWVoxelOccupy[voxelIndex + uint3(0, 0, 128 * _CascadeIndex)] = uvInAtlas.y;
+                _RWVoxelOccupy[voxelIndex + uint3(0, 0, 128 * _CascadeIndex)] = uvInAtlas.y;
                 break;
             }
         }
@@ -212,6 +212,6 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         int3 writeIndex = PageAddressMapping(gs_VoxelPageId, _VoxelPageCountInXYZ, voxelIndex);
         _RWVoxelPoolBaseColor[writeIndex] = baseColor;
         _RWVoxelPoolNormal[writeIndex] = worldNormal;
-        _RWVoxelPoolEmissive[writeIndex] = emissive;
+        //_RWVoxelPoolEmissive[writeIndex] = emissive;
     }
 }

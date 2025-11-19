@@ -593,7 +593,7 @@ public class MiraiGIClipmap
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPoolNormal"), m_VoxelPoolNormal);
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPoolEmissive"), m_VoxelPoolEmissive);
 
-        //cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelOccupy"), m_VoxelOccupy);
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelOccupy"), m_VoxelOccupy);
 
         Vector3Int groupCount = new Vector3Int(Mathf.CeilToInt((float)cascadeInfo.updateChunkResolution.x / 4 * cascadeInfo.chunksToUpdate.Count),
                                                 Mathf.CeilToInt((float)cascadeInfo.updateChunkResolution.y / 4),

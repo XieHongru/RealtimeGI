@@ -25,7 +25,7 @@ Texture3D<float4> _VoxelPoolRadiance;
 Texture2D<float> _SceneDepthTexture;
 RWTexture2D<float4> _RWSceneColorTexture;
 
-//Texture3D<float> _VoxelOccupy;
+Texture3D<float> _VoxelOccupy;
 
 int _UpdateChunkCount;
 float3 _UpdateChunkResolution;
@@ -56,7 +56,7 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     float3 pixelWorldPosition = ReconstructWorldPositionFromDepth(uv, pixelDepth);
     
     float3 rayDir = normalize(pixelWorldPosition - _CameraPosition.xyz);
-    float3 rayEnd = rayDir * 1000000;
+    float3 rayEnd = rayDir * 1000000 + _VoxelOccupy[uint3(0, 0, 0)];
     float3 color = float3(0, 0, 0);
 
     ClipmapInfo clipmapInfo = (ClipmapInfo) 0;
