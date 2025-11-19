@@ -110,6 +110,7 @@ void BuildVoxelLightingIndirectArgs(uint3 threadId : SV_DispatchThreadID, uint3 
 #pragma kernel VoxelLighting
 
 int3 _VoxelPageCountInXYZ;
+int _ProbeWholeSceneCascadeLevel;
 
 float4x4 _CameraViewProjectionMatrix;
 float3 _MainLightDirection;
@@ -217,11 +218,19 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
         radiance += saturate(dot(faceNormal, _MainLightDirection)) * _MainLightColor /** mainLightShadow*/ * baseColor / (3.1415926);
 
         // TODO: pre-exposure
+        
+        // 4.2. if voxel in frustum we use probe in frustum, else we use whole scene probe as fallback
+        int cascadeIndexForSceneLighting = cascadeInfo.cascadeIndex;
+        if (!isVoxelInFrustum)
+        {
+            cascadeIndexForSceneLighting = max(cascadeInfo.cascadeIndex, _ProbeWholeSceneCascadeLevel);
+        }
+        CascadeInfo cascadeInfoForSceneLighting = ResolveCascadeInfo(clipmapInfo, cascadeIndexForSceneLighting);
 
-        // 4.2. evaluate indirect lighting
+        // 4.3. evaluate indirect lighting
         float3 probeLighting = ProbeEvaluateIrradiance(
             _IrradianceProbeClipmap, _ProbeOffsetClipmap,
-            cascadeInfo, voxelPosition, faceNormal
+            cascadeInfoForSceneLighting, voxelPosition, faceNormal
         );
         radiance += probeLighting * baseColor;
 
@@ -239,6 +248,18 @@ RWStructuredBuffer<int> _RWValidProbeBuffer;
 RWTexture3D<float4> _RWProbeOffsetClipmap;
 
 groupshared bool gs_ThreadProbeValidMask[64];
+
+bool IsProbeInsideFrustum(int3 probeIndex3D, in CascadeInfo cascadeInfo)
+{
+    int3 probeCountInXYZ = cascadeInfo.resolution / VOXEL_BLOCK_SIZE;
+    float3 probePosition = CalcVoxelCenterPos(probeIndex3D, probeCountInXYZ, cascadeInfo.center, cascadeInfo.size);
+    
+    float4 probeClipPosition = mul(_CameraViewProjectionMatrix, float4(probePosition, 1));
+    probeClipPosition.xyz /= probeClipPosition.w;
+
+    bool result = all(abs(probeClipPosition.xy) < 1.1) && probeClipPosition.z > 0;
+    return result;
+}
 
 [numthreads(4,4,4)]
 void PickValidProbe(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
@@ -268,6 +289,14 @@ void PickValidProbe(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : 
         uint2 bitOccupy = _VoxelBitOccupyClipmap[voxelClipmapAccessIndex].xy;
         isProbeValid = isProbeValid || any(bitOccupy != 0);
     }
+    
+    // lower cascade's probe just for screen lighting so we do frustum culling
+	// higher cascade's probe will using for whole scene lighting so we fully spawn their
+    if (cascadeInfo.cascadeIndex < _ProbeWholeSceneCascadeLevel)
+    {
+        isProbeValid = isProbeValid && IsProbeInsideFrustum(probeIndex, cascadeInfo);
+    }
+    
     gs_ThreadProbeValidMask[groupThreadIndex] = isProbeValid;
 
     GroupMemoryBarrierWithGroupSync();

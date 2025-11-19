@@ -410,6 +410,7 @@ public class MiraiGIRadianceCache
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ShadowDepthTexture"), shadowDepthTexture);
 
             // indirect lighting
+            cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_ProbeWholeSceneCascadeLevel"), GlobalSettings.Instance.irradianceProbeWholeSceneCascadeLevel);
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_IrradianceProbeClipmap"), m_IrradianceProbeClipmap);
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ProbeOffsetClipmap"), m_ProbeOffsetClipmap);
 
@@ -439,6 +440,8 @@ public class MiraiGIRadianceCache
 
         SetupVoxelRaytracingParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
 
+        cmd.SetComputeMatrixParam(m_VoxelLightingCS, Shader.PropertyToID("_CameraViewProjectionMatrix"), Camera.main.projectionMatrix * Camera.main.worldToCameraMatrix);
+        cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_ProbeWholeSceneCascadeLevel"), GlobalSettings.Instance.irradianceProbeWholeSceneCascadeLevel);
         cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_CheckerBoardInfo"), 
                                 new Vector4(checkerBoardOffset.x, checkerBoardOffset.y, checkerBoardOffset.z, checkerBoardSize));
 
