@@ -71,9 +71,26 @@ float3 TrilinearInterpolationFloat3(in float3 value[8], float3 rate)
     return g;
 }
 
+// for single clip volume
+int3 ProbeVolumeAddressMapping(int3 probeIndex3D, in CascadeInfo cascadeInfo)
+{
+    int3 probeCountInXYZ = cascadeInfo.resolution / VOXEL_BLOCK_SIZE;
+    int3 accessIndex = (probeIndex3D + cascadeInfo.moveOffset) % probeCountInXYZ;
+    return accessIndex;
+}
+
+// for multi clip volume
+int3 ProbeClipmapAddressMapping(int3 probeIndex3D, in CascadeInfo cascadeInfo)
+{
+    int3 probeCountInXYZ = cascadeInfo.resolution / VOXEL_BLOCK_SIZE;
+    int3 probeVolumeAccessIndex = ProbeVolumeAddressMapping(probeIndex3D, cascadeInfo);
+    int3 accessIndex = probeVolumeAccessIndex + int3(0, 0, probeCountInXYZ.z * cascadeInfo.cascadeIndex); // clipmap stack in z axis
+    return accessIndex;
+}
+
 float3 ProbeEvaluateIrradiance(
-	in Texture3D<float4> probeIrradianceCache,
-	in Texture3D<float4> probePositionOffsetVolume,
+	in Texture3D<float4> irradianceProbeClipmap,
+	in Texture3D<float4> probeOffsetClipmap,
 	in CascadeInfo cascadeInfo,
 	float3 worldPosition, float3 worldNormal)
 {
@@ -96,12 +113,12 @@ float3 ProbeEvaluateIrradiance(
         int3 neighborProbeIndex = probeIndex3D + offsets[i] + trilinearOffset;
         neighborProbeIndex = clamp(neighborProbeIndex, int3(0, 0, 0), probeCountInXYZ - 1);
         
-        int3 probeVolumeAccessIndex = (neighborProbeIndex + cascadeInfo.moveOffset) % probeCountInXYZ;
-        int3 readIndexBase = probeVolumeAccessIndex * int3(1, 1, 7);
+        int3 probeClipmapAccessIndex = ProbeClipmapAddressMapping(neighborProbeIndex, cascadeInfo);
+        int3 SHReadIndexBase = probeClipmapAccessIndex * int3(7, 1, 1);
 
         // 2.1. calculate probe position (consider probe relocation)
         float3 probePositionBase = CalcVoxelCenterPos(neighborProbeIndex, probeCountInXYZ, cascadeInfo.center, cascadeInfo.size);
-        float4 probePositionOffsetRaw = probePositionOffsetVolume[probeVolumeAccessIndex];
+        float4 probePositionOffsetRaw = probeOffsetClipmap[probeClipmapAccessIndex];
         float3 probePositionOffset = DecodeProbePositionOffset(probePositionOffsetRaw.xyz, cascadeInfo.voxelSize);
         float3 probePosition = probePositionBase + probePositionOffset;
 
@@ -120,13 +137,13 @@ float3 ProbeEvaluateIrradiance(
 
         // 2.4. sample probe irradiance 
         ThreeBandSHVectorRGB irradianceSH;
-        irradianceSH.R.V0 = probeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 0), 0));
-        irradianceSH.R.V1 = probeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 1), 0));
-        irradianceSH.G.V0 = probeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 2), 0));
-        irradianceSH.G.V1 = probeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 3), 0));
-        irradianceSH.B.V0 = probeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 4), 0));
-        irradianceSH.B.V1 = probeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 5), 0));
-        float4 temp = probeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 6), 0));
+        irradianceSH.R.V0 = irradianceProbeClipmap[SHReadIndexBase + int3(0, 0, 0)];
+        irradianceSH.R.V1 = irradianceProbeClipmap[SHReadIndexBase + int3(1, 0, 0)];
+        irradianceSH.G.V0 = irradianceProbeClipmap[SHReadIndexBase + int3(2, 0, 0)];
+        irradianceSH.G.V1 = irradianceProbeClipmap[SHReadIndexBase + int3(3, 0, 0)];
+        irradianceSH.B.V0 = irradianceProbeClipmap[SHReadIndexBase + int3(4, 0, 0)];
+        irradianceSH.B.V1 = irradianceProbeClipmap[SHReadIndexBase + int3(5, 0, 0)];
+        float4 temp = irradianceProbeClipmap[SHReadIndexBase + int3(6, 0, 0)];
         irradianceSH.R.V2 = temp.x;
         irradianceSH.G.V2 = temp.y;
         irradianceSH.B.V2 = temp.z;
@@ -232,7 +249,7 @@ float3 ProbeEvaluateRadiance(
     in Texture2D<float3> radianceProbeAtlas,
     in Texture2D<float> radianceProbeDistanceAtlas,
     in Texture3D<int> radianceProbeIdVolume,
-    in Texture3D<float4> probePositionOffsetVolume,
+    in Texture3D<float4> probeOffsetClipmap,
     in SamplerState linearSampler,
     in ClipmapInfo clipmapInfo,
     int2 radianceProbeCountInAtlasXY, int radianceProbeResolution,
@@ -259,12 +276,13 @@ float3 ProbeEvaluateRadiance(
         int3 neighborProbeIndex = probeIndex3D + offsets[i] + trilinearOffset;
         neighborProbeIndex = clamp(neighborProbeIndex, int3(0, 0, 0), probeCountInXYZ - 1);
         
-        int3 probeVolumeAccessIndex = (neighborProbeIndex + cascadeInfo.moveOffset) % probeCountInXYZ;
+        int3 probeClipmapAccessIndex = ProbeClipmapAddressMapping(neighborProbeIndex, cascadeInfo);
+        int3 probeVolumeAccessIndex = ProbeVolumeAddressMapping(neighborProbeIndex, cascadeInfo);
         int probeIdInAtlas = radianceProbeIdVolume[probeVolumeAccessIndex];
 
         // 2.1. calculate probe position (consider probe relocation)
         float3 probePositionBase = CalcVoxelCenterPos(neighborProbeIndex, probeCountInXYZ, cascadeInfo.center, cascadeInfo.size);
-        float4 probePositionOffsetRaw = probePositionOffsetVolume[probeVolumeAccessIndex];
+        float4 probePositionOffsetRaw = probeOffsetClipmap[probeClipmapAccessIndex];
         float3 probePositionOffset = DecodeProbePositionOffset(probePositionOffsetRaw.xyz, cascadeInfo.voxelSize);
         float3 probePosition = probePositionBase + probePositionOffset;
 
