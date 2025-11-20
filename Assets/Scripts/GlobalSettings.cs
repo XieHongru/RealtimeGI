@@ -17,6 +17,9 @@ public class GlobalSettings : ScriptableObject
         }
     }
 
+    public int voxelVisualizeMode = 4;
+    public int voxelVisualizeCascadeLevel = 0;
+
     public int maxObjectCount = 16384;
     public int maxSurfaceCacheCount = 4096;
     public int meshCardDefaultResolution = 32;
@@ -36,6 +39,6 @@ public class GlobalSettings : ScriptableObject
     public int visualizeIrradianceProbe = 0;
     public int visualizeRadianceProbe = 0;
     public int radianceProbeResolution = 16;
-    public int irradianceProbeSampleRadianceProbe = 0;
+    public int reuseRadianceProbe = 0;
     public int radianceProbeMinCascadeLevel = 2;
 }

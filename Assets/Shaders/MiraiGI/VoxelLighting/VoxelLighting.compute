@@ -193,7 +193,9 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
         // 4.3. evaluate indirect lighting
         float3 probeLighting = ProbeEvaluateIrradiance(
             _IrradianceProbeClipmap, _ProbeOffsetClipmap,
-            cascadeInfoForSceneLighting, voxelPosition, faceNormal
+            _RadianceProbeDistanceAtlas, _RadianceProbeIdClipmap, sampler_linearClamp,
+            cascadeInfoForSceneLighting, _RadianceProbeCountInAtlasXY, _RadianceProbeResolution,
+            voxelPosition, faceNormal
         );
         radiance += probeLighting * baseColor;
 
@@ -254,6 +256,13 @@ void PickValidProbe(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : 
     }
     
     gs_ThreadProbeValidMask[groupThreadIndex] = isProbeValid;
+    
+    // lower clip's probe just for screen lighting so we do frustum culling
+	// higher clip's probe will using for whole scene lighting so we fully spawn their
+    if (cascadeInfo.cascadeIndex < _RadianceProbeMinCascadeLevel)
+    {
+        isProbeValid = isProbeValid && IsProbeInsideFrustum(probeIndex, cascadeInfo);
+    }
 
     GroupMemoryBarrierWithGroupSync();
 
@@ -793,112 +802,137 @@ int _FrameCountMod8;
 [numthreads(64, 1, 1)]
 void IrradianceProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
-//    ClipmapInfo clipmapInfo = ResolveClipmapInfo();
-//    CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, _CascadeIndex);
+    ClipmapInfo clipmapInfo = ResolveClipmapInfo();
+    CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, _CascadeIndex);
 
-//    int groupThreadIndex = groupThreadId.x;
-//    int3 probeCountInXYZ = cascadeInfo.resolution / VOXEL_BLOCK_SIZE;
+    int groupThreadIndex = groupThreadId.x;
+    int3 probeCountInXYZ = cascadeInfo.resolution / VOXEL_BLOCK_SIZE;
 
-//    // 1. head thread fetch probe info
-//#if !SHARED_PROBE_INFO_FETCH
-//    int3 gs_SharedProbeIndex3D;
-//    float3 gs_SharedProbePosition;
-//    int3 gs_SharedProbeClipmapAccessIndex;
-//    int gs_SharedProbeIdInAtlas;
-//#else
-//    if (groupThreadIndex == 0)
-//#endif
-//    {
-//        int probeIndex1D = _ValidProbeBuffer[groupId.x];
-//        gs_SharedProbeIndex3D = Index1DTo3D(probeIndex1D, probeCountInXYZ);
-//        gs_SharedProbeClipmapAccessIndex = ProbeClipmapAddressMapping(gs_SharedProbeIndex3D, cascadeInfo);
+    // 1. head thread fetch probe info
+#if !SHARED_PROBE_INFO_FETCH
+    int3 gs_SharedProbeIndex3D;
+    float3 gs_SharedProbePosition;
+    int3 gs_SharedProbeClipmapAccessIndex;
+    int gs_SharedProbeIdInAtlas;
+#else
+    if (groupThreadIndex == 0)
+#endif
+    {
+        int probeIndex1D = _ValidProbeBuffer[groupId.x];
+        gs_SharedProbeIndex3D = Index1DTo3D(probeIndex1D, probeCountInXYZ);
+        gs_SharedProbeClipmapAccessIndex = ProbeClipmapAddressMapping(gs_SharedProbeIndex3D, cascadeInfo);
         
-//        float3 probePositionBase = CalcVoxelCenterPos(gs_SharedProbeIndex3D, probeCountInXYZ, cascadeInfo.center, cascadeInfo.size);
-//        float3 probePositionOffsetRaw = _ProbeOffsetClipmap[gs_SharedProbeClipmapAccessIndex].xyz;
-//        float3 probePositionOffset = DecodeProbePositionOffset(probePositionOffsetRaw, cascadeInfo.voxelSize);
-//        gs_SharedProbePosition = probePositionBase + probePositionOffset;
-//    }
+        float3 probePositionBase = CalcVoxelCenterPos(gs_SharedProbeIndex3D, probeCountInXYZ, cascadeInfo.center, cascadeInfo.size);
+        float3 probePositionOffsetRaw = _ProbeOffsetClipmap[gs_SharedProbeClipmapAccessIndex].xyz;
+        float3 probePositionOffset = DecodeProbePositionOffset(probePositionOffsetRaw, cascadeInfo.voxelSize);
+        gs_SharedProbePosition = probePositionBase + probePositionOffset;
+    }
 
-//    GroupMemoryBarrierWithGroupSync();
+    GroupMemoryBarrierWithGroupSync();
 
-//    // 2. trace ray
-//    float uniformSampleSolidAngle = 4 * PI / float(64);
-//    // float3 rayDirection = SphericalFibonacciSample(groupThreadIndex, 64);
-//    uint2 randomSeed = Rand3DPCG16(uint3(groupId.x, 0, _FrameCountMod8)).xy;
-//    float2 E = Hammersley16(groupThreadIndex, 64, randomSeed);
-//    float3 rayDirection = UniformSampleSphere(E).xyz;
-
-//    VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
-//    RTRequest.rayStart = gs_SharedProbePosition;
-//    RTRequest.rayDir = rayDirection;
-//    RTRequest.minCascadeIndex = _CascadeIndex;
-//    RTRequest.maxCascadeIndex = _CascadeCount - 1;
-//    RTRequest.maxStepNum = 128000;
-//    RTRequest.maxDistance = 12800000;
+    // 2. trace ray
+    int sampleCountPerThread = 2;
+    int sampleCountPerProbe = 64 * sampleCountPerThread;
+    float uniformSampleSolidAngle = 4 * PI / float(sampleCountPerProbe);
+    uint2 randomSeed = Rand3DPCG16(uint3(groupId.x, 0, _FrameCountMod8)).xy;
     
-//#if USE_RADIANCE_PROBE_AS_FALLBACK
-//    RTRequest.maxDistance = GetRadianceProbeSize(clipmapInfo);
-//#endif
+    ThreeBandSHVectorRGB SHRadianceSum = (ThreeBandSHVectorRGB) 0;
+    for (int i = 0; i < sampleCountPerThread; i++)
+    {
+        int rayIndex = groupThreadIndex * sampleCountPerThread + i;
+        float2 E = Hammersley16(rayIndex, sampleCountPerProbe, randomSeed);
+        float3 rayDirection = UniformSampleSphere(E).xyz;
 
-//    VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _VoxelBitOccupyClipmap, RTRequest);
+        VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
+        RTRequest.rayStart = gs_SharedProbePosition;
+        RTRequest.rayDir = rayDirection;
+        RTRequest.minCascadeIndex = _CascadeIndex;
+        RTRequest.maxCascadeIndex = _CascadeCount - 1;
+        RTRequest.maxStepNum = 128000;
+        RTRequest.maxDistance = 12800000;
+    
+#if USE_RADIANCE_PROBE_AS_FALLBACK
+    RTRequest.maxDistance = GetRadianceProbeSize(cascadeInfo);
+#endif
 
-//    // 3. fetch radiance
-//    float3 hitRadiance = float3(0, 0, 0);
-//    if (hit.isHit)
-//    {
-//        hitRadiance = FetchRadianceFromVoxelScene(RTRequest, hit);
-//    }
-//    // hanedle ray miss
-//    else
-//    {
-//#if USE_RADIANCE_PROBE_AS_FALLBACK
-//        hitRadiance = ProbeEvaluateRadiance(
-//            _RadianceProbeAtlas, _RadianceProbeDistanceAtlas, 
-//            _RadianceProbeIdVolume, _ProbeOffsetClipmap, sampler_linearClamp,
-//            clipmapInfo, _RadianceProbeCountInAtlasXY, _RadianceProbeResolution, 
-//            gs_SharedProbePosition, rayDirection
-//        );
-//#else
-//        // TODO: sample skybox
-//        hitRadiance = float3(1, 1, 1);
+        VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _VoxelBitOccupyClipmap, RTRequest);
+
+    // 3. fetch radiance
+        float3 hitRadiance = float3(0, 0, 0);
+        if (hit.isHit)
+        {
+            hitRadiance = FetchRadianceFromVoxelScene(RTRequest, hit);
+        }
+    // hanedle ray miss
+        else
+        {
+#if USE_RADIANCE_PROBE_AS_FALLBACK
+            // lower level probe will use upper level's radiance probe as fallback
+            int uppderCascadeIndex = max(cascadeInfo.cascadeIndex, _RadianceProbeMinCascadeLevel);
+            CascadeInfo cascadeInfoUpper = ResolveCascadeInfo(clipmapInfo, uppderCascadeIndex);
+            hitRadiance = ProbeEvaluateRadiance(
+                _RadianceProbeAtlas, _RadianceProbeDistanceAtlas, 
+                _RadianceProbeIdClipmap, _ProbeOffsetClipmap, sampler_linearClamp,
+                cascadeInfo, _RadianceProbeCountInAtlasXY, _RadianceProbeResolution, 
+                gs_SharedProbePosition, rayDirection
+            );
+#else
+        // TODO: sample skybox
+            hitRadiance = float3(1, 1, 1);
         
-//        // TODO: pre-exposure
-//#endif
-//    }
+        // TODO: pre-exposure
+#endif
+        }
 
-//    // 4. SH projection
-//    ThreeBandSHVector SHBasis = SHBasisFunction3(rayDirection);
-//    ThreeBandSHVectorRGB SHRadiance;
-//    SHRadiance.R = MulSH3(SHBasis, hitRadiance.r * uniformSampleSolidAngle);
-//    SHRadiance.G = MulSH3(SHBasis, hitRadiance.g * uniformSampleSolidAngle);
-//    SHRadiance.B = MulSH3(SHBasis, hitRadiance.b * uniformSampleSolidAngle);
-//    gs_SharedSHVector[groupThreadIndex] = SHRadiance;
-
-//    GroupMemoryBarrierWithGroupSync();
-
-//    // 5. SH reduction
-//    for (int reductionSize = (64 / 2); reductionSize >= 1; reductionSize /= 2)
-//    {
-//        if (groupThreadIndex < reductionSize)
-//        {
-//            gs_SharedSHVector[groupThreadIndex] = AddSH(gs_SharedSHVector[groupThreadIndex], gs_SharedSHVector[groupThreadIndex + reductionSize]);
-//        }
-
-//        GroupMemoryBarrierWithGroupSync();
-//    }
-
-//    // 6. write to volume
-//    if (groupThreadIndex == 0)
-//    {
-//        ThreeBandSHVectorRGB SHSum = gs_SharedSHVector[0];
-//        int3 writeIndexBase = gs_SharedProbeClipmapAccessIndex * int3(7, 1, 1);
+    // 4. SH projection
+        ThreeBandSHVector SHBasis = SHBasisFunction3(rayDirection);
+        ThreeBandSHVectorRGB SHRadiance;
+        SHRadiance.R = MulSH3(SHBasis, hitRadiance.r * uniformSampleSolidAngle);
+        SHRadiance.G = MulSH3(SHBasis, hitRadiance.g * uniformSampleSolidAngle);
+        SHRadiance.B = MulSH3(SHBasis, hitRadiance.b * uniformSampleSolidAngle);
         
-//        _RWIrradianceProbeClipmap[writeIndexBase + int3(0, 0, 0)] = SHSum.R.V0;
-//        _RWIrradianceProbeClipmap[writeIndexBase + int3(1, 0, 0)] = SHSum.R.V1;
-//        _RWIrradianceProbeClipmap[writeIndexBase + int3(2, 0, 0)] = SHSum.G.V0;
-//        _RWIrradianceProbeClipmap[writeIndexBase + int3(3, 0, 0)] = SHSum.G.V1;
-//        _RWIrradianceProbeClipmap[writeIndexBase + int3(4, 0, 0)] = SHSum.B.V0;
-//        _RWIrradianceProbeClipmap[writeIndexBase + int3(5, 0, 0)] = SHSum.B.V1;
-//        _RWIrradianceProbeClipmap[writeIndexBase + int3(6, 0, 0)] = float4(SHSum.R.V2, SHSum.G.V2, SHSum.B.V2, 0);
-//    }
+        SHRadianceSum = AddSH(SHRadiance, SHRadiance);
+    }
+    
+    gs_SharedSHVector[groupThreadIndex] = SHRadianceSum;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // 5. SH reduction
+    for (int reductionSize = (64 / 2); reductionSize >= 1; reductionSize /= 2)
+    {
+        if (groupThreadIndex < reductionSize)
+        {
+            gs_SharedSHVector[groupThreadIndex] = AddSH(gs_SharedSHVector[groupThreadIndex], gs_SharedSHVector[groupThreadIndex + reductionSize]);
+        }
+
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    // 6. write to volume
+    if (groupThreadIndex == 0)
+    {
+        ThreeBandSHVectorRGB SHSum = gs_SharedSHVector[0];
+        int3 readWriteIndexBase = gs_SharedProbeClipmapAccessIndex * int3(7, 1, 1);
+        
+        float4 SHVectorHistory[7];
+        for (int i = 0; i < 7; i++)
+        {
+            SHVectorHistory[i] = _RWIrradianceProbeClipmap[readWriteIndexBase + int3(i, 0, 0)];
+        }
+
+        float4 SHVector[7];
+        SHVector[0] = SHSum.R.V0;
+        SHVector[1] = SHSum.R.V1;
+        SHVector[2] = SHSum.G.V0;
+        SHVector[3] = SHSum.G.V1;
+        SHVector[4] = SHSum.B.V0;
+        SHVector[5] = SHSum.B.V1;
+        SHVector[6] = float4(SHSum.R.V2, SHSum.G.V2, SHSum.B.V2, 0);
+
+        for (int i = 0; i < 7; i++)
+        {
+            _RWIrradianceProbeClipmap[readWriteIndexBase + int3(i, 0, 0)] = lerp(SHVector[i], SHVectorHistory[i], 0.5);
+        }
+    }
 }

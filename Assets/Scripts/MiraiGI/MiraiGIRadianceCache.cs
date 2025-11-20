@@ -152,14 +152,15 @@ public class MiraiGIRadianceCache
 
             PickValidProbe(cmd, scene, cascadeId);
 
-            bool needRadianceProbe = GlobalSettings.Instance.irradianceProbeSampleRadianceProbe > 0;
             if (cascadeId > GlobalSettings.Instance.radianceProbeMinCascadeLevel)
             {
                 RadianceProbeCapture(cmd, scene, cascadeId);
                 RadianceToIrradiance(cmd, scene, cascadeId);
             }
-
-            //IrradianceProbeGather(cmd, scene, cascadeId);
+            else
+            {
+                IrradianceProbeGather(cmd, scene, cascadeId);
+            }
         }
 
         Graphics.ExecuteCommandBuffer(cmd);
@@ -622,7 +623,7 @@ public class MiraiGIRadianceCache
         // 2. probe gather irradiance
         // note: one group for one probe, one thread for one ray
         {
-            bool sampleRadianceProbe = GlobalSettings.Instance.irradianceProbeSampleRadianceProbe > 0;
+            bool sampleRadianceProbe = GlobalSettings.Instance.reuseRadianceProbe > 0;
             if (sampleRadianceProbe)
             {
                 m_VoxelLightingCS.EnableKeyword("USE_RADIANCE_PROBE_AS_FALLBACK");
