@@ -161,6 +161,36 @@ void DecodeObjectWorldBound(ObjectInfo objectInfo, out float3 worldBoundsMin, ou
     worldBoundsMax = objectInfo.worldBoundsMax + worldBoundPadding;
 }
 
+/**
+ * Returns near intersection in x, far intersection in y, or both -1 if no intersection.
+ * RayDirection does not need to be unit length.
+ * Copy from UE
+ */
+float2 RayIntersectSphere(float3 RayOrigin, float3 RayDirection, float4 Sphere)
+{
+    float3 LocalPosition = RayOrigin - Sphere.xyz;
+    float LocalPositionSqr = dot(LocalPosition, LocalPosition);
+
+    float3 QuadraticCoef;
+    QuadraticCoef.x = dot(RayDirection, RayDirection);
+    QuadraticCoef.y = 2 * dot(RayDirection, LocalPosition);
+    QuadraticCoef.z = LocalPositionSqr - Sphere.w * Sphere.w;
+
+    float Discriminant = QuadraticCoef.y * QuadraticCoef.y - 4 * QuadraticCoef.x * QuadraticCoef.z;
+
+    float2 Intersections = -1;
+
+	// Only continue if the ray intersects the sphere
+    [flatten]
+    if (Discriminant >= 0)
+    {
+        float SqrtDiscriminant = sqrt(Discriminant);
+        Intersections = (-QuadraticCoef.y + float2(-1, 1) * SqrtDiscriminant) / (2 * QuadraticCoef.x);
+    }
+
+    return Intersections;
+}
+
 bool ObjectIntersectAABB(in ObjectInfo objectInfo, float3 aabbCenter, float3 aabbSize)
 {
     float3 worldBoundsMin, worldBoundsMax;

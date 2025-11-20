@@ -54,6 +54,15 @@ CascadeInfo ResolveCascadeInfo(ClipmapInfo clipmapInfo, int cascadeId)
     return cascadeInfo;
 }
 
+float3 SignNotZero3(float3 v)
+{
+    return float3(
+		(v.x >= 0.f) ? 1.f : -1.f,
+		(v.y >= 0.f) ? 1.f : -1.f,
+		(v.z >= 0.f) ? 1.f : -1.f
+	);
+}
+
 // copy from UE
 float2 LineBoxIntersect(float3 RayOrigin, float3 RayEnd, float3 BoxMin, float3 BoxMax)
 {
@@ -83,7 +92,7 @@ float MoveToNextCellDDA(CascadeInfo cascadeInfo, float3 samplePoint, float3 rayD
     float3 cellSize = cascadeInfo.voxelSize * pow(2, mipLevel);
 
 	// 1. calc move step
-    float3 rayDirSign = sign(rayDir);
+    float3 rayDirSign = SignNotZero3(rayDir);
     float3 moveStep = saturate(rayDirSign);
     float3 moveOffset = rayDirSign * cellSize * 1e-4;
 

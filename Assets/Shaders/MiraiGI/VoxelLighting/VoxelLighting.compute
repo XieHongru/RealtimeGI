@@ -3,11 +3,28 @@
 #include "../RayTracing/MonteCarlo.hlsl"
 #include "ProbeCommon.hlsl"
 
+int _CascadeIndex;
+int _CascadeCount;
+int3 _CascadeResolution;
+float3 _CascadeCenterArray[MAX_CASCADE_COUNT];
+float3 _CascadeSizeArray[MAX_CASCADE_COUNT];
+int3 _CascadeMoveOffsetArray[MAX_CASCADE_COUNT];
+
+ClipmapInfo ResolveClipmapInfo()
+{
+    ClipmapInfo clipmapInfo = (ClipmapInfo) 0;
+    clipmapInfo.cascadeCount = _CascadeCount;
+    clipmapInfo.cascadeResolution = _CascadeResolution;
+    clipmapInfo.cascadeCenterArray = _CascadeCenterArray;
+    clipmapInfo.cascadeSizeArray = _CascadeSizeArray;
+    clipmapInfo.cascadeMoveOffsetArray = _CascadeMoveOffsetArray;
+
+    return clipmapInfo;
+}
+
+// -------------------------------------------------------------------------------- //
 #pragma kernel PickValidVoxel
 
-int _CascadeIndex;
-int3 _CascadeResolution;
-int3 _CascadeMoveOffset;
 int4 _CheckerBoardInfo;
 
 Texture3D<uint2> _VoxelBitOccupyClipmap;
@@ -20,12 +37,15 @@ groupshared int gs_ThreadWriteIndex[64];
 [numthreads(4, 4, 4)]
 void PickValidVoxel(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
+    ClipmapInfo clipmapInfo = ResolveClipmapInfo();
+    CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, _CascadeIndex);
+    
     int groupThreadIndex = Index3DTo1D(groupThreadId, int3(4, 4, 4));
 
     // one thread for one block, use checker board 2x2x2 for average update to 8 frame
     int3 blockIndex = threadId.xyz * _CheckerBoardInfo.w + _CheckerBoardInfo.xyz;
     int3 voxelIndexBase = blockIndex * VOXEL_BLOCK_SIZE;
-    int3 clipmapAccessIndex = ClipmapAddressMapping(voxelIndexBase, _CascadeResolution, _CascadeMoveOffset, _CascadeIndex);
+    int3 clipmapAccessIndex = ClipmapAddressMapping(voxelIndexBase, cascadeInfo.resolution, cascadeInfo.moveOffset, _CascadeIndex);
     uint2 bitOccupy = _VoxelBitOccupyClipmap[clipmapAccessIndex];
 
     // 1. count valid voxel
@@ -63,7 +83,7 @@ void PickValidVoxel(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : 
         if (hasVoxel)
         {
             int3 voxelIndex = voxelIndexBase + Index1DTo3D_4x4x4(i);
-            int voxelIndex1D = Index3DTo1D(voxelIndex, _CascadeResolution);
+            int voxelIndex1D = Index3DTo1D(voxelIndex, cascadeInfo.resolution);
             _RWValidVoxelBuffer[writeIndex] = voxelIndex1D;
             writeIndex += 1;
         }
@@ -90,10 +110,7 @@ void BuildVoxelLightingIndirectArgs(uint3 threadId : SV_DispatchThreadID, uint3 
 #pragma kernel VoxelLighting
 
 int3 _VoxelPageCountInXYZ;
-int _CascadeCount;
-float3 _CascadeCenterArray[MAX_CASCADE_COUNT];
-float3 _CascadeSizeArray[MAX_CASCADE_COUNT];
-int3 _CascadeMoveOffsetArray[MAX_CASCADE_COUNT];
+int _ProbeWholeSceneCascadeLevel;
 
 float4x4 _CameraViewProjectionMatrix;
 float3 _MainLightDirection;
@@ -110,8 +127,8 @@ SamplerState sampler_PointClamp;
 
 Texture2D<float> _ShadowDepthTexture;
 
-Texture3D<float4> _ProbeIrradianceCache;
-Texture3D<float4> _ProbePositionOffsetVolume;
+Texture3D<float4> _IrradianceProbeClipmap;
+Texture3D<float4> _ProbeOffsetClipmap;
 
 Texture3D<int> _VoxelPageClipmap;
 Texture3D<float4> _VoxelPoolBaseColor;
@@ -119,18 +136,6 @@ Texture3D<float4> _VoxelPoolNormal;
 Texture3D<float4> _VoxelPoolEmissive;
 
 RWTexture3D<float3> _RWVoxelPoolRadiance;
-
-ClipmapInfo ResolveClipmapInfo()
-{
-    ClipmapInfo clipmapInfo = (ClipmapInfo) 0;
-    clipmapInfo.cascadeCount = _CascadeCount;
-    clipmapInfo.cascadeResolution = _CascadeResolution;
-    clipmapInfo.cascadeCenterArray = _CascadeCenterArray;
-    clipmapInfo.cascadeSizeArray = _CascadeSizeArray;
-    clipmapInfo.cascadeMoveOffsetArray = _CascadeMoveOffsetArray;
-    
-    return clipmapInfo;
-}
 
 [numthreads(8, 1, 1)]
 void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
@@ -145,8 +150,8 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
 
     // 1. read page data, note that 4x4x4 voxel in same block will share 4x4x4 page data in pool
     int voxelIndex1D = _ValidVoxelBuffer[threadId.x];
-    int3 voxelIndex = Index1DTo3D(voxelIndex1D, _CascadeResolution);
-    int3 clipmapAccessIndex = ClipmapAddressMapping(voxelIndex, _CascadeResolution, cascadeInfo.moveOffset, _CascadeIndex);
+    int3 voxelIndex = Index1DTo3D(voxelIndex1D, cascadeInfo.resolution);
+    int3 clipmapAccessIndex = ClipmapAddressMapping(voxelIndex, cascadeInfo.resolution, cascadeInfo.moveOffset, _CascadeIndex);
     int voxelPageId = _VoxelPageClipmap.Load(uint4(clipmapAccessIndex, 0)).r;
 
     if (voxelPageId == PAGE_ID_INVALID)
@@ -162,7 +167,7 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
 
     // 3. evaluate directional light shadow
     float mainLightShadow = 1.0;
-    float3 voxelPosition = CalcVoxelCenterPos(voxelIndex, _CascadeResolution, cascadeInfo.center, cascadeInfo.size);
+    float3 voxelPosition = CalcVoxelCenterPos(voxelIndex, cascadeInfo.resolution, cascadeInfo.center, cascadeInfo.size);
     float3 voxelClipPosition = mul(_CameraViewProjectionMatrix, float4(voxelPosition, 1));
     voxelClipPosition.xyz /= voxelClipPosition.b;
     bool isVoxelInFrustum = all(abs(voxelClipPosition.xy) < 1) && voxelClipPosition.z > 0; // voxel may behind camera frustum where csm is invalid
@@ -213,11 +218,19 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
         radiance += saturate(dot(faceNormal, _MainLightDirection)) * _MainLightColor /** mainLightShadow*/ * baseColor / (3.1415926);
 
         // TODO: pre-exposure
+        
+        // 4.2. if voxel in frustum we use probe in frustum, else we use whole scene probe as fallback
+        int cascadeIndexForSceneLighting = cascadeInfo.cascadeIndex;
+        if (!isVoxelInFrustum)
+        {
+            cascadeIndexForSceneLighting = max(cascadeInfo.cascadeIndex, _ProbeWholeSceneCascadeLevel);
+        }
+        CascadeInfo cascadeInfoForSceneLighting = ResolveCascadeInfo(clipmapInfo, cascadeIndexForSceneLighting);
 
-        // 4.2. evaluate indirect lighting
+        // 4.3. evaluate indirect lighting
         float3 probeLighting = ProbeEvaluateIrradiance(
-            _ProbeIrradianceCache, _ProbePositionOffsetVolume,
-            cascadeInfo, voxelPosition, faceNormal
+            _IrradianceProbeClipmap, _ProbeOffsetClipmap,
+            cascadeInfoForSceneLighting, voxelPosition, faceNormal
         );
         radiance += probeLighting * baseColor;
 
@@ -232,35 +245,58 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
 
 RWStructuredBuffer<int> _RWValidProbeCounter;
 RWStructuredBuffer<int> _RWValidProbeBuffer;
-RWTexture3D<float4> _RWProbePositionOffsetVolume;
+RWTexture3D<float4> _RWProbeOffsetClipmap;
 
 groupshared bool gs_ThreadProbeValidMask[64];
+
+bool IsProbeInsideFrustum(int3 probeIndex3D, in CascadeInfo cascadeInfo)
+{
+    int3 probeCountInXYZ = cascadeInfo.resolution / VOXEL_BLOCK_SIZE;
+    float3 probePosition = CalcVoxelCenterPos(probeIndex3D, probeCountInXYZ, cascadeInfo.center, cascadeInfo.size);
+    
+    float4 probeClipPosition = mul(_CameraViewProjectionMatrix, float4(probePosition, 1));
+    probeClipPosition.xyz /= probeClipPosition.w;
+
+    bool result = all(abs(probeClipPosition.xy) < 1.1) && probeClipPosition.z > 0;
+    return result;
+}
 
 [numthreads(4,4,4)]
 void PickValidProbe(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
-    int groupThreadIndex = Index3DTo1D(groupThreadId, int3(4,4,4));
+    ClipmapInfo clipmapInfo = ResolveClipmapInfo();
+    CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, _CascadeIndex);
+    
+    int groupThreadIndex = Index3DTo1D(groupThreadId, int3(4, 4, 4));
+    int3 probeCountInXYZ = cascadeInfo.resolution / VOXEL_BLOCK_SIZE;
 
     // one thread for one block (probe num == block num)
-    int3 probeCountInXYZ = _CascadeResolution / VOXEL_BLOCK_SIZE;
-    int3 blockIndex = threadId.xyz;
-    blockIndex = blockIndex * _CheckerBoardInfo.w + _CheckerBoardInfo.xyz;
+    int3 probeIndex = threadId.xyz;
+    probeIndex = probeIndex * _CheckerBoardInfo.w + _CheckerBoardInfo.xyz;
 
     // 1. judge if current (and neighbor) block is empty, if not empty we spawn a probe
     bool isProbeValid = false;
     int3 offsets[7] = { int3(-1, 0, 0), int3(1, 0, 0), int3(0, -1, 0), int3(0, 1, 0), int3(0, 0, -1), int3(0, 0, 1), int3(0, 0, 0) };
     for (int i = 0; i < 7; i++)
     {
-        int3 neighborBlockIndex = blockIndex + offsets[i];
-        if (any(neighborBlockIndex < 0) || any(neighborBlockIndex >= probeCountInXYZ))
+        int3 neighborProbeIndex = probeIndex + offsets[i];
+        if (any(neighborProbeIndex < 0) || any(neighborProbeIndex >= probeCountInXYZ))
         {
             continue;
         }
 
-        int3 clipmapAccessIndex = ClipmapAddressMapping(neighborBlockIndex * VOXEL_BLOCK_SIZE, _CascadeResolution, _CascadeMoveOffset, _CascadeIndex);
-        uint2 bitOccupy = _VoxelBitOccupyClipmap.Load(int4(clipmapAccessIndex, 0)).xy;
+        int3 voxelClipmapAccessIndex = ClipmapAddressMapping(neighborProbeIndex * VOXEL_BLOCK_SIZE, cascadeInfo.resolution, cascadeInfo.moveOffset, _CascadeIndex);
+        uint2 bitOccupy = _VoxelBitOccupyClipmap[voxelClipmapAccessIndex].xy;
         isProbeValid = isProbeValid || any(bitOccupy != 0);
     }
+    
+    // lower cascade's probe just for screen lighting so we do frustum culling
+	// higher cascade's probe will using for whole scene lighting so we fully spawn their
+    if (cascadeInfo.cascadeIndex < _ProbeWholeSceneCascadeLevel)
+    {
+        isProbeValid = isProbeValid && IsProbeInsideFrustum(probeIndex, cascadeInfo);
+    }
+    
     gs_ThreadProbeValidMask[groupThreadIndex] = isProbeValid;
 
     GroupMemoryBarrierWithGroupSync();
@@ -296,16 +332,16 @@ void PickValidProbe(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : 
     int writeIndex = gs_ThreadWriteIndex[groupThreadIndex];
     if (isProbeValid)
     {
-        int3 blockCountInXYZ = _CascadeResolution / VOXEL_BLOCK_SIZE;
-        _RWValidProbeBuffer[writeIndex] = Index3DTo1D(blockIndex, blockCountInXYZ);
+        int3 blockCountInXYZ = cascadeInfo.resolution / VOXEL_BLOCK_SIZE;
+        _RWValidProbeBuffer[writeIndex] = Index3DTo1D(probeIndex, blockCountInXYZ);
     }
     
     // 4. probe relocation, we find a place where has no voxel, spawn a probe
-    int3 probeVolumeAccessIndex = (blockIndex + _CascadeMoveOffset) % probeCountInXYZ;
+    int3 probeClipmapAccessIndex = ProbeClipmapAddressMapping(probeIndex, cascadeInfo);
     if (isProbeValid)
     {
-        int3 clipmapAccessIndex = ClipmapAddressMapping(blockIndex * VOXEL_BLOCK_SIZE, _CascadeResolution, _CascadeMoveOffset, _CascadeIndex);
-        uint2 bitOccupy = _VoxelBitOccupyClipmap.Load(int4(clipmapAccessIndex, 0)).xy;
+        int3 voxelClipmapAccessIndex = ClipmapAddressMapping(probeIndex * VOXEL_BLOCK_SIZE, cascadeInfo.resolution, cascadeInfo.moveOffset, _CascadeIndex);
+        uint2 bitOccupy = _VoxelBitOccupyClipmap[voxelClipmapAccessIndex].xy;
 
         float3 probeCenter = float(VOXEL_BLOCK_SIZE / 2).xxx - 0.5; // 1.5 is center of [0, 1, 2, 3], unit is voxel
         int3 probeOffset = int3(0, 0, 0);
@@ -328,11 +364,11 @@ void PickValidProbe(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : 
         }
 
         // xyz is encoded offset, w is valid probe mask
-        _RWProbePositionOffsetVolume[probeVolumeAccessIndex] = float4(float3(probeOffset) / VOXEL_BLOCK_SIZE, 1);
+        _RWProbeOffsetClipmap[probeClipmapAccessIndex] = float4(float3(probeOffset) / VOXEL_BLOCK_SIZE, 1);
     }
     else
     {
-        _RWProbePositionOffsetVolume[probeVolumeAccessIndex] = float4(0, 0, 0, 0);
+        _RWProbeOffsetClipmap[probeClipmapAccessIndex] = float4(0, 0, 0, 0);
     }
 }
 
@@ -353,16 +389,20 @@ RWTexture3D<int> _RWRadianceProbeIdVolume;
 [numthreads(4, 4, 4)]
 void RadianceProbeAllocate(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
+    ClipmapInfo clipmapInfo = ResolveClipmapInfo();
+    CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, _CascadeIndex);
+    
     int groupThreadIndex = Index3DTo1D(groupThreadId, int3(4, 4, 4));
 
     // one thread for one block (probe num == block num)
-    int3 probeCountInXYZ = _CascadeResolution / VOXEL_BLOCK_SIZE;
+    int3 probeCountInXYZ = cascadeInfo.resolution / VOXEL_BLOCK_SIZE;
     int3 probeIndex3D = threadId.xyz;
     probeIndex3D = probeIndex3D * _CheckerBoardInfo.w + _CheckerBoardInfo.xyz;
 
     // 1. mark probe state
-    int3 probeVolumeAccessIndex = (probeIndex3D + _CascadeMoveOffset) % probeCountInXYZ;
-    bool hasProbe = _ProbePositionOffsetVolume[probeVolumeAccessIndex].w > 0;
+    int3 probeVolumeAccessIndex = ProbeVolumeAddressMapping(probeIndex3D, cascadeInfo);
+    int3 probeClipmapAccessIndex = ProbeClipmapAddressMapping(probeIndex3D, cascadeInfo);
+    bool hasProbe = _ProbeOffsetClipmap[probeClipmapAccessIndex].w > 0;
     int probeIdInAtlas = _RWRadianceProbeIdVolume[probeVolumeAccessIndex];
     int probeState = PROBE_STATE_DO_NOTHING;
 
@@ -512,10 +552,14 @@ void RadianceProbeRelease(uint3 threadId : SV_DispatchThreadID, uint3 groupThrea
 // -------------------------------------------------------------------------------- //
 #pragma kernel RadianceProbeCapture
 
+#define SHARED_PROBE_INFO_FETCH 1
+
+#if SHARED_PROBE_INFO_FETCH
 groupshared int3 gs_SharedProbeIndex3D;
 groupshared float3 gs_SharedProbePosition;
-groupshared int3 gs_SharedProbeVolumeAccessIndex;
+groupshared int3 gs_SharedProbeClipmapAccessIndex;
 groupshared int gs_SharedProbeIdInAtlas;
+#endif
 
 // int RadianceProbeResolution;
 int2 _RadianceProbeCountInAtlasXY;
@@ -527,48 +571,7 @@ SamplerState sampler_linearClamp;
 Texture3D<int> _RadianceProbeIdVolume;
 Texture3D<float3> _VoxelPoolRadiance;
 RWTexture2D<float3> _RWRadianceProbeAtlas;
-
-int2 RedirectBorderPixel(int2 pixelIndexInProbe)
-{
-    int2 result = pixelIndexInProbe;
-    int pixelIndexMax = _RadianceProbeResolution - 1;
-
-    // row
-    if (pixelIndexInProbe.y == 0 || pixelIndexInProbe.y == pixelIndexMax)
-    {
-        result.x = pixelIndexMax - pixelIndexInProbe.x;
-        result.y += (pixelIndexInProbe.y == 0) ? 1 : -1; // top or bottom row
-    }
-    // col
-    if (pixelIndexInProbe.x == 0 || pixelIndexInProbe.x == pixelIndexMax)
-    {
-        result.x += (pixelIndexInProbe.x == 0) ? 1 : -1; // left or right col
-        result.y = pixelIndexMax - pixelIndexInProbe.y;
-    }
-
-    // left top
-    if (pixelIndexInProbe.x == 0 && pixelIndexInProbe.y == 0)
-    {
-        result = int2(pixelIndexMax - 1, pixelIndexMax - 1);
-    }
-    // right top
-    if (pixelIndexInProbe.x == pixelIndexMax && pixelIndexInProbe.y == 0)
-    {
-        result = int2(1, pixelIndexMax - 1);
-    }
-    // left bottom
-    if (pixelIndexInProbe.x == 0 && pixelIndexInProbe.y == pixelIndexMax)
-    {
-        result = int2(pixelIndexMax - 1, 1);
-    }
-    // right bottom
-    if (pixelIndexInProbe.x == pixelIndexMax && pixelIndexInProbe.y == pixelIndexMax)
-    {
-        result = int2(1, 1);
-    }
-
-    return result;
-}
+RWTexture2D<float> _RWRadianceProbeDistanceAtlas;
 
 float3 FetchRadianceFromVoxelScene(VoxelRaytracingRequest RTRequest, VoxelRayTracingHitPayload hit)
 {
@@ -595,19 +598,28 @@ void RadianceProbeCapture(uint3 threadId : SV_DispatchThreadID, uint3 groupThrea
     ClipmapInfo clipmapInfo = ResolveClipmapInfo();
     CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, _CascadeIndex);
 
-    int3 probeCountInXYZ = _CascadeResolution / VOXEL_BLOCK_SIZE;
+    int3 probeCountInXYZ = cascadeInfo.resolution / VOXEL_BLOCK_SIZE;
     int groupThreadIndex = groupThreadId.x;
 
     // 1. head thread fetch probe info
+#if !SHARED_PROBE_INFO_FETCH
+    int3 gs_SharedProbeIndex3D;
+    float3 gs_SharedProbePosition;
+    int3 gs_SharedProbeClipmapAccessIndex;
+    int gs_SharedProbeIdInAtlas;
+#else
     if (groupThreadIndex == 0)
+#endif
     {
         int probeIndex1D = _ValidProbeBuffer[groupId.z];
         gs_SharedProbeIndex3D = Index1DTo3D(probeIndex1D, probeCountInXYZ);
-        gs_SharedProbeVolumeAccessIndex = (gs_SharedProbeIndex3D + cascadeInfo.moveOffset) % probeCountInXYZ;
-        gs_SharedProbeIdInAtlas = _RadianceProbeIdVolume[gs_SharedProbeVolumeAccessIndex];
+        gs_SharedProbeClipmapAccessIndex = ProbeClipmapAddressMapping(gs_SharedProbeIndex3D, cascadeInfo);
+
+        int3 probeVolumeAccessIndex = ProbeVolumeAddressMapping(gs_SharedProbeIndex3D, cascadeInfo);
+        gs_SharedProbeIdInAtlas = _RadianceProbeIdVolume[probeVolumeAccessIndex];
 
         float3 probePositionBase = CalcVoxelCenterPos(gs_SharedProbeIndex3D, probeCountInXYZ, cascadeInfo.center, cascadeInfo.size);
-        float3 probePositionOffsetRaw = _ProbePositionOffsetVolume[gs_SharedProbeVolumeAccessIndex].xyz;
+        float3 probePositionOffsetRaw = _ProbeOffsetClipmap[gs_SharedProbeClipmapAccessIndex].xyz;
         float3 probePositionOffset = DecodeProbePositionOffset(probePositionOffsetRaw, cascadeInfo.voxelSize);
         gs_SharedProbePosition = probePositionBase + probePositionOffset;
     }
@@ -616,7 +628,7 @@ void RadianceProbeCapture(uint3 threadId : SV_DispatchThreadID, uint3 groupThrea
 
     // 2. calculate octahedral uv and ray direction
     int2 pixelIndexInProbe = threadId.xy % _RadianceProbeResolution; // [0 ~ 16]
-    int2 pixelIndexRedirect = RedirectBorderPixel(pixelIndexInProbe);
+    int2 pixelIndexRedirect = RedirectBorderPixel(pixelIndexInProbe, _RadianceProbeResolution);
 
     float2 probeUV = float2(pixelIndexRedirect - 1) / float(_RadianceProbeResolution - 2); // [0 ~ 1], 2 is for padding
     probeUV += 0.5 / float(_RadianceProbeResolution - 2); // align to texel center
@@ -648,11 +660,16 @@ void RadianceProbeCapture(uint3 threadId : SV_DispatchThreadID, uint3 groupThrea
     }
 
     // 5. write to probe atlas
-    int2 probeIdInAtlas2D = Index1DTo2D(gs_SharedProbeIdInAtlas, _RadianceProbeCountInAtlasXY);
-    int2 writeOffset = probeIdInAtlas2D * _RadianceProbeResolution;
-    int2 writeIndex = writeOffset + pixelIndexInProbe;
-
-    _RWRadianceProbeAtlas[writeIndex] = hitRadiance;
+    if (gs_SharedProbeIdInAtlas != PROBE_ID_INVALID)
+    {
+        int2 probeIdInAtlas2D = Index1DTo2D(gs_SharedProbeIdInAtlas, _RadianceProbeCountInAtlasXY);
+        int2 writeOffset = probeIdInAtlas2D * _RadianceProbeResolution;
+        int2 writeIndex = writeOffset + pixelIndexInProbe;
+        _RWRadianceProbeAtlas[writeIndex] = hitRadiance;
+        
+        float hitDistance = hit.isHit ? length(hit.position - gs_SharedProbePosition) : RTRequest.maxDistance;
+        _RWRadianceProbeDistanceAtlas[writeIndex] = EncodeHitDistance(hitDistance);
+    }
 }
 
 // -------------------------------------------------------------------------------- //
@@ -671,24 +688,15 @@ void BuildIrradianceProbeGatherIndirectArgs(uint3 threadId : SV_DispatchThreadID
 
 int _FrameCountMod8;
 
-//groupshared int gs_ProbeIndex1D;
-//groupshared int3 gs_ProbeIndex3D;
-//groupshared float3 gs_ProbePosition;
-//groupshared int3 gs_ProbeVolumeAccessIndex;
-groupshared ThreeBandSHVectorRGB gs_ThreadSHVector[64];
+#ifndef USE_RADIANCE_PROBE_AS_FALLBACK
+#define USE_RADIANCE_PROBE_AS_FALLBACK (0)
+#endif
 
-RWTexture3D<float4> _RWProbeIrradianceCache;
+groupshared ThreeBandSHVectorRGB gs_SharedSHVector[64];
 
-float3 SphericalFibonacciSample(float i, float n)
-{
-    float theta = 2 * PI * i / ((1 + sqrt(5)) * 0.5);
-    float phi = acos(1 - 2 * (i) / n);
-    return float3(
-		sin(phi) * cos(theta),
-		sin(phi) * sin(theta),
-		cos(phi)
-	);
-}
+Texture2D<float3> _RadianceProbeAtlas;
+Texture2D<float> _RadianceProbeDistanceAtlas;
+RWTexture3D<float4> _RWIrradianceProbeClipmap;
 
 [numthreads(64, 1, 1)]
 void IrradianceProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
@@ -700,14 +708,21 @@ void IrradianceProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     int3 probeCountInXYZ = cascadeInfo.resolution / VOXEL_BLOCK_SIZE;
 
     // 1. head thread fetch probe info
+#if !SHARED_PROBE_INFO_FETCH
+    int3 gs_SharedProbeIndex3D;
+    float3 gs_SharedProbePosition;
+    int3 gs_SharedProbeClipmapAccessIndex;
+    int gs_SharedProbeIdInAtlas;
+#else
     if (groupThreadIndex == 0)
+#endif
     {
         int probeIndex1D = _ValidProbeBuffer[groupId.x];
         gs_SharedProbeIndex3D = Index1DTo3D(probeIndex1D, probeCountInXYZ);
-        gs_SharedProbeVolumeAccessIndex = (gs_SharedProbeIndex3D + cascadeInfo.moveOffset) % probeCountInXYZ;
+        gs_SharedProbeClipmapAccessIndex = ProbeClipmapAddressMapping(gs_SharedProbeIndex3D, cascadeInfo);
         
         float3 probePositionBase = CalcVoxelCenterPos(gs_SharedProbeIndex3D, probeCountInXYZ, cascadeInfo.center, cascadeInfo.size);
-        float3 probePositionOffsetRaw = _ProbePositionOffsetVolume[gs_SharedProbeVolumeAccessIndex].xyz;
+        float3 probePositionOffsetRaw = _ProbeOffsetClipmap[gs_SharedProbeClipmapAccessIndex].xyz;
         float3 probePositionOffset = DecodeProbePositionOffset(probePositionOffsetRaw, cascadeInfo.voxelSize);
         gs_SharedProbePosition = probePositionBase + probePositionOffset;
     }
@@ -728,6 +743,10 @@ void IrradianceProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     RTRequest.maxCascadeIndex = _CascadeCount - 1;
     RTRequest.maxStepNum = 128000;
     RTRequest.maxDistance = 12800000;
+    
+#if USE_RADIANCE_PROBE_AS_FALLBACK
+    RTRequest.maxDistance = GetRadianceProbeSize(clipmapInfo);
+#endif
 
     VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _VoxelBitOccupyClipmap, RTRequest);
 
@@ -737,12 +756,22 @@ void IrradianceProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     {
         hitRadiance = FetchRadianceFromVoxelScene(RTRequest, hit);
     }
+    // hanedle ray miss
     else
     {
+#if USE_RADIANCE_PROBE_AS_FALLBACK
+        hitRadiance = ProbeEvaluateRadiance(
+            _RadianceProbeAtlas, _RadianceProbeDistanceAtlas, 
+            _RadianceProbeIdVolume, _ProbeOffsetClipmap, sampler_linearClamp,
+            clipmapInfo, _RadianceProbeCountInAtlasXY, _RadianceProbeResolution, 
+            gs_SharedProbePosition, rayDirection
+        );
+#else
         // TODO: sample skybox
         hitRadiance = float3(1, 1, 1);
         
         // TODO: pre-exposure
+#endif
     }
 
     // 4. SH projection
@@ -751,7 +780,7 @@ void IrradianceProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     SHRadiance.R = MulSH3(SHBasis, hitRadiance.r * uniformSampleSolidAngle);
     SHRadiance.G = MulSH3(SHBasis, hitRadiance.g * uniformSampleSolidAngle);
     SHRadiance.B = MulSH3(SHBasis, hitRadiance.b * uniformSampleSolidAngle);
-    gs_ThreadSHVector[groupThreadIndex] = SHRadiance;
+    gs_SharedSHVector[groupThreadIndex] = SHRadiance;
 
     GroupMemoryBarrierWithGroupSync();
 
@@ -760,7 +789,7 @@ void IrradianceProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     {
         if (groupThreadIndex < reductionSize)
         {
-            gs_ThreadSHVector[groupThreadIndex] = AddSH(gs_ThreadSHVector[groupThreadIndex], gs_ThreadSHVector[groupThreadIndex + reductionSize]);
+            gs_SharedSHVector[groupThreadIndex] = AddSH(gs_SharedSHVector[groupThreadIndex], gs_SharedSHVector[groupThreadIndex + reductionSize]);
         }
 
         GroupMemoryBarrierWithGroupSync();
@@ -769,15 +798,15 @@ void IrradianceProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     // 6. write to volume
     if (groupThreadIndex == 0)
     {
-        ThreeBandSHVectorRGB SHSum = gs_ThreadSHVector[0];
-        int3 writeIndexBase = gs_SharedProbeVolumeAccessIndex * int3(1, 1, 7);
+        ThreeBandSHVectorRGB SHSum = gs_SharedSHVector[0];
+        int3 writeIndexBase = gs_SharedProbeClipmapAccessIndex * int3(7, 1, 1);
         
-        _RWProbeIrradianceCache[writeIndexBase + int3(0, 0, 0)] = SHSum.R.V0;
-        _RWProbeIrradianceCache[writeIndexBase + int3(0, 0, 1)] = SHSum.R.V1;
-        _RWProbeIrradianceCache[writeIndexBase + int3(0, 0, 2)] = SHSum.G.V0;
-        _RWProbeIrradianceCache[writeIndexBase + int3(0, 0, 3)] = SHSum.G.V1;
-        _RWProbeIrradianceCache[writeIndexBase + int3(0, 0, 4)] = SHSum.B.V0;
-        _RWProbeIrradianceCache[writeIndexBase + int3(0, 0, 5)] = SHSum.B.V1;
-        _RWProbeIrradianceCache[writeIndexBase + int3(0, 0, 6)] = float4(SHSum.R.V2, SHSum.G.V2, SHSum.B.V2, 0);
+        _RWIrradianceProbeClipmap[writeIndexBase + int3(0, 0, 0)] = SHSum.R.V0;
+        _RWIrradianceProbeClipmap[writeIndexBase + int3(1, 0, 0)] = SHSum.R.V1;
+        _RWIrradianceProbeClipmap[writeIndexBase + int3(2, 0, 0)] = SHSum.G.V0;
+        _RWIrradianceProbeClipmap[writeIndexBase + int3(3, 0, 0)] = SHSum.G.V1;
+        _RWIrradianceProbeClipmap[writeIndexBase + int3(4, 0, 0)] = SHSum.B.V0;
+        _RWIrradianceProbeClipmap[writeIndexBase + int3(5, 0, 0)] = SHSum.B.V1;
+        _RWIrradianceProbeClipmap[writeIndexBase + int3(6, 0, 0)] = float4(SHSum.R.V2, SHSum.G.V2, SHSum.B.V2, 0);
     }
 }

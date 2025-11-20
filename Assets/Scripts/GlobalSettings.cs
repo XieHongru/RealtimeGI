@@ -36,4 +36,6 @@ public class GlobalSettings : ScriptableObject
     public int visualizeIrradianceProbe = 0;
     public int visualizeRadianceProbe = 0;
     public int radianceProbeResolution = 16;
+    public int irradianceProbeSampleRadianceProbe = 0;
+    public int irradianceProbeWholeSceneCascadeLevel = 2;
 }

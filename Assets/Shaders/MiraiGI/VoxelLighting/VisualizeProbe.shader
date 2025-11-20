@@ -18,9 +18,10 @@ Shader "Mirai/VisualizeProbe"
     struct FragmentInput
     {
         nointerpolation int3 probeVolumeAccessIndex : TEXCOORD0;
-        nointerpolation int3 probeIndex3D : TEXCOORD1;
-        float3 rayDirection : TEXCOORD2;
-        float3 positionWS : TEXCOORD3;
+        nointerpolation int3 probeClipmapAccessIndex : TEXCOORD1;
+        nointerpolation int3 probeIndex3D : TEXCOORD2;
+        float3 rayDirection : TEXCOORD3;
+        float3 positionWS : TEXCOORD4;
         float4 positionCS : SV_POSITION;
     };
 
@@ -40,8 +41,8 @@ Shader "Mirai/VisualizeProbe"
     float4x4 _CameraViewProjection;
 
     Texture3D<uint2> _VoxelBitOccupyClipmap;
-    Texture3D<float4> _ProbeIrradianceCache;
-    Texture3D<float4> _ProbePositionOffsetVolume;
+    Texture3D<float4> _IrradianceProbeClipmap;
+    Texture3D<float4> _ProbeOffsetClipmap;
     Texture3D<int> _RadianceProbeIdVolume;
     Texture2D<float3> _RadianceProbeAtlas;
 
@@ -55,10 +56,12 @@ Shader "Mirai/VisualizeProbe"
 
         int3 probeCountInXYZ = _CascadeResolution / VOXEL_BLOCK_SIZE;
         int3 probeIndex3D = Index1DTo3D(_ProbeIndex, probeCountInXYZ);
+
         int3 probeVolumeAccessIndex = (probeIndex3D + _CascadeMoveOffset) % probeCountInXYZ;
+        int3 probeClipmapAccessIndex = probeVolumeAccessIndex + int3(0, 0, probeCountInXYZ.z * _CascadeIndex);
 
         float3 probePositionBase = CalcVoxelCenterPos(probeIndex3D, probeCountInXYZ, _CascadeCenter, _CascadeSize);
-        float4 probePositionOffsetRaw = _ProbePositionOffsetVolume[probeVolumeAccessIndex];
+        float4 probePositionOffsetRaw = _ProbeOffsetCascade[probeClipmapAccessIndex];
         float3 probePositionOffset = DecodeProbePositionOffset(probePositionOffsetRaw.xyz, _CascadeSize / float3(_CascadeResolution));
         float3 probePosition = probePositionBase;
         probePosition += probePositionOffset;
@@ -71,6 +74,7 @@ Shader "Mirai/VisualizeProbe"
         }
 
         output.probeVolumeAccessIndex = probeVolumeAccessIndex;
+        output.probeClipmapAccessIndex = probeClipmapAccessIndex;
         output.probeIndex3D = probeIndex3D;
         output.rayDirection = normalize(localPosition);
         output.positionWS = TransformObjectToWorld(input.positionOS.xyz);
@@ -89,17 +93,17 @@ Shader "Mirai/VisualizeProbe"
 
         if (_VisualizeMode == VISUALIZE_IRRADIANCE_PROBE)
         {
-            int3 readIndexBase = input.probeVolumeAccessIndex * int3(1, 1, 7);
+            int3 readIndexBase = input.probeClipmapAccessIndex * int3(7, 1, 1);
     
 	        ThreeBandSHVectorRGB irradianceSH;
-	        irradianceSH.R.V0 = _ProbeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 0), 0));
-	        irradianceSH.R.V1 = _ProbeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 1), 0));
-	        irradianceSH.G.V0 = _ProbeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 2), 0));
-	        irradianceSH.G.V1 = _ProbeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 3), 0));
-	        irradianceSH.B.V0 = _ProbeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 4), 0));
-	        irradianceSH.B.V1 = _ProbeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 5), 0));
+	        irradianceSH.R.V0 = _IrradianceProbeClipmap[readIndexBase + float3(0, 0, 0)];
+	        irradianceSH.R.V1 = _IrradianceProbeClipmap[readIndexBase + float3(1, 0, 0)];
+	        irradianceSH.G.V0 = _IrradianceProbeClipmap[readIndexBase + float3(2, 0, 0)];
+	        irradianceSH.G.V1 = _IrradianceProbeClipmap[readIndexBase + float3(3, 0, 0)];
+	        irradianceSH.B.V0 = _IrradianceProbeClipmap[readIndexBase + float3(4, 0, 0)];
+	        irradianceSH.B.V1 = _IrradianceProbeClipmap[readIndexBase + float3(5, 0, 0)];
 
-	        float4 temp = _ProbeIrradianceCache.Load(int4(readIndexBase + float3(0, 0, 6), 0));
+	        float4 temp = _IrradianceProbeClipmap[readIndexBase + float3(6, 0, 0)];
 	        irradianceSH.R.V2 = temp.x;
 	        irradianceSH.G.V2 = temp.y;
 	        irradianceSH.B.V2 = temp.z;

@@ -31,3 +31,4 @@ MonoBehaviour:
   visualizeIrradianceProbe: 0
   visualizeRadianceProbe: 0
   radianceProbeResolution: 16
+  irradianceProbeSampleRadianceProbe: 1
