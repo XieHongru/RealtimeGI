@@ -41,6 +41,14 @@ float2 OctahedralCoordinates(float3 direction)
     return uv * 0.5 + 0.5;
 }
 
+float3 OctahedralDirectionFromPixelIndex(int2 pixelIndexInProbe, int radianceProbeResolution)
+{
+    float2 probeUV = pixelIndexInProbe / float(radianceProbeResolution); // [0 ~ 1]
+    probeUV += 0.5 / float(radianceProbeResolution); // align to texel center
+    float3 rayDirection = OctahedralDirection(probeUV);
+    return rayDirection;
+}
+
 float3 DecodeProbePositionOffset(float3 positionOffsetRaw, float3 voxelSize)
 {
     float3 positionOffsetInVoxel = positionOffsetRaw * VOXEL_BLOCK_SIZE; // [0 ~ 3]
@@ -162,6 +170,7 @@ float3 ProbeEvaluateIrradiance(
 
 float2 RadianceProbeAddressMapping(float3 rayDirection, int probeIdInAtlas, int2 radianceProbeCountInAtlasXY, int radianceProbeResolution)
 {
+    radianceProbeResolution += 2; // 2 is for border padding
     int2 probeIdInAtlas2D = Index1DTo2D(probeIdInAtlas, radianceProbeCountInAtlasXY);
     float2 pixelBaseInAtlas = probeIdInAtlas2D * radianceProbeResolution;
 
@@ -248,7 +257,7 @@ float DecodeHitDistance(float encodedDistance)
 float3 ProbeEvaluateRadiance(
     in Texture2D<float3> radianceProbeAtlas,
     in Texture2D<float> radianceProbeDistanceAtlas,
-    in Texture3D<int> radianceProbeIdVolume,
+    in Texture3D<int> radianceProbeIdClipmap,
     in Texture3D<float4> probeOffsetClipmap,
     in SamplerState linearSampler,
     in ClipmapInfo clipmapInfo,
@@ -277,8 +286,7 @@ float3 ProbeEvaluateRadiance(
         neighborProbeIndex = clamp(neighborProbeIndex, int3(0, 0, 0), probeCountInXYZ - 1);
         
         int3 probeClipmapAccessIndex = ProbeClipmapAddressMapping(neighborProbeIndex, cascadeInfo);
-        int3 probeVolumeAccessIndex = ProbeVolumeAddressMapping(neighborProbeIndex, cascadeInfo);
-        int probeIdInAtlas = radianceProbeIdVolume[probeVolumeAccessIndex];
+        int probeIdInAtlas = radianceProbeIdClipmap[probeClipmapAccessIndex];
 
         // 2.1. calculate probe position (consider probe relocation)
         float3 probePositionBase = CalcVoxelCenterPos(neighborProbeIndex, probeCountInXYZ, cascadeInfo.center, cascadeInfo.size);

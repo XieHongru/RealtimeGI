@@ -132,7 +132,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
             }
 
             float worldDistance = abs(cardDepth - voxelDepth) * orthoDepthWorldSize;
-            if (worldDistance < voxelCellSize * 0.5)  // tolerance radius is sqrt(2) / 2, for unit cube
+            if (worldDistance < voxelCellSize * 0.707)  // tolerance radius is sqrt(2) / 2, for unit cube
             {
                 hasVoxel = true;
                 localToWorldMatrix = objectInfo.localToWorldMatrix;

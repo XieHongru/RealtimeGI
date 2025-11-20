@@ -3,8 +3,7 @@ Shader "Mirai/VisualizeProbe"
     HLSLINCLUDE
     #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
     #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
-    #include "ProbeCommon.hlsl"
-    #include "../../GICommon.hlsl"
+    #include "VoxelLightingParameters.hlsl"
 
     #define VISUALIZE_IRRADIANCE_PROBE (0)
     #define VISUALIZE_RADIANCE_PROBE (1)
@@ -26,48 +25,32 @@ Shader "Mirai/VisualizeProbe"
     };
 
     int _ProbeIndex;
-
     int _VisualizeMode;
-    int _RadianceProbeResolution;
-    int2 _RadianceProbeCountInAtlasXY;
-
-    int _CascadeIndex;
-    int _CascadeCount;
-    int3 _CascadeResolution;
-    float3 _CascadeCenter;
-    float3 _CascadeSize;
-    int3 _CascadeMoveOffset;
 
     float4x4 _CameraViewProjection;
-
-    Texture3D<uint2> _VoxelBitOccupyClipmap;
-    Texture3D<float4> _IrradianceProbeClipmap;
-    Texture3D<float4> _ProbeOffsetClipmap;
-    Texture3D<int> _RadianceProbeIdVolume;
-    Texture2D<float3> _RadianceProbeAtlas;
-
-    SamplerState sampler_LinearClamp;
 
     FragmentInput VisualizeProbeVS(VertexInput input)
     {
         FragmentInput output;
 
-        float3 localPosition = input.positionOS.xyz;
+        ClipmapInfo clipmapInfo = ResolveClipmapInfo();
+        CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, _CascadeIndex);
 
-        int3 probeCountInXYZ = _CascadeResolution / VOXEL_BLOCK_SIZE;
+        int3 probeCountInXYZ = cascadeInfo.resolution / VOXEL_BLOCK_SIZE;
         int3 probeIndex3D = Index1DTo3D(_ProbeIndex, probeCountInXYZ);
 
-        int3 probeVolumeAccessIndex = (probeIndex3D + _CascadeMoveOffset) % probeCountInXYZ;
+        int3 probeVolumeAccessIndex = (probeIndex3D + cascadeInfo.moveOffset) % probeCountInXYZ;
         int3 probeClipmapAccessIndex = probeVolumeAccessIndex + int3(0, 0, probeCountInXYZ.z * _CascadeIndex);
 
-        float3 probePositionBase = CalcVoxelCenterPos(probeIndex3D, probeCountInXYZ, _CascadeCenter, _CascadeSize);
-        float4 probePositionOffsetRaw = _ProbeOffsetCascade[probeClipmapAccessIndex];
-        float3 probePositionOffset = DecodeProbePositionOffset(probePositionOffsetRaw.xyz, _CascadeSize / float3(_CascadeResolution));
+        float3 probePositionBase = CalcVoxelCenterPos(probeIndex3D, probeCountInXYZ, cascadeInfo.center, cascadeInfo.size);
+        float4 probePositionOffsetRaw = _ProbeOffsetClipmap[probeClipmapAccessIndex];
+        float3 probePositionOffset = DecodeProbePositionOffset(probePositionOffsetRaw.xyz, cascadeInfo.size / float3(cascadeInfo.resolution));
         float3 probePosition = probePositionBase;
         probePosition += probePositionOffset;
 
         float probeSizeScale = 0.1f;
-        float3 worldPosition = probePosition + localPosition * probeSizeScale * pow(2, _CascadeIndex);
+        float3 localPosition = input.positionOS.xyz;
+        float3 worldPosition = probePosition + localPosition * probeSizeScale * pow(1.710, _CascadeIndex);
         if(probePositionOffsetRaw.w == 0)
         {
             worldPosition *= 0.0;
@@ -87,7 +70,10 @@ Shader "Mirai/VisualizeProbe"
 
     float4 VisualizeProbeFS(FragmentInput input) : SV_Target
     {
-        int3 probeCountInXYZ = _CascadeResolution / VOXEL_BLOCK_SIZE;
+        ClipmapInfo clipmapInfo = ResolveClipmapInfo();
+        CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, _CascadeIndex);
+
+        int3 probeCountInXYZ = cascadeInfo.resolution / VOXEL_BLOCK_SIZE;
         float3 rayDirection = normalize(input.rayDirection);
         float3 color = float3(0, 0, 0);
 
@@ -114,9 +100,9 @@ Shader "Mirai/VisualizeProbe"
 
         if (_VisualizeMode == VISUALIZE_RADIANCE_PROBE)
         {
-            int probeIdInAtlas = _RadianceProbeIdVolume[input.probeVolumeAccessIndex];
+            int probeIdInAtlas = _RadianceProbeIdClipmap[input.probeClipmapAccessIndex];
             float2 uvInAtlas = RadianceProbeAddressMapping(rayDirection, probeIdInAtlas, _RadianceProbeCountInAtlasXY, _RadianceProbeResolution);
-            color = _RadianceProbeAtlas.SampleLevel(sampler_LinearClamp, uvInAtlas, 0).rgb;
+            color = _RadianceProbeAtlas.SampleLevel(sampler_linearClamp, uvInAtlas, 0).rgb;
         }
 
 	    return float4(color, 1);

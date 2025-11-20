@@ -40,14 +40,17 @@ public class MiraiGIRadianceCache
     Vector2Int m_RadianceProbeCountInAtlasXY = new Vector2Int(128, 128);
     RenderTexture m_RadianceProbeAtlas;
     RenderTexture m_RadianceProbeDistanceAtlas;
+    RenderTexture m_RadianceProbeOutput;
+    RenderTexture m_RadianceProbeDistanceOutput;
 
     // radiance probe need large resolution to store radiance in atlas, so we sparse allocate it
     ComputeBuffer m_RadianceProbeAllocator;
     ComputeBuffer m_RadianceProbeFreeList;      // empty probe id list
     ComputeBuffer m_RadianceProbeReleaseList;   // pending probes to release at this frame
-    RenderTexture m_RadianceProbeIdVolume;      // store index to RadianceProbeAtlas
+    RenderTexture m_RadianceProbeIdClipmap;      // store index to RadianceProbeAtlas
     ComputeBuffer m_RadianceProbeReleaseIndirectArgs;
     ComputeBuffer m_RadianceProbeCaptureIndirectArgs;
+    ComputeBuffer m_RadianceProbeOutputMergeIndirectArgs;
 
     ComputeShader m_VoxelLightingCS;
     ComputeShader m_VoxelPoolInitCS;
@@ -91,13 +94,17 @@ public class MiraiGIRadianceCache
         m_IrradianceProbeClipmap?.Release();
 
         m_RadianceProbeAtlas.Release();
+        m_RadianceProbeDistanceAtlas.Release();
+        m_RadianceProbeOutput.Release();
+        m_RadianceProbeDistanceOutput.Release();
 
         m_RadianceProbeAllocator.Release();
         m_RadianceProbeFreeList.Release();
         m_RadianceProbeReleaseList.Release();
-        m_RadianceProbeIdVolume.Release();
+        m_RadianceProbeIdClipmap.Release();
         m_RadianceProbeReleaseIndirectArgs.Release();
         m_RadianceProbeCaptureIndirectArgs.Release();
+        m_RadianceProbeOutputMergeIndirectArgs.Release();
 
         m_ValidVoxelCounter = null;
         m_ValidVoxelBuffer = null;
@@ -112,13 +119,17 @@ public class MiraiGIRadianceCache
         m_IrradianceProbeClipmap = null;
 
         m_RadianceProbeAtlas = null;
+        m_RadianceProbeDistanceAtlas = null;
+        m_RadianceProbeOutput = null;
+        m_RadianceProbeDistanceOutput = null;
 
         m_RadianceProbeAllocator = null;
         m_RadianceProbeFreeList = null;
         m_RadianceProbeReleaseList = null;
-        m_RadianceProbeIdVolume = null;
+        m_RadianceProbeIdClipmap = null;
         m_RadianceProbeReleaseIndirectArgs = null;
         m_RadianceProbeCaptureIndirectArgs = null;
+        m_RadianceProbeOutputMergeIndirectArgs = null;
     }
 
     public void Update(ref RenderingData renderingData, MiraiGIGPUScene scene)
@@ -142,12 +153,13 @@ public class MiraiGIRadianceCache
             PickValidProbe(cmd, scene, cascadeId);
 
             bool needRadianceProbe = GlobalSettings.Instance.irradianceProbeSampleRadianceProbe > 0;
-            if (cascadeId == cascadeIdMax && needRadianceProbe)
+            if (cascadeId > GlobalSettings.Instance.radianceProbeMinCascadeLevel)
             {
                 RadianceProbeCapture(cmd, scene, cascadeId);
+                RadianceToIrradiance(cmd, scene, cascadeId);
             }
 
-            IrradianceProbeGather(cmd, scene, cascadeId);
+            //IrradianceProbeGather(cmd, scene, cascadeId);
         }
 
         Graphics.ExecuteCommandBuffer(cmd);
@@ -262,7 +274,7 @@ public class MiraiGIRadianceCache
         // Probe Allocate
         // --------------------------------------------
         m_RadianceProbeResolution = GlobalSettings.Instance.radianceProbeResolution;
-        Vector2Int atlasResolution = m_RadianceProbeCountInAtlasXY * m_RadianceProbeResolution;
+        Vector2Int atlasResolution = m_RadianceProbeCountInAtlasXY * (m_RadianceProbeResolution + 2);
         if (m_RadianceProbeAtlas == null)
         {
             m_RadianceProbeAtlas = new RenderTexture(atlasResolution.x, atlasResolution.y, 0, RenderTextureFormat.RGB111110Float);
@@ -277,13 +289,27 @@ public class MiraiGIRadianceCache
             m_RadianceProbeDistanceAtlas.Create();
         }
 
-        if (m_RadianceProbeIdVolume == null)
+        if (m_RadianceProbeOutput == null)
         {
-            m_RadianceProbeIdVolume = new RenderTexture(probeCountInXYZ.x, probeCountInXYZ.y, 0, RenderTextureFormat.RInt);
-            m_RadianceProbeIdVolume.dimension = TextureDimension.Tex3D;
-            m_RadianceProbeIdVolume.volumeDepth = probeCountInXYZ.z;
-            m_RadianceProbeIdVolume.enableRandomWrite = true;
-            m_RadianceProbeIdVolume.Create();
+            m_RadianceProbeOutput = new RenderTexture(atlasResolution.x, atlasResolution.y, 0, RenderTextureFormat.RGB111110Float);
+            m_RadianceProbeOutput.enableRandomWrite = true;
+            m_RadianceProbeOutput.Create();
+        }
+
+        if (m_RadianceProbeDistanceOutput == null)
+        {
+            m_RadianceProbeDistanceOutput = new RenderTexture(atlasResolution.x, atlasResolution.y, 0, RenderTextureFormat.RFloat);
+            m_RadianceProbeDistanceOutput.enableRandomWrite = true;
+            m_RadianceProbeDistanceOutput.Create();
+        }
+
+        if (m_RadianceProbeIdClipmap == null)
+        {
+            m_RadianceProbeIdClipmap = new RenderTexture(clipmapResolution.x, clipmapResolution.y, 0, RenderTextureFormat.RInt);
+            m_RadianceProbeIdClipmap.dimension = TextureDimension.Tex3D;
+            m_RadianceProbeIdClipmap.volumeDepth = clipmapResolution.z;
+            m_RadianceProbeIdClipmap.enableRandomWrite = true;
+            m_RadianceProbeIdClipmap.Create();
 
             // TODO: init
         }
@@ -320,6 +346,11 @@ public class MiraiGIRadianceCache
         if (m_RadianceProbeCaptureIndirectArgs == null)
         {
             m_RadianceProbeCaptureIndirectArgs = new ComputeBuffer(3, sizeof(int), ComputeBufferType.IndirectArguments);
+        }
+
+        if (m_RadianceProbeOutputMergeIndirectArgs == null)
+        {
+            m_RadianceProbeOutputMergeIndirectArgs = new ComputeBuffer(3, sizeof(int), ComputeBufferType.IndirectArguments);
         }
 
         // --------------------------------------------
@@ -395,6 +426,7 @@ public class MiraiGIRadianceCache
 
             // voxel RT
             SetupVoxelRaytracingParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
+            SetupProbeVolumeParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ValidVoxelCounter"), m_ValidVoxelCounter);
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ValidVoxelBuffer"), m_ValidVoxelBuffer);
 
@@ -408,11 +440,6 @@ public class MiraiGIRadianceCache
             cmd.SetComputeVectorArrayParam(m_VoxelLightingCS, Shader.PropertyToID("_CSMShadowBounds"), shadowBounds);
             cmd.SetComputeMatrixArrayParam(m_VoxelLightingCS, Shader.PropertyToID("_CSMWorldToShadowMatrices"), worldToShadowMatrices);
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ShadowDepthTexture"), shadowDepthTexture);
-
-            // indirect lighting
-            cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_ProbeWholeSceneCascadeLevel"), GlobalSettings.Instance.irradianceProbeWholeSceneCascadeLevel);
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_IrradianceProbeClipmap"), m_IrradianceProbeClipmap);
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ProbeOffsetClipmap"), m_ProbeOffsetClipmap);
 
             // output
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWVoxelPoolRadiance"), m_VoxelPoolRadiance);
@@ -441,7 +468,7 @@ public class MiraiGIRadianceCache
         SetupVoxelRaytracingParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
 
         cmd.SetComputeMatrixParam(m_VoxelLightingCS, Shader.PropertyToID("_CameraViewProjectionMatrix"), Camera.main.projectionMatrix * Camera.main.worldToCameraMatrix);
-        cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_ProbeWholeSceneCascadeLevel"), GlobalSettings.Instance.irradianceProbeWholeSceneCascadeLevel);
+        cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_RadianceProbeMinCascadeLevel"), GlobalSettings.Instance.radianceProbeMinCascadeLevel);
         cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_CheckerBoardInfo"), 
                                 new Vector4(checkerBoardOffset.x, checkerBoardOffset.y, checkerBoardOffset.z, checkerBoardSize));
 
@@ -483,7 +510,7 @@ public class MiraiGIRadianceCache
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeReleaseList"), m_RadianceProbeReleaseList);
 
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ProbeOffsetClipmap"), m_ProbeOffsetClipmap);
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeIdVolume"), m_RadianceProbeIdVolume);
+            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeIdClipmap"), m_RadianceProbeIdClipmap);
 
             cmd.DispatchCompute(m_VoxelLightingCS, kernel, probeCountToUpdateInXYZ.x / 4, probeCountToUpdateInXYZ.y / 4, probeCountToUpdateInXYZ.z / 4 );
         }
@@ -501,6 +528,7 @@ public class MiraiGIRadianceCache
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeAllocator"), m_RadianceProbeAllocator);
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWProbeReleaseIndirectArgs"), m_RadianceProbeReleaseIndirectArgs);
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWProbeCaptureIndirectArgs"), m_RadianceProbeCaptureIndirectArgs);
+            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWProbeOutputMergeIndirectArgs"), m_RadianceProbeOutputMergeIndirectArgs);
 
             cmd.DispatchCompute(m_VoxelLightingCS, kernel, 1, 1, 1);
         }
@@ -520,19 +548,59 @@ public class MiraiGIRadianceCache
         {
             int kernel = m_VoxelLightingCS.FindKernel("RadianceProbeCapture");
 
-            // voxel RT
             SetupVoxelRaytracingParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
-
-            // pass
+            SetupProbeVolumeParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ValidProbeBuffer"), m_ValidProbeBuffer);
-            cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_RadianceProbeResolution"), m_RadianceProbeResolution);
-            cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_RadianceProbeCountInAtlasXY"), (Vector2) m_RadianceProbeCountInAtlasXY);
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ProbeOffsetClipmap"), m_ProbeOffsetClipmap);
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RadianceProbeIdVolume"), m_RadianceProbeIdVolume);
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeAtlas"), m_RadianceProbeAtlas);
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeDistanceAtlas"), m_RadianceProbeDistanceAtlas);
 
             cmd.DispatchCompute(m_VoxelLightingCS, kernel, m_RadianceProbeCaptureIndirectArgs, 0);
+        }
+
+        // 5. output merge
+        {
+            int kernel = m_VoxelLightingCS.FindKernel("RadianceProbeOutputMerge");
+
+            SetupVoxelRaytracingParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
+            SetupProbeVolumeParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
+            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ValidProbeBuffer"), m_ValidProbeBuffer);
+            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RadianceProbeOutput"), m_RadianceProbeOutput);
+            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RadianceProbeDistanceOutput"), m_RadianceProbeDistanceOutput);
+            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeAtlas"), m_RadianceProbeAtlas);
+            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeDistanceAtlas"), m_RadianceProbeDistanceAtlas);
+
+            cmd.DispatchCompute(m_VoxelLightingCS, kernel, m_RadianceProbeOutputMergeIndirectArgs, 0);
+        }
+    }
+
+    void RadianceToIrradiance(CommandBuffer cmd, MiraiGIGPUScene scene, int cascadeId)
+    {
+        MiraiGIClipmap clipmap = scene.miraiGIClipmap;
+        MiraiGICascadeInfo[] cascadeInfos = clipmap.cascadeInfos;
+
+        // 1. build indirect args
+        {
+            int kernel = m_VoxelLightingCS.FindKernel("BuildIrradianceProbeGatherIndirectArgs");
+
+            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ValidProbeCounter"), m_ValidProbeCounter);
+            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWIndirectArgs"), m_IrradianceProbeGatherIndirectArgs);
+
+            cmd.DispatchCompute(m_VoxelLightingCS, kernel, 1, 1, 1);
+        }
+
+        // 2.
+        {
+            int kernel = m_VoxelLightingCS.FindKernel("RadianceToIrradiance");
+
+            // voxel RT
+            SetupVoxelRaytracingParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
+            SetupProbeVolumeParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
+            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ValidProbeBuffer"), m_ValidProbeBuffer);
+
+            // out 
+            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWIrradianceProbeClipmap"), m_IrradianceProbeClipmap);
+
+            cmd.DispatchCompute(m_VoxelLightingCS, kernel, m_IrradianceProbeGatherIndirectArgs, 0);
         }
     }
 
@@ -568,14 +636,8 @@ public class MiraiGIRadianceCache
 
             // voxel RT
             SetupVoxelRaytracingParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
-
-            cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_RadianceProbeResolution"), m_RadianceProbeResolution);
-            cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_RadianceProbeCountInAtlasXY"), (Vector2)m_RadianceProbeCountInAtlasXY);
+            SetupProbeVolumeParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ValidProbeBuffer"), m_ValidProbeBuffer);
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ProbeOffsetClipmap"), m_ProbeOffsetClipmap);
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RadianceProbeAtlas"), m_RadianceProbeAtlas);
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RadianceProbeDistanceAtlas"), m_RadianceProbeDistanceAtlas);
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RadianceProbeIdVolume"), m_RadianceProbeIdVolume);
 
             // output
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWIrradianceProbeClipmap"), m_IrradianceProbeClipmap);
@@ -613,12 +675,25 @@ public class MiraiGIRadianceCache
 
         // voxel
         cmd.SetComputeVectorParam(computeShader, Shader.PropertyToID("_VoxelPageCountInXYZ"), (Vector3)clipmap.voxelPageCountInXYZ);
-        cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelBitOccupyClipmap"), clipmap.GetVoxelMap());
-        cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelPageClipmap"), clipmap.GetVoxelPageClipmap());
-        cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelPoolBaseColor"), clipmap.GetVoxelPoolBaseColor());
-        cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelPoolNormal"), clipmap.GetVoxelPoolNormal());
-        cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelPoolEmissive"), clipmap.GetVoxelPoolEmissive());
-        cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_VoxelPoolRadiance"), m_VoxelPoolRadiance);
+        cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_VoxelBitOccupyClipmap"), clipmap.GetVoxelMap());
+        cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_VoxelPageClipmap"), clipmap.GetVoxelPageClipmap());
+        cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_VoxelPoolBaseColor"), clipmap.GetVoxelPoolBaseColor());
+        cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_VoxelPoolNormal"), clipmap.GetVoxelPoolNormal());
+        cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_VoxelPoolEmissive"), clipmap.GetVoxelPoolEmissive());
+        cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_VoxelPoolRadiance"), m_VoxelPoolRadiance);
+    }
+
+    void SetupProbeVolumeParameters(CommandBuffer cmd, ComputeShader computeShader, int kernel,
+                                    MiraiGIGPUScene scene, int cascadeId)
+    {
+        cmd.SetComputeIntParam(computeShader, Shader.PropertyToID("_RadianceProbeResolution"), m_RadianceProbeResolution);
+        cmd.SetComputeVectorParam(computeShader, Shader.PropertyToID("_RadianceProbeCountInAtlasXY"), (Vector2) m_RadianceProbeCountInAtlasXY);
+        cmd.SetComputeIntParam(computeShader, Shader.PropertyToID("_RadianceProbeMinCascadeLevel"), GlobalSettings.Instance.radianceProbeMinCascadeLevel);
+        cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_ProbeOffsetClipmap"), m_ProbeOffsetClipmap);
+        cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_IrradianceProbeClipmap"), m_IrradianceProbeClipmap);
+        cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_RadianceProbeIdClipmap"), m_RadianceProbeIdClipmap);
+        cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_RadianceProbeAtlas"), m_RadianceProbeAtlas);
+        cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_RadianceProbeDistanceAtlas"), m_RadianceProbeDistanceAtlas);
     }
 
     public void VisualizeProbe(CommandBuffer cmd, MiraiGIGPUScene scene, ProbeVisualizeMode visualizeMode)
@@ -628,7 +703,7 @@ public class MiraiGIRadianceCache
 
         int cascadeId = (visualizeMode == ProbeVisualizeMode.IrradianceProbe)
                             ? (GlobalSettings.Instance.visualizeIrradianceProbe - 1)
-                            : ((GlobalSettings.Instance.visualizeRadianceProbe > 0) ? (cascadeInfos.Length - 1) : -1);
+                            : (GlobalSettings.Instance.visualizeRadianceProbe - 1);
 
         if (cascadeId < 0)
         {
@@ -654,7 +729,7 @@ public class MiraiGIRadianceCache
         probeVisualizeMaterial.SetTexture(Shader.PropertyToID("_IrradianceProbeClipmap"), m_IrradianceProbeClipmap);
         probeVisualizeMaterial.SetTexture(Shader.PropertyToID("_ProbeOffsetClipmap"), m_ProbeOffsetClipmap);
         probeVisualizeMaterial.SetTexture(Shader.PropertyToID("_RadianceProbeAtlas"), m_RadianceProbeAtlas);
-        probeVisualizeMaterial.SetTexture(Shader.PropertyToID("_RadianceProbeIdVolume"), m_RadianceProbeIdVolume);
+        probeVisualizeMaterial.SetTexture(Shader.PropertyToID("_RadianceProbeIdClipmap"), m_RadianceProbeIdClipmap);
         probeVisualizeMaterial.SetMatrix(Shader.PropertyToID("_CameraViewProjection"), Camera.main.projectionMatrix * Camera.main.worldToCameraMatrix);
 
         Vector3Int probeCountInXYZ = clipmap.voxelResolution / GlobalShared.VOXEL_BLOCK_SIZE;
