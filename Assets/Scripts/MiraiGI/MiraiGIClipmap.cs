@@ -630,56 +630,70 @@ public class MiraiGIClipmap
 
     public void VisualizeMiraiGIScene(CommandBuffer cmd, MiraiGIGPUScene scene, Camera camera)
     {
-        Vector4[] cascadeCenterArray = new Vector4[MAX_CASCADE_COUNT];
-        Vector4[] cascadeSizeArray = new Vector4[MAX_CASCADE_COUNT];
-        Vector4[] cascadeMoveOffsetArray = new Vector4[MAX_CASCADE_COUNT];
-
-        for (int cascadeId = 0; cascadeId < cascadeInfos.Length; cascadeId++)
-        {
-            MiraiGICascadeInfo cascadeInfo = cascadeInfos[cascadeId];
-            cascadeCenterArray[cascadeId] = cascadeInfo.cascadeCenter;
-            cascadeSizeArray[cascadeId] = cascadeInfo.cascadeSize;
-            cascadeMoveOffsetArray[cascadeId] = (Vector3)cascadeInfo.moveOffset;
-        }
-
-        int visualizeRT = (VISUALIZE_MODE > 3) ? 0 : (VISUALIZE_MODE - 1);
+        MiraiGIRadianceCache radianceCache = scene.miraiGIRadianceCache;
 
         int kernel = m_VisualizeClipmapCS.FindKernel("VisualizeClipmap");
+
+        SetupVoxelRaytracingParameters(cmd, m_VisualizeClipmapCS, kernel, scene);
+        radianceCache.SetupProbeVolumeParameters(cmd, m_VisualizeClipmapCS, kernel, scene);
 
         cmd.SetComputeVectorParam(m_VisualizeClipmapCS, Shader.PropertyToID("_ScreenResolution"), new Vector4(camera.pixelWidth, camera.pixelHeight));
         cmd.SetComputeVectorParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CameraPosition"), camera.transform.position);
         cmd.SetComputeMatrixParam(m_VisualizeClipmapCS, Shader.PropertyToID("_InvViewProjMat"), (camera.projectionMatrix * camera.worldToCameraMatrix).inverse);
 
+        cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_RWSceneColorTexture"), m_VisualizeColorTarget);
+        cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_SceneDepthTexture"), Shader.GetGlobalTexture("_CameraDepthTexture"));
+
         cmd.SetComputeIntParam(m_VisualizeClipmapCS, Shader.PropertyToID("_VisualizeMode"), VISUALIZE_MODE);
         cmd.SetComputeIntParam(m_VisualizeClipmapCS, Shader.PropertyToID("_VisualizeCascadeLevel"), GlobalSettings.Instance.voxelVisualizeCascadeLevel);
-        cmd.SetComputeIntParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeCount"), CASCADE_COUNT);
-        cmd.SetComputeVectorParam(m_VisualizeClipmapCS, Shader.PropertyToID("_VoxelPageCountInXYZ"), (Vector3)voxelPageCountInXYZ);
-        cmd.SetComputeVectorParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeResolution"), (Vector3)voxelResolution);
-        cmd.SetComputeVectorArrayParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeCenterArray"), cascadeCenterArray);
-        cmd.SetComputeVectorArrayParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeSizeArray"), cascadeSizeArray);
-        cmd.SetComputeVectorArrayParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeMoveOffsetArray"), cascadeMoveOffsetArray);
 
-        cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_BitOccupyClipmap"), m_VoxelMap);
-        cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_VoxelPageClipmap"), m_VoxelPageClipmap);
-        cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_VoxelPoolBaseColor"), m_VoxelPoolBaseColor);
-        cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_VoxelPoolNormal"), m_VoxelPoolNormal);
-        cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_VoxelPoolEmissive"), m_VoxelPoolEmissive);
-        cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_VoxelPoolRadiance"), radianceCache.GetVoxelPoolRadiance());
-        cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_SurfaceCacheAtlasToVisualize"), scene.surfaceCache.GetSurfaceCacheTexture(visualizeRT));
-        cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_SceneDepthTexture"), Shader.GetGlobalTexture("_CameraDepthTexture"));
-        cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_RWSceneColorTexture"), m_VisualizeColorTarget);
-        cmd.SetComputeBufferParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_ObjectsInfo"), scene.GPUSceneData.objectInfoBuffer);
-
-        // chunk update visualize
-        int visualizeCascade = 1;
-        cmd.SetComputeIntParam(m_VisualizeClipmapCS, Shader.PropertyToID("_VisualizeUpdateChunk"), visualizeCascade);
-        cmd.SetComputeIntParam(m_VisualizeClipmapCS, Shader.PropertyToID("_UpdateChunkCount"), cascadeInfos[visualizeCascade - 1].chunksToUpdate.Count);
-        cmd.SetComputeVectorParam(m_VisualizeClipmapCS, Shader.PropertyToID("_UpdateChunkResolution"), (Vector3) cascadeInfos[visualizeCascade - 1].updateChunkResolution);
-        cmd.SetComputeBufferParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_UpdateChunkList"), m_UpdateChunkList[visualizeCascade - 1]);
+        int visualizeUpdateChunk = GlobalSettings.Instance.voxelVisualizeUpdateChunk;
+        int selectCascade = Mathf.Clamp(visualizeUpdateChunk - 1, 0, cascadeInfos.Length - 1);
+        cmd.SetComputeIntParam(m_VisualizeClipmapCS, Shader.PropertyToID("_VisualizeUpdateChunk"), Mathf.Clamp(visualizeUpdateChunk, 0, cascadeInfos.Length));
+        cmd.SetComputeIntParam(m_VisualizeClipmapCS, Shader.PropertyToID("_UpdateChunkCount"), cascadeInfos[selectCascade].chunksToUpdate.Count);
+        cmd.SetComputeVectorParam(m_VisualizeClipmapCS, Shader.PropertyToID("_UpdateChunkResolution"), (Vector3) cascadeInfos[selectCascade].updateChunkResolution);
+        cmd.SetComputeBufferParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_UpdateChunkList"), m_UpdateChunkList[selectCascade]);
 
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_VoxelOccupy"), m_VoxelOccupy);
 
         cmd.DispatchCompute(m_VisualizeClipmapCS, kernel, Mathf.CeilToInt((float)camera.pixelWidth / 8), Mathf.CeilToInt((float)camera.pixelHeight / 8), 1);
+    }
+
+
+    public void SetupVoxelRaytracingParameters(CommandBuffer cmd, ComputeShader computeShader, int kernel,
+                                        MiraiGIGPUScene scene, int cascadeId = 0)
+    {
+        MiraiGIRadianceCache radianceCache = scene.miraiGIRadianceCache;
+
+        Vector4[] cascadeCenterArray = new Vector4[MAX_CASCADE_COUNT];
+        Vector4[] cascadeSizeArray = new Vector4[MAX_CASCADE_COUNT];
+        Vector4[] cascadeMoveOffsetArray = new Vector4[MAX_CASCADE_COUNT];
+
+        for (int cascadeIndex = 0; cascadeIndex < cascadeInfos.Length; cascadeIndex++)
+        {
+            MiraiGICascadeInfo cascadeInfo = cascadeInfos[cascadeIndex];
+            cascadeCenterArray[cascadeIndex] = cascadeInfo.cascadeCenter;
+            cascadeSizeArray[cascadeIndex] = cascadeInfo.cascadeSize;
+            cascadeMoveOffsetArray[cascadeIndex] = (Vector3)cascadeInfo.moveOffset;
+        }
+
+        // volume
+        cmd.SetComputeIntParam(computeShader, Shader.PropertyToID("_CascadeIndex"), cascadeId);
+        cmd.SetComputeIntParam(computeShader, Shader.PropertyToID("_CascadeCount"), cascadeInfos.Length);
+
+        cmd.SetComputeVectorParam(computeShader, Shader.PropertyToID("_CascadeResolution"), (Vector3)voxelResolution);
+        cmd.SetComputeVectorArrayParam(computeShader, Shader.PropertyToID("_CascadeCenterArray"), cascadeCenterArray);
+        cmd.SetComputeVectorArrayParam(computeShader, Shader.PropertyToID("_CascadeSizeArray"), cascadeSizeArray);
+        cmd.SetComputeVectorArrayParam(computeShader, Shader.PropertyToID("_CascadeMoveOffsetArray"), cascadeMoveOffsetArray);
+
+        // voxel
+        cmd.SetComputeVectorParam(computeShader, Shader.PropertyToID("_VoxelPageCountInXYZ"), (Vector3)voxelPageCountInXYZ);
+        cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_VoxelBitOccupyClipmap"), m_VoxelMap);
+        cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_VoxelPageClipmap"), m_VoxelPageClipmap);
+        cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_VoxelPoolBaseColor"), m_VoxelPoolBaseColor);
+        cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_VoxelPoolNormal"), m_VoxelPoolNormal);
+        cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_VoxelPoolEmissive"), m_VoxelPoolEmissive);
+        cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_VoxelPoolRadiance"), radianceCache.GetVoxelPoolRadiance());
     }
 
     int Index3DTo1DLinear(Vector3Int index3D, Vector3Int size3D)

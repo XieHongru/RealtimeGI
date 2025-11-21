@@ -794,6 +794,8 @@ void RadianceToIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 groupThrea
 #pragma kernel IrradianceProbeGather
 
 int _FrameCountMod8;
+int _SampleCount;
+int _TemporalWeight;
 
 #ifndef USE_RADIANCE_PROBE_AS_FALLBACK
 #define USE_RADIANCE_PROBE_AS_FALLBACK (0)
@@ -831,7 +833,7 @@ void IrradianceProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     GroupMemoryBarrierWithGroupSync();
 
     // 2. trace ray
-    int sampleCountPerThread = 2;
+    int sampleCountPerThread = _SampleCount;
     int sampleCountPerProbe = 64 * sampleCountPerThread;
     float uniformSampleSolidAngle = 4 * PI / float(sampleCountPerProbe);
     uint2 randomSeed = Rand3DPCG16(uint3(groupId.x, 0, _FrameCountMod8)).xy;
@@ -932,7 +934,7 @@ void IrradianceProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
 
         for (int i = 0; i < 7; i++)
         {
-            _RWIrradianceProbeClipmap[readWriteIndexBase + int3(i, 0, 0)] = lerp(SHVector[i], SHVectorHistory[i], 0.5);
+            _RWIrradianceProbeClipmap[readWriteIndexBase + int3(i, 0, 0)] = lerp(SHVector[i], SHVectorHistory[i], _TemporalWeight);
         }
     }
 }

@@ -2,6 +2,7 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 using UnityEngine.XR;
 
@@ -26,10 +27,10 @@ public class GIController : MonoBehaviour
         miraiGIGPUScene?.Release();
     }
 
-    public void MiraiGISceneCreate()
+    public void MiraiGISceneCreate(RenderTargetIdentifier sceneColorTarget)
     {
         miraiGIGPUScene = new MiraiGIGPUScene();
-        miraiGIGPUScene.CreateScene();
+        miraiGIGPUScene.CreateScene(sceneColorTarget);
         isInitialized = true;
     }
 

@@ -1,0 +1,65 @@
+#include "../VoxelLighting/VoxelLightingParameters.hlsl"
+#pragma kernel ScreenGather
+
+float4 _ScreenResolution;
+float4 _CameraPosition;
+float4x4 _InvViewProjMat;
+
+Texture2D<float4> _GBuffer0;
+Texture2D<float4> _GBuffer1;
+
+Texture2D<float> _SceneDepthTexture;
+RWTexture2D<float4> _RWScreenGatherOutput;
+
+float3 ReconstructWorldPositionFromDepth(float2 uv, float depth)
+{
+	float2 ndcPosition = float2((uv.x - 0.5f) * 2.0f, (uv.y - 0.5f) * 2.0f);
+	float realDepth = depth;
+	float4 worldPosition = mul(_InvViewProjMat, float4(ndcPosition * realDepth, realDepth, 1.0f));
+	return worldPosition.xyz / worldPosition.w;
+}
+
+[numthreads(8, 8, 1)]
+void ScreenGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+	uint2 pixelCoord = threadId.xy;
+	if (pixelCoord.x >= _ScreenResolution.x || pixelCoord.y >= _ScreenResolution.y)
+	{
+		return;
+	}
+
+	float2 uv = (float2(pixelCoord) + 0.5) / _ScreenResolution.xy;
+	float rawDepth = _SceneDepthTexture.Load(int3(pixelCoord, 0)).r;
+	float pixelDepth = (1.0 - rawDepth) * 2.0 - 1.0;
+	float3 worldPosition = ReconstructWorldPositionFromDepth(uv, pixelDepth);
+	
+	ClipmapInfo clipmapInfo = ResolveClipmapInfo();
+    float3 baseColor = _GBuffer0.SampleLevel(sampler_linearClamp, uv, 0).xyz;
+    float3 worldNormal = _GBuffer1.SampleLevel(sampler_linearClamp, uv, 0).xyz;
+    baseColor = (0.18).xxx;
+
+    float3 color = float3(0, 0, 0);
+    for (int cascadeId = 0; cascadeId < clipmapInfo.cascadeCount; cascadeId++)
+    {
+        CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, cascadeId);
+		
+        float3 translatedPosition = (worldPosition - cascadeInfo.center) / cascadeInfo.size + 0.5f;
+        bool isPixelInClipmap = all(0 < translatedPosition) && all(translatedPosition < 1);
+        if (!isPixelInClipmap)
+        {
+            continue;
+        }
+
+        float3 indirectLighting = ProbeEvaluateIrradiance(
+            _IrradianceProbeClipmap, _ProbeOffsetClipmap,
+            _RadianceProbeDistanceAtlas, _RadianceProbeIdClipmap, sampler_linearClamp,
+            cascadeInfo, _RadianceProbeCountInAtlasXY, _RadianceProbeResolution,
+            worldPosition, worldNormal
+        );
+
+        color += indirectLighting * baseColor;
+        break;
+    }
+
+    _RWScreenGatherOutput[pixelCoord] = float4(color, 1);
+}
