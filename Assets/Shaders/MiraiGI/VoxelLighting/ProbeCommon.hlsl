@@ -41,6 +41,14 @@ float2 OctahedralCoordinates(float3 direction)
     return uv * 0.5 + 0.5;
 }
 
+float3 OctahedralDirectionFromPixelIndex(int2 pixelIndexInProbe, int radianceProbeResolution)
+{
+    float2 probeUV = pixelIndexInProbe / float(radianceProbeResolution); // [0 ~ 1]
+    probeUV += 0.5 / float(radianceProbeResolution); // align to texel center
+    float3 rayDirection = OctahedralDirection(probeUV);
+    return rayDirection;
+}
+
 float3 DecodeProbePositionOffset(float3 positionOffsetRaw, float3 voxelSize)
 {
     float3 positionOffsetInVoxel = positionOffsetRaw * VOXEL_BLOCK_SIZE; // [0 ~ 3]
@@ -88,10 +96,38 @@ int3 ProbeClipmapAddressMapping(int3 probeIndex3D, in CascadeInfo cascadeInfo)
     return accessIndex;
 }
 
+float2 RadianceProbeAddressMapping(float3 rayDirection, int probeIdInAtlas, int2 radianceProbeCountInAtlasXY, int radianceProbeResolution)
+{
+    radianceProbeResolution += 2; // 2 is for border padding
+    int2 probeIdInAtlas2D = Index1DTo2D(probeIdInAtlas, radianceProbeCountInAtlasXY);
+    float2 pixelBaseInAtlas = probeIdInAtlas2D * radianceProbeResolution;
+
+    float2 uvInProbe = OctahedralCoordinates(rayDirection);
+    float2 pixelInProbe = uvInProbe * (radianceProbeResolution - 2);
+
+    float2 pixelInAtlas = pixelBaseInAtlas + pixelInProbe + 1;
+    float2 uvInAtlas = pixelInAtlas / float2(radianceProbeCountInAtlasXY * radianceProbeResolution);
+	
+    return uvInAtlas;
+}
+
+float EncodeHitDistance(float rawDistance)
+{
+    return rawDistance / DISTANCE_SCALE;
+}
+
+float DecodeHitDistance(float encodedDistance)
+{
+    return encodedDistance * DISTANCE_SCALE;
+}
+
 float3 ProbeEvaluateIrradiance(
 	in Texture3D<float4> irradianceProbeClipmap,
 	in Texture3D<float4> probeOffsetClipmap,
-	in CascadeInfo cascadeInfo,
+    in Texture2D<float> radianceProbeDistanceAtlas,
+    in Texture3D<int> radianceProbeIdClipmap,
+    in SamplerState linearSampler,
+	in CascadeInfo cascadeInfo, int2 radianceProbeCountInAtlasXY, int radianceProbeResolution,
 	float3 worldPosition, float3 worldNormal)
 {
     // 1. calculate sample point inside which probe
@@ -114,6 +150,7 @@ float3 ProbeEvaluateIrradiance(
         neighborProbeIndex = clamp(neighborProbeIndex, int3(0, 0, 0), probeCountInXYZ - 1);
         
         int3 probeClipmapAccessIndex = ProbeClipmapAddressMapping(neighborProbeIndex, cascadeInfo);
+        int probeIdInAtlas = radianceProbeIdClipmap[probeClipmapAccessIndex];
         int3 SHReadIndexBase = probeClipmapAccessIndex * int3(7, 1, 1);
 
         // 2.1. calculate probe position (consider probe relocation)
@@ -129,13 +166,21 @@ float3 ProbeEvaluateIrradiance(
         {
             continue;
         }
+        
+        // 2.3. apply depth test for candidate probe
+        float3 worldPositionWithOffset = worldPosition + worldNormal * cascadeInfo.voxelSize.x;
+        float3 testRayDirection = normalize(worldPositionWithOffset - probePosition);
+        float2 depthTestUV = RadianceProbeAddressMapping(testRayDirection, probeIdInAtlas, radianceProbeCountInAtlasXY, radianceProbeResolution);
+        float probeHitDistance = DecodeHitDistance(radianceProbeDistanceAtlas.SampleLevel(linearSampler, depthTestUV, 0).r);
+        float toleranceDistance = cascadeInfo.voxelSize.x * 0.25;
+        float depthTestWeight = exp2(-max((length(samplePointToProbe) - probeHitDistance) / toleranceDistance, 0));
     
-        // 2.3. calculate sample weight
+        // 2.4. calculate sample weight
         float3 weightXYZ = lerp(1 - trilinearWeight, trilinearWeight, offsets[i]);
-        float3 weight = weightXYZ.x * weightXYZ.y * weightXYZ.z;
+        float3 weight = weightXYZ.x * weightXYZ.y * weightXYZ.z * depthTestWeight;
         weightSum += weight;
 
-        // 2.4. sample probe irradiance 
+        // 2.5. sample probe irradiance 
         ThreeBandSHVectorRGB irradianceSH;
         irradianceSH.R.V0 = irradianceProbeClipmap[SHReadIndexBase + int3(0, 0, 0)];
         irradianceSH.R.V1 = irradianceProbeClipmap[SHReadIndexBase + int3(1, 0, 0)];
@@ -158,20 +203,6 @@ float3 ProbeEvaluateIrradiance(
         irradianceSum /= weightSum;
     }
     return irradianceSum;
-}
-
-float2 RadianceProbeAddressMapping(float3 rayDirection, int probeIdInAtlas, int2 radianceProbeCountInAtlasXY, int radianceProbeResolution)
-{
-    int2 probeIdInAtlas2D = Index1DTo2D(probeIdInAtlas, radianceProbeCountInAtlasXY);
-    float2 pixelBaseInAtlas = probeIdInAtlas2D * radianceProbeResolution;
-
-    float2 uvInProbe = OctahedralCoordinates(rayDirection);
-    float2 pixelInProbe = uvInProbe * (radianceProbeResolution - 2);
-
-    float2 pixelInAtlas = pixelBaseInAtlas + pixelInProbe + 1;
-    float2 uvInAtlas = pixelInAtlas / float2(radianceProbeCountInAtlasXY * radianceProbeResolution);
-	
-    return uvInAtlas;
 }
 
 int2 RedirectBorderPixel(int2 pixelIndexInProbe, int radianceProbeResolution)
@@ -227,37 +258,23 @@ float3 SphericalFibonacciSample(float i, float n)
 	);
 }
 
-float GetRadianceProbeSize(in ClipmapInfo clipmapInfo)
+float GetRadianceProbeSize(in CascadeInfo cascadeInfo)
 {
-    CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, clipmapInfo.cascadeCount - 1);
     int3 probeCountInXYZ = cascadeInfo.resolution / VOXEL_BLOCK_SIZE;
     int3 probeSize = cascadeInfo.size / float3(probeCountInXYZ);
     return max(max(probeSize.x, probeSize.y), probeSize.z);
 }
 
-float EncodeHitDistance(float rawDistance)
-{
-    return rawDistance / DISTANCE_SCALE;
-}
-
-float DecodeHitDistance(float encodedDistance)
-{
-    return encodedDistance * DISTANCE_SCALE;
-}
-
 float3 ProbeEvaluateRadiance(
     in Texture2D<float3> radianceProbeAtlas,
     in Texture2D<float> radianceProbeDistanceAtlas,
-    in Texture3D<int> radianceProbeIdVolume,
+    in Texture3D<int> radianceProbeIdClipmap,
     in Texture3D<float4> probeOffsetClipmap,
     in SamplerState linearSampler,
-    in ClipmapInfo clipmapInfo,
+    in CascadeInfo cascadeInfo,
     int2 radianceProbeCountInAtlasXY, int radianceProbeResolution,
     float3 worldPosition, float3 direction)
 {
-    // radiance probe only in highest clipmap
-    CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, clipmapInfo.cascadeCount - 1);
-    
     // 1. calculate sample point inside which probe
     int3 probeCountInXYZ = cascadeInfo.resolution / VOXEL_BLOCK_SIZE;
     float probeSize = cascadeInfo.size / float3(probeCountInXYZ);
@@ -277,8 +294,7 @@ float3 ProbeEvaluateRadiance(
         neighborProbeIndex = clamp(neighborProbeIndex, int3(0, 0, 0), probeCountInXYZ - 1);
         
         int3 probeClipmapAccessIndex = ProbeClipmapAddressMapping(neighborProbeIndex, cascadeInfo);
-        int3 probeVolumeAccessIndex = ProbeVolumeAddressMapping(neighborProbeIndex, cascadeInfo);
-        int probeIdInAtlas = radianceProbeIdVolume[probeVolumeAccessIndex];
+        int probeIdInAtlas = radianceProbeIdClipmap[probeClipmapAccessIndex];
 
         // 2.1. calculate probe position (consider probe relocation)
         float3 probePositionBase = CalcVoxelCenterPos(neighborProbeIndex, probeCountInXYZ, cascadeInfo.center, cascadeInfo.size);
@@ -310,7 +326,7 @@ float3 ProbeEvaluateRadiance(
         weightSum += weight;
 
         // 2.5. calculate parallex
-        float4 radianceProbeSphere = float4(probePosition, GetRadianceProbeSize(clipmapInfo) * 2);
+        float4 radianceProbeSphere = float4(probePosition, GetRadianceProbeSize(cascadeInfo));
         float2 sphereIntersections = RayIntersectSphere(worldPosition, direction, radianceProbeSphere);
         float3 intersectionPosition = worldPosition + direction * sphereIntersections.y;
         float3 parallexDirection = normalize(intersectionPosition - probePosition);

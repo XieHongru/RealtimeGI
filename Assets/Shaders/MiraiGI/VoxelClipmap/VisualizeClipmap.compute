@@ -6,6 +6,7 @@ float4 _CameraPosition;
 float4x4 _InvViewProjMat;
 
 int _VisualizeMode;
+int _VisualizeCascadeLevel;
 int _VisualizeUpdateChunk;
 int _CascadeCount;
 int3 _VoxelPageCountInXYZ;
@@ -69,7 +70,7 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
     RTRequest.rayStart = _CameraPosition;
     RTRequest.rayDir = rayDir;
-    RTRequest.minCascadeIndex = 0;
+    RTRequest.minCascadeIndex = clamp(_VisualizeCascadeLevel, 0, _CascadeCount - 1);
     RTRequest.maxCascadeIndex = _CascadeCount - 1;
     RTRequest.maxStepNum = 128000;
     RTRequest.maxDistance = 200000000;

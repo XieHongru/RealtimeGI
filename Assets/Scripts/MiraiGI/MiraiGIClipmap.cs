@@ -89,7 +89,7 @@ public class MiraiGIClipmap
     const int MAX_OBJECT_NUM_PER_UPDATE_CHUNK = 64;
     const int VOXEL_BLOCK_SIZE = 4;
     const int PAGE_ID_INVALID = (0x3FFFFFFF);
-    const int VISUALIZE_MODE = 4;
+    const int VISUALIZE_MODE = 1;
 
     RenderTexture m_VoxelMap;
     RenderTexture m_VoxelPageClipmap;
@@ -651,6 +651,7 @@ public class MiraiGIClipmap
         cmd.SetComputeMatrixParam(m_VisualizeClipmapCS, Shader.PropertyToID("_InvViewProjMat"), (camera.projectionMatrix * camera.worldToCameraMatrix).inverse);
 
         cmd.SetComputeIntParam(m_VisualizeClipmapCS, Shader.PropertyToID("_VisualizeMode"), VISUALIZE_MODE);
+        cmd.SetComputeIntParam(m_VisualizeClipmapCS, Shader.PropertyToID("_VisualizeCascadeLevel"), GlobalSettings.Instance.voxelVisualizeCascadeLevel);
         cmd.SetComputeIntParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeCount"), CASCADE_COUNT);
         cmd.SetComputeVectorParam(m_VisualizeClipmapCS, Shader.PropertyToID("_VoxelPageCountInXYZ"), (Vector3)voxelPageCountInXYZ);
         cmd.SetComputeVectorParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CascadeResolution"), (Vector3)voxelResolution);
