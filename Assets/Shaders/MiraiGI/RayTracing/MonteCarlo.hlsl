@@ -26,4 +26,16 @@ float4 UniformSampleSphere(float2 E)
     return float4(H, PDF);
 }
 
+float3x3 GetTangentBasis(float3 TangentZ)
+{
+    const float Sign = TangentZ.z >= 0 ? 1 : -1;
+    const float a = -rcp(Sign + TangentZ.z);
+    const float b = TangentZ.x * TangentZ.y * a;
+	
+    float3 TangentX = { 1 + Sign * a * TangentZ.x * TangentZ.x, Sign * b, -Sign * TangentZ.x };
+    float3 TangentY = { b, Sign + a * TangentZ.y * TangentZ.y, -TangentZ.y  };
+
+    return float3x3(TangentX, TangentY, TangentZ);
+}
+
 #endif

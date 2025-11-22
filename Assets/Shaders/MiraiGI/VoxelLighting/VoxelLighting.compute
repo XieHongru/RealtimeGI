@@ -23,7 +23,7 @@ void PickValidVoxel(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : 
     // one thread for one block, use checker board 2x2x2 for average update to 8 frame
     int3 blockIndex = threadId.xyz * _CheckerBoardInfo.w + _CheckerBoardInfo.xyz;
     int3 voxelIndexBase = blockIndex * VOXEL_BLOCK_SIZE;
-    int3 clipmapAccessIndex = ClipmapAddressMapping(voxelIndexBase, cascadeInfo.resolution, cascadeInfo.moveOffset, _CascadeIndex);
+    int3 clipmapAccessIndex = BlockClipmapAddressMapping(blockIndex, cascadeInfo.resolution, cascadeInfo.scrolling, _CascadeIndex);
     uint2 bitOccupy = _VoxelBitOccupyClipmap[clipmapAccessIndex];
 
     // 1. count valid voxel
@@ -118,7 +118,8 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
     // 1. read page data, note that 4x4x4 voxel in same block will share 4x4x4 page data in pool
     int voxelIndex1D = _ValidVoxelBuffer[threadId.x];
     int3 voxelIndex = Index1DTo3D(voxelIndex1D, cascadeInfo.resolution);
-    int3 clipmapAccessIndex = ClipmapAddressMapping(voxelIndex, cascadeInfo.resolution, cascadeInfo.moveOffset, _CascadeIndex);
+    int3 blockIndex = voxelIndex / VOXEL_BLOCK_SIZE;
+    int3 clipmapAccessIndex = BlockClipmapAddressMapping(blockIndex, cascadeInfo.resolution, cascadeInfo.scrolling, _CascadeIndex);
     int voxelPageId = _VoxelPageClipmap.Load(uint4(clipmapAccessIndex, 0)).r;
 
     if (voxelPageId == PAGE_ID_INVALID)
@@ -250,7 +251,7 @@ void PickValidProbe(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : 
             continue;
         }
 
-        int3 voxelClipmapAccessIndex = ClipmapAddressMapping(neighborProbeIndex * VOXEL_BLOCK_SIZE, cascadeInfo.resolution, cascadeInfo.moveOffset, _CascadeIndex);
+        int3 voxelClipmapAccessIndex = BlockClipmapAddressMapping(neighborProbeIndex, cascadeInfo.resolution, cascadeInfo.scrolling, _CascadeIndex);
         uint2 bitOccupy = _VoxelBitOccupyClipmap[voxelClipmapAccessIndex].xy;
         isProbeValid = isProbeValid || any(bitOccupy != 0);
     }
@@ -305,7 +306,7 @@ void PickValidProbe(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : 
     int3 probeClipmapAccessIndex = ProbeClipmapAddressMapping(probeIndex, cascadeInfo);
     if (isProbeValid)
     {
-        int3 voxelClipmapAccessIndex = ClipmapAddressMapping(probeIndex * VOXEL_BLOCK_SIZE, cascadeInfo.resolution, cascadeInfo.moveOffset, _CascadeIndex);
+        int3 voxelClipmapAccessIndex = BlockClipmapAddressMapping(probeIndex, cascadeInfo.resolution, cascadeInfo.scrolling, _CascadeIndex);
         uint2 bitOccupy = _VoxelBitOccupyClipmap[voxelClipmapAccessIndex].xy;
 
         float3 probeCenter = float(VOXEL_BLOCK_SIZE / 2).xxx - 0.5; // 1.5 is center of [0, 1, 2, 3], unit is voxel
@@ -532,25 +533,6 @@ StructuredBuffer<int> _ValidProbeBuffer;
 
 RWTexture2D<float3> _RWRadianceProbeAtlas;
 RWTexture2D<float> _RWRadianceProbeDistanceAtlas;
-
-float3 FetchRadianceFromVoxelScene(VoxelRaytracingRequest RTRequest, VoxelRayTracingHitPayload hit)
-{
-    int voxelPageId = _VoxelPageClipmap.Load(uint4(hit.clipmapAccessIndex, 0)).r;
-    if (voxelPageId == PAGE_ID_INVALID)
-    {
-        return float3(0, 0, 0);
-    }
-
-    int3 indexInPool = PageAddressMapping(voxelPageId, _VoxelPageCountInXYZ, hit.voxelIndex);
-
-    float3 worldNormal = _VoxelPoolNormal.Load(uint4(indexInPool, 0)).rgb * 2 - 1;
-    int isBackFace = dot(worldNormal, -RTRequest.rayDir) < 0;
-
-    int3 twoSideIndex = TwoSideAddressMapping(indexInPool, isBackFace);
-    float3 hitRadiance = _VoxelPoolRadiance.Load(uint4(twoSideIndex, 0)).rgb;
-
-    return hitRadiance;
-}
 
 [numthreads(32, 1, 1)]
 void RadianceProbeCapture(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)

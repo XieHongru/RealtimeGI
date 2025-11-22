@@ -165,10 +165,12 @@ public class MiraiGIRadianceCache
                 RadianceProbeCapture(cmd, scene, cascadeId);
                 RadianceToIrradiance(cmd, scene, cascadeId);
             }
+            /*
             else
             {
                 IrradianceProbeGather(cmd, scene, cascadeId);
             }
+            */
         }
 
         Graphics.ExecuteCommandBuffer(cmd);
@@ -702,9 +704,7 @@ public class MiraiGIRadianceCache
         probeVisualizeMaterial.SetInt(Shader.PropertyToID("_CascadeIndex"), cascadeId);
         probeVisualizeMaterial.SetInt(Shader.PropertyToID("_CascadeCount"), MiraiGIClipmap.CASCADE_COUNT);
         probeVisualizeMaterial.SetVector(Shader.PropertyToID("_CascadeResolution"), (Vector3)clipmap.voxelResolution);
-        probeVisualizeMaterial.SetVector(Shader.PropertyToID("_CascadeCenter"), cascadeInfos[cascadeId].cascadeCenter);
-        probeVisualizeMaterial.SetVector(Shader.PropertyToID("_CascadeSize"), cascadeInfos[cascadeId].cascadeSize);
-        probeVisualizeMaterial.SetVector(Shader.PropertyToID("_CascadeMoveOffset"), (Vector3)cascadeInfos[cascadeId].moveOffset);
+
         probeVisualizeMaterial.SetTexture(Shader.PropertyToID("_VoxelBitOccupyClipmap"), clipmap.GetVoxelMap());
         probeVisualizeMaterial.SetTexture(Shader.PropertyToID("_IrradianceProbeClipmap"), m_IrradianceProbeClipmap);
         probeVisualizeMaterial.SetTexture(Shader.PropertyToID("_ProbeOffsetClipmap"), m_ProbeOffsetClipmap);

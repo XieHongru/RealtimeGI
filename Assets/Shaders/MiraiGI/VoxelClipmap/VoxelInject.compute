@@ -17,7 +17,7 @@ cbuffer _Params
 
 int _SurfaceCacheAtlasResolution;
 int _CascadeIndex;
-int3 _CascadeMoveOffset;
+int3 _CascadeScrolling;
 int3 _VoxelPageCountInXYZ;
 
 StructuredBuffer<int> _UpdateChunkList;
@@ -154,7 +154,8 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
 
     // 3. single head thread encode ThreadVoxelOccupy to uint64, write into bit occupy volume
     uint2 bitOccupyBlock = uint2(0, 0);
-    int3 blockAccessIndex = ClipmapAddressMapping(voxelIndex, _CascadeResolution, _CascadeMoveOffset, _CascadeIndex);
+    int3 blockIndex = voxelIndex / VOXEL_BLOCK_SIZE;
+    int3 blockAccessIndex = BlockClipmapAddressMapping(blockIndex, _CascadeResolution, _CascadeScrolling, _CascadeIndex);
     if (threadIndex == 0)
     {
         for (int i = 0; i < 64; i++)

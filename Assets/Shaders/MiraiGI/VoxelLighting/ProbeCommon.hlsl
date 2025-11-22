@@ -90,8 +90,9 @@ float3 TrilinearInterpolationFloat3(in float3 value[8], float3 rate)
 // for single clip volume
 int3 ProbeVolumeAddressMapping(int3 probeIndex3D, in CascadeInfo cascadeInfo)
 {
+    int3 scrollingInBlock = cascadeInfo.scrolling / VOXEL_BLOCK_SIZE;
     int3 probeCountInXYZ = cascadeInfo.resolution / VOXEL_BLOCK_SIZE;
-    int3 accessIndex = (probeIndex3D + cascadeInfo.moveOffset) % probeCountInXYZ;
+    int3 accessIndex = (probeIndex3D + scrollingInBlock) % probeCountInXYZ;
     return accessIndex;
 }
 

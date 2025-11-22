@@ -9,7 +9,7 @@ struct CascadeInfo
     float3 center;
     float3 size;
     float3 resolution;
-    float3 moveOffset;
+    float3 scrolling;
     float3 voxelSize;
 };
 
@@ -30,7 +30,7 @@ struct ClipmapInfo
     int3 cascadeResolution;
     float3 cascadeCenterArray[MAX_CASCADE_COUNT];
     float3 cascadeSizeArray[MAX_CASCADE_COUNT];
-    int3 cascadeMoveOffsetArray[MAX_CASCADE_COUNT];
+    int3 cascadeScrollingArray[MAX_CASCADE_COUNT];
 };
 
 struct VoxelRayTracingHitPayload
@@ -49,7 +49,7 @@ CascadeInfo ResolveCascadeInfo(ClipmapInfo clipmapInfo, int cascadeId)
     cascadeInfo.resolution = clipmapInfo.cascadeResolution;
     cascadeInfo.center = clipmapInfo.cascadeCenterArray[cascadeId];
     cascadeInfo.size = clipmapInfo.cascadeSizeArray[cascadeId];
-    cascadeInfo.moveOffset = clipmapInfo.cascadeMoveOffsetArray[cascadeId];
+    cascadeInfo.scrolling = clipmapInfo.cascadeScrollingArray[cascadeId];
     cascadeInfo.voxelSize = cascadeInfo.size / cascadeInfo.resolution;
     return cascadeInfo;
 }
@@ -153,14 +153,17 @@ bool IsTwoPointInDifferentBlock(in CascadeInfo cascadeInfo, float3 pointA, float
     return any(blockIndexA != blockIndexB);
 }
 
+#define MIN_MIP_LEVEL (0)
+#define MAX_MIP_LEVEL (2)
+
 VoxelRayTracingHitPayload VoxelRaytracingSingleCascade(CascadeInfo cascadeInfo, Texture3D<uint2> bitOccupyClipmap, inout VoxelRaytracingRequest RTRequest)
 {
     float3 samplePoint = RTRequest.rayStart - cascadeInfo.center;
     int3 voxelIndex = int3(0, 0, 0);
-    int mipLevel = 0;
+    int mipLevel = MIN_MIP_LEVEL;
     bool hitMask = false;
     bool needReadBitOccupy = true;
-    int3 clipmapAccessIndex = uint3(0, 0, 0);
+    int3 clipmapAccessIndex = int3(0, 0, 0);
 
     for (int i = 0; i < 128; i++, RTRequest.maxStepNum--)
     {
@@ -171,14 +174,15 @@ VoxelRayTracingHitPayload VoxelRaytracingSingleCascade(CascadeInfo cascadeInfo, 
             break;
         }
         
-        clipmapAccessIndex = ClipmapAddressMapping(voxelIndex, cascadeInfo.resolution, cascadeInfo.moveOffset, cascadeInfo.cascadeIndex);
+        int3 blockIndex = voxelIndex / VOXEL_BLOCK_SIZE;
+        clipmapAccessIndex = BlockClipmapAddressMapping(blockIndex, cascadeInfo.resolution, cascadeInfo.scrolling, cascadeInfo.cascadeIndex);
         uint2 bitOccupy = bitOccupyClipmap.Load(int4(clipmapAccessIndex, 0)).xy;
 
 		// 1. check if sample point hit mip 0,1,2 voxel
         bool isHitMip = IsPointInsideVoxel(cascadeInfo, voxelIndex, bitOccupy, mipLevel);
         
 		// 2. if hit mip 0 (most accurate level) we assume ray actually hit
-        if (isHitMip && mipLevel == 0)
+        if (isHitMip && mipLevel == MIN_MIP_LEVEL)
         {
             hitMask = true;
             break;
@@ -191,7 +195,7 @@ VoxelRayTracingHitPayload VoxelRaytracingSingleCascade(CascadeInfo cascadeInfo, 
 
 		// 4. if hit in cur mip, we stay in place, just go down to more accurate mip level
         mipLevel += isHitMip ? -1 : 1;
-        mipLevel = clamp(mipLevel, 0, 2);
+        mipLevel = clamp(mipLevel, MIN_MIP_LEVEL, MAX_MIP_LEVEL);
     }
     
     VoxelRayTracingHitPayload payload;

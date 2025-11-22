@@ -11,6 +11,10 @@
 #define MAX_CASCADE_COUNT 4
 #define VOXEL_COUNT_PER_BLOCK (VOXEL_BLOCK_SIZE * VOXEL_BLOCK_SIZE * VOXEL_BLOCK_SIZE)
 
+// we divide volume into 8^3 region to update voxel
+// also is min scroll step when camera move
+#define UPDATE_CHUNK_NUM (8)
+
 #define PAGE_ID_INVALID (0x3FFFFFFF)
 #define FREE_PAGE_POINTER (0)				// value in this index is pointer to next free page's id
 #define RELEASE_PAGE_POINTER (1)			// value in this index is pointer to next location to temporally store released page's id
@@ -328,14 +332,13 @@ int BitCount32(uint u)
 }
 
 // return index to sample clipmap
-int3 ClipmapAddressMapping(int3 voxelIndex, int3 cascadeResolution, int3 cascadeMoveOffset, int cascadeIndex)
+int3 BlockClipmapAddressMapping(int3 blockIndex, int3 cascadeResolution, int3 cascadeScrolling, int cascadeIndex)
 {
-	// [0 ~ 128] --> [0 ~ 32]
-    int3 blockIndex = voxelIndex / VOXEL_BLOCK_SIZE;
     int3 blockCountInXYZ = cascadeResolution / VOXEL_BLOCK_SIZE;
 
 	// if cascade move, we don't move the data, just move address when access cascade
-    int3 roundIndex = (blockIndex + cascadeMoveOffset) % blockCountInXYZ;
+    int3 scrollingInBlock = cascadeScrolling / VOXEL_BLOCK_SIZE;
+    int3 roundIndex = (blockIndex + scrollingInBlock) % blockCountInXYZ;
 
 	// use 32*32*128 to represent 4 layer clipmap, single cascade is 32x32x32
     int3 accessIndex = roundIndex + int3(0, 0, blockCountInXYZ.z * cascadeIndex);

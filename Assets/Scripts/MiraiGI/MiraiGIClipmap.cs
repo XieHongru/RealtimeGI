@@ -16,7 +16,7 @@ public class MiraiGICascadeInfo
 {
     public Vector3 cascadeCenter;
     public Vector3 cascadeSize;
-    public Vector3Int moveOffset;
+    public Vector3Int scrolling;
     public Vector3Int chunkCountInXYZ;
     public List<int> chunksToUpdate = new List<int>();
     public Vector3Int deltaChunk;
@@ -175,6 +175,7 @@ public class MiraiGIClipmap
         {
             cascadeInfos[cascadeId] = new MiraiGICascadeInfo();
             MiraiGICascadeInfo cascadeInfo = cascadeInfos[cascadeId];
+            cascadeInfo.updateChunkResolution = voxelResolution / GlobalShared.UPDATE_CHUNK_NUM;
 
             Vector3Int updateChunkDimension = new Vector3Int(
                 voxelResolution.x / cascadeInfo.updateChunkResolution.x,
@@ -185,7 +186,7 @@ public class MiraiGIClipmap
 
             cascadeInfo.cascadeCenter = Camera.main.transform.position;
             cascadeInfo.cascadeSize = new Vector3(32, 32, 32) * (1 << cascadeId);
-            cascadeInfo.moveOffset = Vector3Int.zero;
+            cascadeInfo.scrolling = Vector3Int.zero;
             cascadeInfo.chunkCountInXYZ = updateChunkDimension; // TODO: no effect
             for (int chunkId = 0; chunkId < updateChunkCount; chunkId++)
             {
@@ -373,12 +374,10 @@ public class MiraiGIClipmap
         Vector3 voxelSize = new Vector3(cascadeInfo.cascadeSize.x / voxelResolution.x,
                                         cascadeInfo.cascadeSize.y / voxelResolution.y,
                                         cascadeInfo.cascadeSize.z / voxelResolution.z);
-        Vector3 chunkSize = new Vector3(voxelSize.x * cascadeInfo.updateChunkResolution.x,
-                                        voxelSize.y * cascadeInfo.updateChunkResolution.y,
-                                        voxelSize.z * cascadeInfo.updateChunkResolution.z);
-        Vector3Int chunkResolution = new Vector3Int(voxelResolution.x / cascadeInfo.updateChunkResolution.x,
-                                                    voxelResolution.y / cascadeInfo.updateChunkResolution.y,
-                                                    voxelResolution.z / cascadeInfo.updateChunkResolution.z);
+        Vector3Int chunkResolution = cascadeInfo.updateChunkResolution;
+        Vector3 chunkSize = new Vector3(voxelSize.x * chunkResolution.x,
+                                        voxelSize.y * chunkResolution.y,
+                                        voxelSize.z * chunkResolution.z);
 
         // 1. calc moved cascade center, min move step in a chunk
         Vector3Int cameraChunkId = new Vector3Int(Mathf.FloorToInt(cameraPosition.x / chunkSize.x),
@@ -389,20 +388,15 @@ public class MiraiGIClipmap
                                                             Mathf.FloorToInt(cascadeInfo.cascadeCenter.z / chunkSize.z));
         Vector3Int deltaChunk = cameraChunkId - cascadeCenterChunkId;
 
-        // 2. calc rolling address
-        // RollingInfo is for block (4x4x4) rolling address, so we map DeltaChunk to DeltaBlock
-        Vector3Int blockCountInXYZ = voxelResolution / VOXEL_BLOCK_SIZE;
-        Vector3Int deltaVoxelBlock = new Vector3Int(deltaChunk.x * cascadeInfo.updateChunkResolution.x, 
-                                                    deltaChunk.y * cascadeInfo.updateChunkResolution.y, 
-                                                    deltaChunk.z * cascadeInfo.updateChunkResolution.z) / VOXEL_BLOCK_SIZE;
-        cascadeInfo.moveOffset += deltaVoxelBlock;
-        cascadeInfo.moveOffset.x = cascadeInfo.moveOffset.x % blockCountInXYZ.x;
-        cascadeInfo.moveOffset.y = cascadeInfo.moveOffset.y % blockCountInXYZ.y;
-        cascadeInfo.moveOffset.z = cascadeInfo.moveOffset.z % blockCountInXYZ.z;
+        // 2. calc scrolling address
+        cascadeInfo.scrolling += new Vector3Int(deltaChunk.x * chunkResolution.x, deltaChunk.y * chunkResolution.y, deltaChunk.z * chunkResolution.z);
+        cascadeInfo.scrolling.x = cascadeInfo.scrolling.x % voxelResolution.x;
+        cascadeInfo.scrolling.y = cascadeInfo.scrolling.y % voxelResolution.y;
+        cascadeInfo.scrolling.z = cascadeInfo.scrolling.z % voxelResolution.z;
 
-        cascadeInfo.moveOffset.x += (cascadeInfo.moveOffset.x < 0) ? blockCountInXYZ.x : 0;
-        cascadeInfo.moveOffset.y += (cascadeInfo.moveOffset.y < 0) ? blockCountInXYZ.y : 0;
-        cascadeInfo.moveOffset.z += (cascadeInfo.moveOffset.z < 0) ? blockCountInXYZ.z : 0;
+        cascadeInfo.scrolling.x += (cascadeInfo.scrolling.x < 0) ? voxelResolution.x : 0;
+        cascadeInfo.scrolling.y += (cascadeInfo.scrolling.y < 0) ? voxelResolution.y : 0;
+        cascadeInfo.scrolling.z += (cascadeInfo.scrolling.z < 0) ? voxelResolution.z : 0;
 
         // 3. update cascade new center
         cascadeInfo.cascadeCenter = new Vector3(cameraChunkId.x * chunkSize.x,
@@ -570,7 +564,7 @@ public class MiraiGIClipmap
         cmd.SetComputeConstantBufferParam(m_VoxelInjectCS, Shader.PropertyToID("_Params"), m_ObjectCullParamsCB[cascadeIndex], 0, Marshal.SizeOf<ObjectCullParams>());
         cmd.SetComputeIntParam(m_VoxelInjectCS, Shader.PropertyToID("_SurfaceCacheAtlasResolution"), 2048);
         cmd.SetComputeIntParam(m_VoxelInjectCS, Shader.PropertyToID("_CascadeIndex"), cascadeIndex);
-        cmd.SetComputeVectorParam(m_VoxelInjectCS, Shader.PropertyToID("_CascadeMoveOffset"), (Vector3)cascadeInfo.moveOffset);
+        cmd.SetComputeVectorParam(m_VoxelInjectCS, Shader.PropertyToID("_CascadeMoveOffset"), (Vector3)cascadeInfo.scrolling);
         cmd.SetComputeVectorParam(m_VoxelInjectCS, Shader.PropertyToID("_VoxelPageCountInXYZ"), (Vector3)voxelPageCountInXYZ);
 
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_UpdateChunkList"), m_UpdateChunkList[cascadeIndex]);
@@ -667,14 +661,14 @@ public class MiraiGIClipmap
 
         Vector4[] cascadeCenterArray = new Vector4[MAX_CASCADE_COUNT];
         Vector4[] cascadeSizeArray = new Vector4[MAX_CASCADE_COUNT];
-        Vector4[] cascadeMoveOffsetArray = new Vector4[MAX_CASCADE_COUNT];
+        Vector4[] cascadeScrollingArray = new Vector4[MAX_CASCADE_COUNT];
 
         for (int cascadeIndex = 0; cascadeIndex < cascadeInfos.Length; cascadeIndex++)
         {
             MiraiGICascadeInfo cascadeInfo = cascadeInfos[cascadeIndex];
             cascadeCenterArray[cascadeIndex] = cascadeInfo.cascadeCenter;
             cascadeSizeArray[cascadeIndex] = cascadeInfo.cascadeSize;
-            cascadeMoveOffsetArray[cascadeIndex] = (Vector3)cascadeInfo.moveOffset;
+            cascadeScrollingArray[cascadeIndex] = (Vector3)cascadeInfo.scrolling;
         }
 
         // volume
@@ -684,7 +678,7 @@ public class MiraiGIClipmap
         cmd.SetComputeVectorParam(computeShader, Shader.PropertyToID("_CascadeResolution"), (Vector3)voxelResolution);
         cmd.SetComputeVectorArrayParam(computeShader, Shader.PropertyToID("_CascadeCenterArray"), cascadeCenterArray);
         cmd.SetComputeVectorArrayParam(computeShader, Shader.PropertyToID("_CascadeSizeArray"), cascadeSizeArray);
-        cmd.SetComputeVectorArrayParam(computeShader, Shader.PropertyToID("_CascadeMoveOffsetArray"), cascadeMoveOffsetArray);
+        cmd.SetComputeVectorArrayParam(computeShader, Shader.PropertyToID("_CascadeScrollingArray"), cascadeScrollingArray);
 
         // voxel
         cmd.SetComputeVectorParam(computeShader, Shader.PropertyToID("_VoxelPageCountInXYZ"), (Vector3)voxelPageCountInXYZ);
