@@ -4,6 +4,8 @@
 
 float4 _ScreenResolution;
 float4 _CameraPosition;
+float4x4 _ProjMat;
+float4x4 _ViewProjMat;
 float4x4 _InvViewProjMat;
 
 int _FrameCountMod8;
@@ -14,8 +16,6 @@ Texture2D<float4> _GBuffer1;
 Texture2D<float> _SceneDepthTexture;
 RWTexture2D<float4> _RWScreenGatherOutput;
 
-SamplerState sampler_pointClamp;
-
 float3 ReconstructWorldPositionFromDepth(float2 uv, float depth)
 {
 	float2 ndcPosition = float2((uv.x - 0.5f) * 2.0f, (uv.y - 0.5f) * 2.0f);
@@ -24,12 +24,26 @@ float3 ReconstructWorldPositionFromDepth(float2 uv, float depth)
 	return worldPosition.xyz / worldPosition.w;
 }
 
-float3 GetWorldPosDepthTex(uint2 pixelCoord, float2 uv)
+void SetupRay(float3 worldPosition, float3 rayDirection, float sceneDepth, float stepCount,
+                out float3 rayStartUVz, out float3 rayStepUVz, out float compareTolerance)
 {
-    float rawDepth = _SceneDepthTexture.Load(int3(pixelCoord, 0)).r;
-    float pixelDepth = (1.0 - rawDepth) * 2.0 - 1.0;
-    float3 worldPosition = ReconstructWorldPositionFromDepth(uv, pixelDepth);
-    return worldPosition;
+    float4 rayStartClip = mul(_ViewProjMat, float4(worldPosition, 1));
+    float4 rayEndClip = mul(_ViewProjMat, float4(worldPosition + rayDirection * sceneDepth, 1)); // TODO: is this right?
+
+    float3 rayStartScreen = rayStartClip.xyz * rcp(rayStartClip.w);
+    float3 rayEndScreen = rayEndClip.xyz * rcp(rayEndClip.w);
+
+    float4 rayDepthClip = rayStartClip + mul(_ProjMat, float4(0, 0, sceneDepth, 0));
+    float3 rayDepthScreen = rayDepthClip.xyz * rcp(rayDepthClip.w);
+    float3 rayStepScreen = rayEndScreen - rayStartScreen;
+
+    compareTolerance = max(abs(rayStepScreen.z), (rayStartScreen.z - rayDepthScreen.z) * 2);
+    rayStartUVz = float3(rayStartScreen.xy * float2(0.5, -0.5) + 0.5, rayStartScreen.z);
+    rayStepUVz = float3(rayStepScreen.xy * float2(0.5, -0.5), rayStepScreen.z);
+
+    float step = 1.0 / float(stepCount);
+    rayStepUVz *= step;
+    compareTolerance *= step;
 }
 
 [numthreads(8, 8, 1)]
@@ -41,44 +55,91 @@ void ScreenGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV
 		return;
 	}
 
-	float2 uv = (float2(pixelCoord) + 0.5) / _ScreenResolution.xy;
-    float3 worldPosition = GetWorldPosDepthTex(pixelCoord, uv);
+    float2 uv = (float2(pixelCoord) + 0.5) / _ScreenResolution.xy;
+    ClipmapInfo clipmapInfo = ResolveClipmapInfo();
+    
+    // 1. do some setup
+    float rawDepth = _SceneDepthTexture.Load(int3(pixelCoord, 0)).r;
+    float pixelDepth = (1.0 - rawDepth) * 2.0 - 1.0;
+    float3 worldPosition = ReconstructWorldPositionFromDepth(uv, pixelDepth);
+    float3 viewDirection = normalize(worldPosition - _CameraPosition);
 	
-	ClipmapInfo clipmapInfo = ResolveClipmapInfo();
     float3 baseColor = _GBuffer0.SampleLevel(sampler_linearClamp, uv, 0).xyz;
     float3 worldNormal = _GBuffer1.SampleLevel(sampler_linearClamp, uv, 0).xyz;
-    baseColor = (0.18).xxx;
-
-    /*
-    float3 color = float3(0, 0, 0);
-    for (int cascadeId = 0; cascadeId < clipmapInfo.cascadeCount; cascadeId++)
-    {
-        CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, cascadeId);
-		
-        float3 translatedPosition = (worldPosition - cascadeInfo.center) / cascadeInfo.size + 0.5f;
-        bool isPixelInClipmap = all(0 < translatedPosition) && all(translatedPosition < 1);
-        if (!isPixelInClipmap)
-        {
-            continue;
-        }
-
-        float3 indirectLighting = ProbeEvaluateIrradiance(
-            _IrradianceProbeClipmap, _ProbeOffsetClipmap,
-            _RadianceProbeDistanceAtlas, _RadianceProbeIdClipmap, sampler_linearClamp,
-            cascadeInfo, _RadianceProbeCountInAtlasXY, _RadianceProbeResolution,
-            worldPosition, worldNormal
-        );
-
-        color += indirectLighting * baseColor;
-        break;
-    }
-    */
     
     uint2 randomSeed = Rand3DPCG16(uint3(uv * 1145.14, _FrameCountMod8)).xy;
-    float3x3 TangentBasis = GetTangentBasis(worldNormal);
-
-    int sampleCount = 1;
+    float3x3 tangentBasis = GetTangentBasis(worldNormal);
+    int sampleCount = 4;
+    int stepCount = 16;
     float3 color = float3(0, 0, 0);
+    
+    // 2. trace screen ray
+    for (int i = 0; i < sampleCount; i++)
+    {
+        float2 E = Hammersley16(i, sampleCount, randomSeed);
+        float4 tangentL = UniformSampleHemisphere(E);
+        float3 rayDirection = mul(tangentL.xyz, tangentBasis);
+        float samplePDF = max(tangentL.w, 1e-3);
+
+        float3 rayStartUVz, rayStepUVz;
+        float compareTolerance;
+        SetupRay(
+            worldPosition, rayDirection, pixelDepth, stepCount, // in
+            rayStartUVz, rayStepUVz, compareTolerance // out
+        );
+
+        float3 rayUVz = rayStartUVz + rayStepUVz * 1;
+        float isHit = 0;
+        for (int j = 0; j < stepCount; j++)
+        {
+            float sampleDepth = _SceneDepthTexture.Load(int3(rayUVz.xy, 0)).r;
+            float depthDiff = rayUVz.z - sampleDepth;
+
+            bool outOfScreen = any(rayUVz.xy > 1) || any(rayUVz.xy < 0);
+            bool hit = abs(depthDiff + compareTolerance) < compareTolerance;
+
+            if (hit || outOfScreen)
+            {
+                isHit = outOfScreen ? 0 : 1;
+                break;
+            }
+
+            rayUVz += rayStepUVz;
+        }
+    
+        // screen ray hit
+        if (isHit)
+        {
+
+        }
+        // screen ray miss
+        else
+        {
+            for (int cascadeId = _RadianceProbeMinCascadeLevel; cascadeId < clipmapInfo.cascadeCount; cascadeId++)
+            {
+                CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, cascadeId);
+                float3 translatedPosition = (worldPosition - cascadeInfo.center) / cascadeInfo.size + 0.5;
+                bool isPixelInClipmap = all(0 < translatedPosition) && all(translatedPosition < 1);
+                if (!isPixelInClipmap)
+                {
+                    continue;
+                }
+
+                float3 radiance = ProbeEvaluateRadiance(
+                    _RadianceProbeAtlas, _RadianceProbeDistanceAtlas,
+                    _RadianceProbeIdClipmap, _ProbeOffsetClipmap, sampler_linearClamp,
+                    cascadeInfo, _RadianceProbeCountInAtlasXY, _RadianceProbeResolution,
+                    worldPosition, rayDirection
+                );
+                color += radiance / samplePDF;
+                break;
+            }
+            
+        }
+    }
+
+    color /= float(sampleCount);
+    color *= baseColor / PI;
 
     _RWScreenGatherOutput[pixelCoord] = float4(color, 1);
 }

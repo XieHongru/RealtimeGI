@@ -26,6 +26,22 @@ float4 UniformSampleSphere(float2 E)
     return float4(H, PDF);
 }
 
+float4 UniformSampleHemisphere(float2 E)
+{
+    float Phi = 2 * PI * E.x;
+    float CosTheta = E.y;
+    float SinTheta = sqrt(1 - CosTheta * CosTheta);
+
+    float3 H;
+    H.x = SinTheta * cos(Phi);
+    H.y = SinTheta * sin(Phi);
+    H.z = CosTheta;
+
+    float PDF = 1.0 / (2 * PI);
+
+    return float4(H, PDF);
+}
+
 float3x3 GetTangentBasis(float3 TangentZ)
 {
     const float Sign = TangentZ.z >= 0 ? 1 : -1;

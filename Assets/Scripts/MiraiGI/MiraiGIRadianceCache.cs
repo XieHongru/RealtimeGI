@@ -670,6 +670,7 @@ public class MiraiGIRadianceCache
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ValidProbeBuffer"), m_ValidProbeBuffer);
 
             // pass
+            cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_FrameCountMod8"), (int)frameNumberRenderThread % 8);
             cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_SampleCount"), Mathf.Clamp(GlobalSettings.Instance.irradianceProbeSampleCount, 0, 4));
             cmd.SetComputeFloatParam(m_VoxelLightingCS, Shader.PropertyToID("_TemporalWeight"), Mathf.Clamp(GlobalSettings.Instance.irradianceProbeTemporalWeight, 0.0f, 1.0f));
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWIrradianceProbeClipmap"), m_IrradianceProbeClipmap);

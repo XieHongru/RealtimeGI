@@ -48,7 +48,10 @@ public class MiraiGIScreenGather
 
         cmd.SetComputeVectorParam(m_ScreenGatherCS, Shader.PropertyToID("_ScreenResolution"), new Vector4(Camera.main.pixelWidth, Camera.main.pixelHeight));
         cmd.SetComputeVectorParam(m_ScreenGatherCS, Shader.PropertyToID("_CameraPosition"), Camera.main.transform.position);
+        cmd.SetComputeMatrixParam(m_ScreenGatherCS, Shader.PropertyToID("_ProjMat"), Camera.main.projectionMatrix);
+        cmd.SetComputeMatrixParam(m_ScreenGatherCS, Shader.PropertyToID("_ViewProjMat"), Camera.main.projectionMatrix * Camera.main.worldToCameraMatrix);
         cmd.SetComputeMatrixParam(m_ScreenGatherCS, Shader.PropertyToID("_InvViewProjMat"), (Camera.main.projectionMatrix * Camera.main.worldToCameraMatrix).inverse);
+        cmd.SetComputeIntParam(m_ScreenGatherCS, Shader.PropertyToID("_FrameCountMod8"), (int)radianceCache.frameNumberRenderThread % 8);
 
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_GBuffer0"), Shader.GetGlobalTexture("_GBuffer0"));
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_GBuffer1"), Shader.GetGlobalTexture("_GBuffer2"));
