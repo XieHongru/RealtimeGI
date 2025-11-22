@@ -87,6 +87,10 @@ void BuildVoxelLightingIndirectArgs(uint3 threadId : SV_DispatchThreadID, uint3 
 // -------------------------------------------------------------------------------- //
 #pragma kernel VoxelLighting
 
+#ifndef USE_DISTANCE_FIELD
+#define USE_DISTANCE_FIELD 0
+#endif
+
 float4x4 _CameraViewProjectionMatrix;
 float3 _MainLightDirection;
 float4 _MainLightColor;
@@ -172,7 +176,11 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
         RTRequest.maxStepNum = 128000;
         RTRequest.maxDistance = _ShadowRayMaxDistance;
 
+#if USE_DISTANCE_FIELD
+        VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
+#else
         VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _VoxelBitOccupyClipmap, RTRequest);
+#endif
         mainLightShadow = hit.isHit ? 0 : 1;
     }
 
@@ -344,9 +352,8 @@ void PickValidProbe(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : 
 groupshared int gs_SharedProbeState[64];
 groupshared int gs_SharedReadWriteIndex[64];
 
-int _RadianceProbeCount;
+int _MaxRadianceProbeNum;
 
-RWStructuredBuffer<int> _RWRadianceProbeAllocator;
 RWStructuredBuffer<int> _RWRadianceProbeFreeList;
 RWStructuredBuffer<int> _RWRadianceProbeReleaseList;
 
@@ -389,6 +396,7 @@ void RadianceProbeAllocate(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     // 2. head thread allocate space for each probe
     if (groupThreadIndex == 0)
     {
+        // 2.1. count num probes to add or remove in current thread group
         int probeAddCounter = 0;
         int probeReleaseCounter = 0;
         for (int i = 0; i < 64; i++)
@@ -396,14 +404,15 @@ void RadianceProbeAllocate(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
             probeAddCounter += (gs_SharedProbeState[i] == PROBE_STATE_NEED_ADD) ? 1 : 0;
             probeReleaseCounter += (gs_SharedProbeState[i] == PROBE_STATE_NEED_RELEASE) ? 1 : 0;
         }
-
+        
+        // 2.2. allocate space
         int addProbeStartIndex = 0;
-        InterlockedAdd(_RWRadianceProbeAllocator[FREE_PROBE_POINTER], probeAddCounter, addProbeStartIndex);
+        InterlockedAdd(_RWRadianceProbeFreeList[_MaxRadianceProbeNum], probeAddCounter, addProbeStartIndex);
 
         int releaseProbeStartIndex = 0;
-        InterlockedAdd(_RWRadianceProbeAllocator[RELEASE_PROBE_POINTER], probeReleaseCounter, releaseProbeStartIndex);
+        InterlockedAdd(_RWRadianceProbeReleaseList[_MaxRadianceProbeNum], probeReleaseCounter, releaseProbeStartIndex);
 
-        // boardcast read write index to each thread
+        // 2.3 boardcast read write index to each thread
         for (int i = 0; i < 64; i++)
         {
             if (gs_SharedProbeState[i] == PROBE_STATE_NEED_ADD)
@@ -426,7 +435,7 @@ void RadianceProbeAllocate(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     {
         int freeListReadIndex = gs_SharedReadWriteIndex[groupThreadIndex];
 
-        if (freeListReadIndex < _RadianceProbeCount)
+        if (freeListReadIndex < _MaxRadianceProbeNum)
         {
             probeIdInAtlas = _RWRadianceProbeFreeList[freeListReadIndex];
         }
@@ -458,15 +467,17 @@ StructuredBuffer<int> _ValidProbeCounter;
 RWStructuredBuffer<int> _RWProbeReleaseIndirectArgs;
 RWStructuredBuffer<int> _RWProbeCaptureIndirectArgs;
 RWStructuredBuffer<int> _RWProbeOutputMergeIndirectArgs;
+RWStructuredBuffer<int> _RWProbeCountToReleaseCounter;
 
 [numthreads(1, 1, 1)]
 void BuildRadianceProbeReleaseAndCaptureIndirectArgs(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
     int3 probeCountInXYZ = _CascadeResolution / VOXEL_BLOCK_SIZE;
+    int pointerIndex = _MaxRadianceProbeNum; // we use last element as allocator pointer
 
     // 1. build indirect args for atlas space release
-    int freePointer = min(_RWRadianceProbeAllocator[FREE_PROBE_POINTER], _RadianceProbeCount);
-    int releasePointer = _RWRadianceProbeAllocator[RELEASE_PROBE_POINTER];
+    int freePointer = min(_RWRadianceProbeFreeList[pointerIndex], _MaxRadianceProbeNum);
+    int releasePointer = _RWRadianceProbeReleaseList[pointerIndex];
     int probeCountToRelease = releasePointer;
 
     _RWProbeReleaseIndirectArgs[0] = ceil(float(probeCountToRelease) / float(_ThreadCountForProbeRelease));
@@ -474,12 +485,11 @@ void BuildRadianceProbeReleaseAndCaptureIndirectArgs(uint3 threadId : SV_Dispatc
     _RWProbeReleaseIndirectArgs[2] = 1;
 
     // 2. reset pointer
-    _RWRadianceProbeAllocator[FREE_PROBE_POINTER] = freePointer - probeCountToRelease;
-    _RWRadianceProbeAllocator[RELEASE_PROBE_POINTER] = 0;
+    _RWRadianceProbeFreeList[pointerIndex] = freePointer - probeCountToRelease;
+    _RWRadianceProbeReleaseList[pointerIndex] = 0;
 
     // 3. copy for probe release pass
-    _RWRadianceProbeAllocator[FREE_PROBE_POINTER_READ_ONLY] = freePointer;
-    _RWRadianceProbeAllocator[RELEASE_PROBE_POINTER_READ_ONLY] = releasePointer;
+    _RWProbeCountToReleaseCounter[0] = probeCountToRelease;
     
     // 4. build indirect args for radiance probe capture
     int probeCountToCapture = _ValidProbeCounter[0];
@@ -499,18 +509,21 @@ void BuildRadianceProbeReleaseAndCaptureIndirectArgs(uint3 threadId : SV_Dispatc
 // ---------------------------------------- (^^_) ---------------------------------------- //
 #pragma kernel RadianceProbeRelease
 
+StructuredBuffer<int> _ProbeCountToReleaseCounter;
+
 [numthreads(8, 1, 1)]
 void RadianceProbeRelease(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
     int threadIndex = threadId.x;
-    int probeCountToRelease = _RWRadianceProbeAllocator[RELEASE_PROBE_POINTER_READ_ONLY];
+    int pointerIndex = _MaxRadianceProbeNum; // we use last element as allocator pointer
+    int probeCountToRelease = _ProbeCountToReleaseCounter[0];
 
     if (threadIndex >= probeCountToRelease)
     {
         return;
     }
 
-    int freeListOffset = _RWRadianceProbeAllocator[FREE_PROBE_POINTER];
+    int freeListOffset = _RWRadianceProbeFreeList[pointerIndex];
     int writeIndex = freeListOffset + threadIndex;
 
     int pageId = _RWRadianceProbeReleaseList[threadIndex];
@@ -586,8 +599,12 @@ void RadianceProbeCapture(uint3 threadId : SV_DispatchThreadID, uint3 groupThrea
     RTRequest.maxCascadeIndex = _CascadeCount - 1;
     RTRequest.maxStepNum = 128000;
     RTRequest.maxDistance = 12800000;
-
+    
+#if USE_DISTANCE_FIELD
+    VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
+#else
     VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _VoxelBitOccupyClipmap, RTRequest);
+#endif
 
     // 4. fetch radiance
     float3 hitRadiance = float3(0, 0, 0);
@@ -836,10 +853,14 @@ void IrradianceProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
         RTRequest.maxDistance = 12800000;
     
 #if USE_RADIANCE_PROBE_AS_FALLBACK
-    RTRequest.maxDistance = GetRadianceProbeSize(cascadeInfo);
+        RTRequest.maxDistance = GetRadianceProbeSize(cascadeInfo);
 #endif
 
+#if USE_DISTANCE_FIELD
+        VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
+#else
         VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _VoxelBitOccupyClipmap, RTRequest);
+#endif
 
     // 3. fetch radiance
         float3 hitRadiance = float3(0, 0, 0);

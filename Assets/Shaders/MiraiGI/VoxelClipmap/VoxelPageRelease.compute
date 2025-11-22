@@ -2,53 +2,58 @@
 #pragma kernel BuildVoxelPageReleaseIndirectArgs
 
 int3 _VoxelPageCountInXYZ;
-int _NumThreadsForPageRelease;
+int _ThreadCountForPageRelease;
 
-StructuredBuffer<int> _VoxelPageReleaseList;
-RWStructuredBuffer<int> _RWVoxelPageAllocator;
 RWStructuredBuffer<int> _RWIndirectArgs;
 RWStructuredBuffer<int> _RWVoxelPageFreeList;
+RWStructuredBuffer<int> _RWVoxelPageReleaseList;
+RWStructuredBuffer<int> _RWPageCountToReleaseCounter;
 
 [numthreads(1, 1, 1)]
 void BuildVoxelPageReleaseIndirectArgs(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
     int maxPageNum = _VoxelPageCountInXYZ.x * _VoxelPageCountInXYZ.y * _VoxelPageCountInXYZ.z;
-    int freePointer = min(_RWVoxelPageAllocator[FREE_PAGE_POINTER], maxPageNum);
-    int releasePointer = _RWVoxelPageAllocator[RELEASE_PAGE_POINTER];
-    int numPagesToRelease = releasePointer;
+    int pointerIndex = maxPageNum; // we use last element as allocator pointer
+    
+    int freePointer = min(_RWVoxelPageFreeList[pointerIndex], maxPageNum);
+    int releasePointer = _RWVoxelPageReleaseList[pointerIndex];
+    int pageCountToRelease = releasePointer;
 
     // build args
-    _RWIndirectArgs[0] = ceil(float(numPagesToRelease) / float(_NumThreadsForPageRelease));
+    _RWIndirectArgs[0] = ceil(float(pageCountToRelease) / float(_ThreadCountForPageRelease));
     _RWIndirectArgs[1] = 1;
     _RWIndirectArgs[2] = 1;
 
     // reset pointer
-    _RWVoxelPageAllocator[FREE_PAGE_POINTER] = freePointer - numPagesToRelease;
-    _RWVoxelPageAllocator[RELEASE_PAGE_POINTER] = 0;
+    _RWVoxelPageFreeList[pointerIndex] = freePointer - pageCountToRelease;
+    _RWVoxelPageReleaseList[pointerIndex] = 0;
 
     // copy for next pass
-    _RWVoxelPageAllocator[FREE_PAGE_POINTER_READ_ONLY] = freePointer;
-    _RWVoxelPageAllocator[RELEASE_PAGE_POINTER_READ_ONLY] = releasePointer;
+    _RWPageCountToReleaseCounter[0] = pageCountToRelease;
 }
 
 // --------------------------------------------------------------------------------------- //
-
 #pragma kernel VoxelPageRelease
+
+StructuredBuffer<int> _PageCountToReleaseCounter;
 
 [numthreads(8, 1, 1)]
 void VoxelPageRelease(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
+    int maxPageNum = _VoxelPageCountInXYZ.x * _VoxelPageCountInXYZ.y * _VoxelPageCountInXYZ.z;
+    int pointerIndex = maxPageNum; // we use last element as allocator pointer
+    
     int threadIndex = threadId.x;
-    int numPagesToRelease = _RWVoxelPageAllocator[RELEASE_PAGE_POINTER_READ_ONLY];
+    int pageCountToRelease = _PageCountToReleaseCounter[0];
 
-    if (threadIndex >= numPagesToRelease)
+    if (threadIndex >= pageCountToRelease)
     {
         return;
     }
 
-    int freeListOffset = _RWVoxelPageAllocator[FREE_PAGE_POINTER];
+    int freeListOffset = _RWVoxelPageFreeList[pointerIndex];
     int writeIndex = freeListOffset + threadIndex;
 
-    int pageId = _VoxelPageReleaseList[threadIndex];
+    int pageId = _RWVoxelPageReleaseList[threadIndex];
     _RWVoxelPageFreeList[writeIndex] = pageId;
 }

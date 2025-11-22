@@ -23,6 +23,7 @@ Texture3D<float4> _VoxelPoolBaseColor;
 Texture3D<float4> _VoxelPoolNormal;
 Texture3D<float4> _VoxelPoolEmissive;
 Texture3D<float3> _VoxelPoolRadiance;
+Texture3D<float> _DistanceFieldClipmap;
 
 ClipmapInfo ResolveClipmapInfo()
 {

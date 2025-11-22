@@ -36,15 +36,19 @@ RWTexture3D<uint2> _RWVoxelBitOccupyClipmap;
 //RWTexture3D<float> _RWVoxelOccupy;
 
 RWTexture3D<int> _RWVoxelPageClipmap;
-RWStructuredBuffer<int> _RWVoxelPageAllocator;
 RWStructuredBuffer<int> _RWVoxelPageFreeList;
 RWStructuredBuffer<int> _RWVoxelPageReleaseList;
 RWTexture3D<float3> _RWVoxelPoolBaseColor;
 RWTexture3D<float3> _RWVoxelPoolNormal;
 RWTexture3D<float3> _RWVoxelPoolEmissive;
+RWTexture3D<float> _RWDistanceFieldClipmap;
 
 groupshared bool gs_ThreadVoxelOccupy[64];
 groupshared int gs_VoxelPageId;
+
+#ifndef USE_DISTANCE_FIELD
+#define USE_DISTANCE_FIELD 0
+#endif
 
 [numthreads(4, 4, 4)]
 void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
@@ -67,6 +71,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
     float2 uvInAtlas = (float2) 0;
     float4x4 localToWorldMatrix = (float4x4) 0; // for transform hit normal to world
     float4 bilinearValidMask = (float4) 0; // valid pixel mask when doing bilinear filter in surface cache atlas
+    float distance = 128000;
 
     // 1. loop all objects in update chunk, see if clipmap's voxel intersect with object
     for (int i = 0; i < numObjectsInUpdateChunk; i++)
@@ -136,6 +141,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
             {
                 hasVoxel = true;
                 localToWorldMatrix = objectInfo.localToWorldMatrix;
+                distance = worldDistance;
                 
                 //_RWVoxelOccupy[voxelIndex + uint3(0, 0, 128 * _CascadeIndex)] = uvInAtlas.y;
                 break;
@@ -171,14 +177,16 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
     {
         bool blockHasVoxel = any(bitOccupyBlock > 0);
         int pageId = _RWVoxelPageClipmap[blockAccessIndex];
+        int maxPageNum = _VoxelPageCountInXYZ.x * _VoxelPageCountInXYZ.y * _VoxelPageCountInXYZ.z;
+        int pointerIndex = maxPageNum; // we use last element as allocator pointer
 
         // 4.1. current block has voxel but not allocate voxel page, we just allocate for it
         if (pageId == PAGE_ID_INVALID && blockHasVoxel)
         {
             int freePointer = 0;
-            InterlockedAdd(_RWVoxelPageAllocator[FREE_PAGE_POINTER], 1, freePointer);
+            InterlockedAdd(_RWVoxelPageFreeList[pointerIndex], 1, freePointer);
             
-            int maxPageNum = _VoxelPageCountInXYZ.x * _VoxelPageCountInXYZ.y * _VoxelPageCountInXYZ.z;
+            // check if free pointer is valid
             if (freePointer < maxPageNum)
             {
                 pageId = _RWVoxelPageFreeList[freePointer];
@@ -189,7 +197,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         else if (pageId != PAGE_ID_INVALID && !blockHasVoxel)
         {
             int releasePointer = 0;
-            InterlockedAdd(_RWVoxelPageAllocator[RELEASE_PAGE_POINTER], 1, releasePointer);
+            InterlockedAdd(_RWVoxelPageReleaseList[pointerIndex], 1, releasePointer);
             _RWVoxelPageReleaseList[releasePointer] = pageId;
             pageId = PAGE_ID_INVALID;
         }
@@ -215,4 +223,55 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         _RWVoxelPoolNormal[writeIndex] = worldNormal;
         _RWVoxelPoolEmissive[writeIndex] = emissive;
     }
+    
+    // 6. write to distance field
+#if USE_DISTANCE_FIELD
+    int3 voxelWriteIndex = blockAccessIndex * VOXEL_BLOCK_SIZE + voxelIndex % VOXEL_BLOCK_SIZE;
+    _RWDistanceFieldClipmap[voxelWriteIndex] = hasVoxel ? 0 : 1;
+#endif
+}
+
+// --------------------------------------------------------------------------------------- //
+#pragma kernel DistanceFieldPropagate
+
+Texture3D<float> _DistanceFieldClipmap;
+RWTexture3D<float> _RWVoxelNeighborClipmap;
+
+[numthreads(4, 4, 4)]
+void DistanceFieldPropagate(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    int3 clipmapOffset = int3(0, 0, _CascadeIndex * _CascadeResolution.z);
+    int3 readWriteIndex = threadId + clipmapOffset;
+
+    int3 voxelIndex = (threadId + _CascadeScrolling) % _CascadeResolution;
+    float voxelSize = _CascadeSize.x / float(_CascadeResolution.z);
+
+    // 1. clamp sample to logic boundary
+    int3 offsets[6] = { int3(-1, 0, 0), int3(1, 0, 0), int3(0, -1, 0), int3(0, 1, 0), int3(0, 0, -1), int3(0, 0, 1) };
+    for (int i = 0; i < 6; i++)
+    {
+        int3 offsetIndex = voxelIndex + offsets[i];
+        if (any(offsetIndex < 0) || any(offsetIndex >= _CascadeResolution))
+        {
+            offsets[i] = int3(0, 0, 0);
+        }
+    }
+
+    // 2. sample neighbor cell's distance
+    float distance = DecodeDistance(_DistanceFieldClipmap[readWriteIndex], voxelSize);
+    float neighborSamples[6];
+    for (int i = 0; i < 6; i++)
+    {
+        // clamp sample wrap physical boundary
+        int3 offsetIndex = (threadId + offsets[i]) % _CascadeResolution;
+        offsetIndex += (offsetIndex < int3(0, 0, 0)) * _CascadeResolution;
+        offsetIndex += clipmapOffset;
+        
+        float neighborVal = DecodeDistance(_DistanceFieldClipmap[offsetIndex], voxelSize);
+        distance = min(distance, neighborVal + voxelSize);
+        neighborSamples[i] = neighborVal;
+    }
+
+    // 3. write distance
+    _RWDistanceFieldClipmap[readWriteIndex] = EncodeDistance(distance, voxelSize);
 }

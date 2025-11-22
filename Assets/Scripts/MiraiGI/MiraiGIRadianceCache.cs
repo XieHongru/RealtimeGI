@@ -44,8 +44,10 @@ public class MiraiGIRadianceCache
     RenderTexture m_RadianceProbeOutput;
     RenderTexture m_RadianceProbeDistanceOutput;
 
+    ComputeBuffer m_ProbeCountToReleaseCounter;
+
     // radiance probe need large resolution to store radiance in atlas, so we sparse allocate it
-    ComputeBuffer m_RadianceProbeAllocator;
+    // last element in list is pointer to next read write position
     ComputeBuffer m_RadianceProbeFreeList;      // empty probe id list
     ComputeBuffer m_RadianceProbeReleaseList;   // pending probes to release at this frame
     RenderTexture m_RadianceProbeIdClipmap;      // store index to RadianceProbeAtlas
@@ -63,7 +65,6 @@ public class MiraiGIRadianceCache
     int[] m_ValidVoxelBufferInitData;
     int[] m_ValidProbeCounterInitData;
     int[] m_ValidProbeBufferInitData;
-    int[] m_RadianceProbeAllocatorInitData;
     int[] m_RadianceProbeFreeListInitData;
 
     public RenderTexture GetVoxelPoolRadiance() => m_VoxelPoolRadiance;
@@ -102,7 +103,8 @@ public class MiraiGIRadianceCache
         m_RadianceProbeOutput.Release();
         m_RadianceProbeDistanceOutput.Release();
 
-        m_RadianceProbeAllocator.Release();
+        m_ProbeCountToReleaseCounter?.Release();
+
         m_RadianceProbeFreeList.Release();
         m_RadianceProbeReleaseList.Release();
         m_RadianceProbeIdClipmap.Release();
@@ -129,7 +131,8 @@ public class MiraiGIRadianceCache
         m_RadianceProbeOutput = null;
         m_RadianceProbeDistanceOutput = null;
 
-        m_RadianceProbeAllocator = null;
+        m_ProbeCountToReleaseCounter = null;
+
         m_RadianceProbeFreeList = null;
         m_RadianceProbeReleaseList = null;
         m_RadianceProbeIdClipmap = null;
@@ -325,28 +328,23 @@ public class MiraiGIRadianceCache
             // TODO: init
         }
 
-        if (m_RadianceProbeAllocator == null)
-        {
-            m_RadianceProbeAllocator = new ComputeBuffer(4, sizeof(int));
-            m_RadianceProbeAllocatorInitData = new int[4] { 0, 0, 0, 0 };
-            m_RadianceProbeAllocator.SetData(m_RadianceProbeAllocatorInitData);
-        }
-
         int radianceProbeCount = m_RadianceProbeCountInAtlasXY.x * m_RadianceProbeCountInAtlasXY.y;
+        int elementCountFreeList = radianceProbeCount + 1;  // we use last element as allocator pointer
         if (m_RadianceProbeFreeList == null)
         {
-            m_RadianceProbeFreeList = new ComputeBuffer(radianceProbeCount, sizeof(int));
-            m_RadianceProbeFreeListInitData = new int[radianceProbeCount];
+            m_RadianceProbeFreeList = new ComputeBuffer(elementCountFreeList, sizeof(int));
+            m_RadianceProbeFreeListInitData = new int[elementCountFreeList];
             for (int i = 0; i < radianceProbeCount; i++)
             {
                 m_RadianceProbeFreeListInitData[i] = i;
             }
+            m_RadianceProbeFreeListInitData[radianceProbeCount] = 0;
             m_RadianceProbeFreeList.SetData(m_RadianceProbeFreeListInitData);
         }
 
         if (m_RadianceProbeReleaseList == null)
         {
-            m_RadianceProbeReleaseList = new ComputeBuffer(radianceProbeCount, sizeof(int));
+            m_RadianceProbeReleaseList = new ComputeBuffer(elementCountFreeList, sizeof(int));
         }
 
         if (m_RadianceProbeReleaseIndirectArgs == null)
@@ -436,6 +434,7 @@ public class MiraiGIRadianceCache
             int kernel = m_VoxelLightingCS.FindKernel("VoxelLighting");
 
             bool useProbeOcclusionTest = GlobalSettings.Instance.useProbeOcclusionTest > 0;
+            bool useDistanceField = GlobalSettings.Instance.useDistanceField > 0;
             if (useProbeOcclusionTest)
             {
                 m_VoxelLightingCS.EnableKeyword("USE_PROBE_OCCLUSION_TEST");
@@ -443,6 +442,14 @@ public class MiraiGIRadianceCache
             else
             {
                 m_VoxelLightingCS.DisableKeyword("USE_PROBE_OCCLUSION_TEST");
+            }
+            if (useDistanceField)
+            {
+                m_VoxelLightingCS.EnableKeyword("USE_DISTANCE_FIELD");
+            }
+            else
+            {
+                m_VoxelLightingCS.DisableKeyword("USE_DISTANCE_FIELD");
             }
 
             // voxel RT
@@ -512,9 +519,13 @@ public class MiraiGIRadianceCache
         Vector3Int checkerBoardOffset = GlobalShared.Index1DTo3DLinear((int)frameNumberRenderThread % maxFrameNum, 
                                                                         new Vector3Int(checkerBoardSize, checkerBoardSize, checkerBoardSize));
 
-        int radianceProbeCount = m_RadianceProbeCountInAtlasXY.x * m_RadianceProbeCountInAtlasXY.y;
+        int maxRadianceProbeNum = m_RadianceProbeCountInAtlasXY.x * m_RadianceProbeCountInAtlasXY.y;
         Vector3Int probeCountInXYZ = clipmap.voxelResolution / GlobalShared.VOXEL_BLOCK_SIZE;
         Vector3Int probeCountToUpdateInXYZ = probeCountInXYZ / checkerBoardSize;
+
+        m_ProbeCountToReleaseCounter?.Release();
+        m_ProbeCountToReleaseCounter = new ComputeBuffer(1, sizeof(int));
+        m_ProbeCountToReleaseCounter.SetData(new int[1] { 0 });
 
         // 1. allocate atlas space for radiance probe
         {
@@ -524,9 +535,8 @@ public class MiraiGIRadianceCache
 
             cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_CheckerBoardInfo"),
                                         new Vector4(checkerBoardOffset.x, checkerBoardOffset.y, checkerBoardOffset.z, checkerBoardSize));
-            cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_RadianceProbeCount"), radianceProbeCount);
+            cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_MaxRadianceProbeNum"), maxRadianceProbeNum);
 
-            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeAllocator"), m_RadianceProbeAllocator);
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeFreeList"), m_RadianceProbeFreeList);
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeReleaseList"), m_RadianceProbeReleaseList);
 
@@ -540,13 +550,15 @@ public class MiraiGIRadianceCache
         {
             int kernel = m_VoxelLightingCS.FindKernel("BuildRadianceProbeReleaseAndCaptureIndirectArgs");
 
-            cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_RadianceProbeCount"), radianceProbeCount);
+            cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_MaxRadianceProbeNum"), maxRadianceProbeNum);
             cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeResolution"), (Vector3) clipmap.voxelResolution);
             cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_RadianceProbeResolution"), m_RadianceProbeResolution);
             cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_ThreadCountForProbeRelease"), 8);
             cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_ThreadCountForProbeCapture"), new Vector2(8, 8));
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ValidProbeCounter"), m_ValidProbeCounter);
-            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeAllocator"), m_RadianceProbeAllocator);
+            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWProbeCountToReleaseCounter"), m_ProbeCountToReleaseCounter);
+            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeFreeList"), m_RadianceProbeFreeList);
+            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeReleaseList"), m_RadianceProbeReleaseList);
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWProbeReleaseIndirectArgs"), m_RadianceProbeReleaseIndirectArgs);
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWProbeCaptureIndirectArgs"), m_RadianceProbeCaptureIndirectArgs);
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWProbeOutputMergeIndirectArgs"), m_RadianceProbeOutputMergeIndirectArgs);
@@ -558,7 +570,8 @@ public class MiraiGIRadianceCache
         {
             int kernel = m_VoxelLightingCS.FindKernel("RadianceProbeRelease");
 
-            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeAllocator"), m_RadianceProbeAllocator);
+            cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_MaxRadianceProbeNum"), maxRadianceProbeNum);
+            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ProbeCountToReleaseCounter"), m_ProbeCountToReleaseCounter);
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeFreeList"), m_RadianceProbeFreeList);
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeReleaseList"), m_RadianceProbeReleaseList);
 
@@ -568,6 +581,16 @@ public class MiraiGIRadianceCache
         // 4. probe capture
         {
             int kernel = m_VoxelLightingCS.FindKernel("RadianceProbeCapture");
+
+            bool useDistanceField = GlobalSettings.Instance.useDistanceField > 0;
+            if (useDistanceField)
+            {
+                m_VoxelLightingCS.EnableKeyword("USE_DISTANCE_FIELD");
+            }
+            else
+            {
+                m_VoxelLightingCS.DisableKeyword("USE_DISTANCE_FIELD");
+            }
 
             clipmap.SetupVoxelRaytracingParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
             SetupProbeVolumeParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
@@ -645,6 +668,7 @@ public class MiraiGIRadianceCache
         {
             bool sampleRadianceProbe = GlobalSettings.Instance.reuseRadianceProbe > 0;
             bool useProbeOcclusionTest = GlobalSettings.Instance.useProbeOcclusionTest > 0;
+            bool useDistanceField = GlobalSettings.Instance.useDistanceField > 0;
             if (sampleRadianceProbe)
             {
                 m_VoxelLightingCS.EnableKeyword("USE_RADIANCE_PROBE_AS_FALLBACK");
@@ -660,6 +684,14 @@ public class MiraiGIRadianceCache
             else
             {
                 m_VoxelLightingCS.DisableKeyword("USE_PROBE_OCCLUSION_TEST");
+            }
+            if (useDistanceField)
+            {
+                m_VoxelLightingCS.EnableKeyword("USE_DISTANCE_FIELD");
+            }
+            else
+            {
+                m_VoxelLightingCS.DisableKeyword("USE_DISTANCE_FIELD");
             }
 
             int kernel = m_VoxelLightingCS.FindKernel("IrradianceProbeGather");

@@ -26,6 +26,10 @@ float3 ReconstructWorldPositionFromDepth(float2 uv, float depth)
     return worldPosition.xyz / worldPosition.w;
 }
 
+#ifndef USE_DISTANCE_FIELD
+#define USE_DISTANCE_FIELD 0
+#endif
+
 [numthreads(8, 8, 1)]
 void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
@@ -54,10 +58,23 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     RTRequest.maxStepNum = 128000;
     RTRequest.maxDistance = 200000000;
     
+#if USE_DISTANCE_FIELD
+    VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
+#else
     VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _VoxelBitOccupyClipmap, RTRequest);
+#endif
     
     if (hit.isHit)
     {
+        // print hit distance
+    #if 0
+        _RWSceneColorTexture[pixelCoord] = float4(
+            length(hit.position - _CameraPosition) / 1000.0f,
+            0, 0, 1
+        );
+        return;
+    #endif
+        
         float3 debugColor = float3(0, 0, 0);
         int voxelPageId = _VoxelPageClipmap.Load(uint4(hit.clipmapAccessIndex, 0)).r;
         
