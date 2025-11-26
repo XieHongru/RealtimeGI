@@ -10,11 +10,14 @@ public class MiraiGIGPUScene
 {
     public MiraiGIClipmap miraiGIClipmap;
     public MiraiGIRadianceCache miraiGIRadianceCache;
+    public MiraiGIScreenGather miraiGIScreenGather;
     public GPUSceneData GPUSceneData;
     public SurfaceCache surfaceCache;
     public OccupancyMap occupancyMap;
 
-    public void CreateScene()
+    public RenderTargetIdentifier sceneColorTarget;
+
+    public void CreateScene(RenderTargetIdentifier cameraTarget)
     {
         // 1. init GPU scene data
         GPUSceneData = new GPUSceneData();
@@ -38,6 +41,12 @@ public class MiraiGIGPUScene
         miraiGIRadianceCache = new MiraiGIRadianceCache();
         miraiGIRadianceCache.Init();
         miraiGIClipmap.radianceCache = miraiGIRadianceCache; // friend class
+
+        // 6. init screen gather;
+        miraiGIScreenGather = new MiraiGIScreenGather();
+        miraiGIScreenGather.Init();
+
+        sceneColorTarget = cameraTarget;
     }
 
     public void UpdateScene(ref RenderingData renderingData)
@@ -49,6 +58,7 @@ public class MiraiGIGPUScene
             // voxel lighting
             // TODO: multi-view
             miraiGIRadianceCache.Update(ref renderingData, this);
+            miraiGIScreenGather.DiffuseIndirectScreenGather(this);
         }
     }
 
@@ -58,6 +68,7 @@ public class MiraiGIGPUScene
         {
             CommandBuffer cmd = CommandBufferPool.Get("Visualize GI Scene");
             miraiGIClipmap.VisualizeMiraiGIScene(cmd, this, camera);
+            miraiGIScreenGather.VisualizeMiraiGIScreenGather(cmd, this, miraiGIClipmap.GetVisualizeColorTarget());
             miraiGIRadianceCache.VisualizeProbe(cmd, this, ProbeVisualizeMode.RadianceProbe);
             miraiGIRadianceCache.VisualizeProbe(cmd, this, ProbeVisualizeMode.IrradianceProbe);
             Graphics.ExecuteCommandBuffer(cmd);

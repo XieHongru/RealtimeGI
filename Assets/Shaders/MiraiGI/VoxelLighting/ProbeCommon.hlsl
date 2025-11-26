@@ -7,6 +7,14 @@
 
 #define DISTANCE_SCALE (1000.0f)
 
+#ifndef USE_PROBE_OCCLUSION_TEST 
+#define USE_PROBE_OCCLUSION_TEST 0
+#endif
+
+#ifndef RADIANCE_PROBE_PARALLEX_DIRECTION 
+#define RADIANCE_PROBE_PARALLEX_DIRECTION 0
+#endif
+
 float2 SignNotZero2(float2 v)
 {
     return float2(
@@ -82,8 +90,9 @@ float3 TrilinearInterpolationFloat3(in float3 value[8], float3 rate)
 // for single clip volume
 int3 ProbeVolumeAddressMapping(int3 probeIndex3D, in CascadeInfo cascadeInfo)
 {
+    int3 scrollingInBlock = cascadeInfo.scrolling / VOXEL_BLOCK_SIZE;
     int3 probeCountInXYZ = cascadeInfo.resolution / VOXEL_BLOCK_SIZE;
-    int3 accessIndex = (probeIndex3D + cascadeInfo.moveOffset) % probeCountInXYZ;
+    int3 accessIndex = (probeIndex3D + scrollingInBlock) % probeCountInXYZ;
     return accessIndex;
 }
 
@@ -120,6 +129,25 @@ float DecodeHitDistance(float encodedDistance)
 {
     return encodedDistance * DISTANCE_SCALE;
 }
+
+float CalculateProbeOcclusionWeight(
+    in CascadeInfo cascadeInfo, float3 samplePointPosition, float3 probePosition,
+    in Texture2D<float> radianceProbeDistanceAtlas, in SamplerState linearSampler,
+    int probeIdInAtlas, int2 radianceProbeCountInAtlasXY, int radianceProbeResolution)
+{
+#if USE_PROBE_OCCLUSION_TEST
+    float3 probeToSamplePoint = samplePointPosition - probePosition;
+    float3 testRayDirection = normalize(probeToSamplePoint);
+    float2 depthTestUV = RadianceProbeAddressMapping(testRayDirection, probeIdInAtlas, radianceProbeCountInAtlasXY, radianceProbeResolution);
+    float probeHitDistance = DecodeHitDistance(radianceProbeDistanceAtlas.SampleLevel(linearSampler, depthTestUV, 0).r);
+    float toleranceDistance = cascadeInfo.voxelSize.x * 0.25;
+    float depthTestWeight = exp2(-max((length(probeToSamplePoint) - probeHitDistance) / toleranceDistance, 0));
+#else
+    float depthTestWeight = 1.0f;
+#endif
+    return depthTestWeight;
+}
+
 
 float3 ProbeEvaluateIrradiance(
 	in Texture3D<float4> irradianceProbeClipmap,
@@ -169,15 +197,13 @@ float3 ProbeEvaluateIrradiance(
         
         // 2.3. apply depth test for candidate probe
         float3 worldPositionWithOffset = worldPosition + worldNormal * cascadeInfo.voxelSize.x;
-        float3 testRayDirection = normalize(worldPositionWithOffset - probePosition);
-        float2 depthTestUV = RadianceProbeAddressMapping(testRayDirection, probeIdInAtlas, radianceProbeCountInAtlasXY, radianceProbeResolution);
-        float probeHitDistance = DecodeHitDistance(radianceProbeDistanceAtlas.SampleLevel(linearSampler, depthTestUV, 0).r);
-        float toleranceDistance = cascadeInfo.voxelSize.x * 0.25;
-        float depthTestWeight = exp2(-max((length(samplePointToProbe) - probeHitDistance) / toleranceDistance, 0));
+        float3 occlusionWeight = CalculateProbeOcclusionWeight(cascadeInfo, worldPositionWithOffset, probePosition,
+                                                                radianceProbeDistanceAtlas, linearSampler,
+                                                                probeIdInAtlas, radianceProbeCountInAtlasXY, radianceProbeResolution);
     
         // 2.4. calculate sample weight
         float3 weightXYZ = lerp(1 - trilinearWeight, trilinearWeight, offsets[i]);
-        float3 weight = weightXYZ.x * weightXYZ.y * weightXYZ.z * depthTestWeight;
+        float3 weight = weightXYZ.x * weightXYZ.y * weightXYZ.z * occlusionWeight;
         weightSum += weight;
 
         // 2.5. sample probe irradiance 
@@ -310,26 +336,25 @@ float3 ProbeEvaluateRadiance(
             continue;
         }
         
-        // 2.3. do depth test
-        /*
-        float2 depthTestUV = RadianceProbeAddressMapping(normalize(-samplePointToProbe), probeIdInAtlas, radianceProbeCountInAtlasXY, radianceProbeResolution);
-        float probeHitDistance = DecodeHitDistance(radianceProbeDistanceAtlas.SampleLevel(linearSampler, depthTestUV, 0).r);
-        if(probeHitDistance < length(samplePointToProbe))
-        {
-            continue;
-        }
-        */
+        // 2.3. apply depth test for candidate probe
+        float3 occlusionWeight = CalculateProbeOcclusionWeight(cascadeInfo, worldPosition, probePosition,
+                                                                radianceProbeDistanceAtlas, linearSampler,
+                                                                probeIdInAtlas, radianceProbeCountInAtlasXY, radianceProbeResolution);
 
         // 2.4. calculate sample weight
         float3 weightXYZ = lerp(1 - trilinearWeight, trilinearWeight, offsets[i]);
-        float3 weight = weightXYZ.x * weightXYZ.y * weightXYZ.z;
+        float3 weight = weightXYZ.x * weightXYZ.y * weightXYZ.z * occlusionWeight;
         weightSum += weight;
 
         // 2.5. calculate parallex
+#if RADIANCE_PROBE_PARALLEX_DIRECTION
         float4 radianceProbeSphere = float4(probePosition, GetRadianceProbeSize(cascadeInfo));
         float2 sphereIntersections = RayIntersectSphere(worldPosition, direction, radianceProbeSphere);
         float3 intersectionPosition = worldPosition + direction * sphereIntersections.y;
         float3 parallexDirection = normalize(intersectionPosition - probePosition);
+#else
+        float3 parallexDirection = direction;
+#endif
 
         // 2.6. sample radiance
         float2 uvInAtlas = RadianceProbeAddressMapping(parallexDirection, probeIdInAtlas, radianceProbeCountInAtlasXY, radianceProbeResolution);

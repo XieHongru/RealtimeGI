@@ -39,7 +39,8 @@ Shader "Mirai/VisualizeProbe"
         int3 probeCountInXYZ = cascadeInfo.resolution / VOXEL_BLOCK_SIZE;
         int3 probeIndex3D = Index1DTo3D(_ProbeIndex, probeCountInXYZ);
 
-        int3 probeVolumeAccessIndex = (probeIndex3D + cascadeInfo.moveOffset) % probeCountInXYZ;
+        int3 scrollingInBlock = cascadeInfo.scrolling / VOXEL_BLOCK_SIZE;
+        int3 probeVolumeAccessIndex = (probeIndex3D + scrollingInBlock) % probeCountInXYZ;
         int3 probeClipmapAccessIndex = probeVolumeAccessIndex + int3(0, 0, probeCountInXYZ.z * _CascadeIndex);
 
         float3 probePositionBase = CalcVoxelCenterPos(probeIndex3D, probeCountInXYZ, cascadeInfo.center, cascadeInfo.size);

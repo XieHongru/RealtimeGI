@@ -23,7 +23,7 @@ void PickValidVoxel(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : 
     // one thread for one block, use checker board 2x2x2 for average update to 8 frame
     int3 blockIndex = threadId.xyz * _CheckerBoardInfo.w + _CheckerBoardInfo.xyz;
     int3 voxelIndexBase = blockIndex * VOXEL_BLOCK_SIZE;
-    int3 clipmapAccessIndex = ClipmapAddressMapping(voxelIndexBase, cascadeInfo.resolution, cascadeInfo.moveOffset, _CascadeIndex);
+    int3 clipmapAccessIndex = BlockClipmapAddressMapping(blockIndex, cascadeInfo.resolution, cascadeInfo.scrolling, _CascadeIndex);
     uint2 bitOccupy = _VoxelBitOccupyClipmap[clipmapAccessIndex];
 
     // 1. count valid voxel
@@ -87,6 +87,10 @@ void BuildVoxelLightingIndirectArgs(uint3 threadId : SV_DispatchThreadID, uint3 
 // -------------------------------------------------------------------------------- //
 #pragma kernel VoxelLighting
 
+#ifndef USE_DISTANCE_FIELD
+#define USE_DISTANCE_FIELD 0
+#endif
+
 float4x4 _CameraViewProjectionMatrix;
 float3 _MainLightDirection;
 float4 _MainLightColor;
@@ -118,7 +122,8 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
     // 1. read page data, note that 4x4x4 voxel in same block will share 4x4x4 page data in pool
     int voxelIndex1D = _ValidVoxelBuffer[threadId.x];
     int3 voxelIndex = Index1DTo3D(voxelIndex1D, cascadeInfo.resolution);
-    int3 clipmapAccessIndex = ClipmapAddressMapping(voxelIndex, cascadeInfo.resolution, cascadeInfo.moveOffset, _CascadeIndex);
+    int3 blockIndex = voxelIndex / VOXEL_BLOCK_SIZE;
+    int3 clipmapAccessIndex = BlockClipmapAddressMapping(blockIndex, cascadeInfo.resolution, cascadeInfo.scrolling, _CascadeIndex);
     int voxelPageId = _VoxelPageClipmap.Load(uint4(clipmapAccessIndex, 0)).r;
 
     if (voxelPageId == PAGE_ID_INVALID)
@@ -171,7 +176,11 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
         RTRequest.maxStepNum = 128000;
         RTRequest.maxDistance = _ShadowRayMaxDistance;
 
+#if USE_DISTANCE_FIELD
+        VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
+#else
         VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _VoxelBitOccupyClipmap, RTRequest);
+#endif
         mainLightShadow = hit.isHit ? 0 : 1;
     }
 
@@ -250,7 +259,7 @@ void PickValidProbe(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : 
             continue;
         }
 
-        int3 voxelClipmapAccessIndex = ClipmapAddressMapping(neighborProbeIndex * VOXEL_BLOCK_SIZE, cascadeInfo.resolution, cascadeInfo.moveOffset, _CascadeIndex);
+        int3 voxelClipmapAccessIndex = BlockClipmapAddressMapping(neighborProbeIndex, cascadeInfo.resolution, cascadeInfo.scrolling, _CascadeIndex);
         uint2 bitOccupy = _VoxelBitOccupyClipmap[voxelClipmapAccessIndex].xy;
         isProbeValid = isProbeValid || any(bitOccupy != 0);
     }
@@ -305,7 +314,7 @@ void PickValidProbe(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : 
     int3 probeClipmapAccessIndex = ProbeClipmapAddressMapping(probeIndex, cascadeInfo);
     if (isProbeValid)
     {
-        int3 voxelClipmapAccessIndex = ClipmapAddressMapping(probeIndex * VOXEL_BLOCK_SIZE, cascadeInfo.resolution, cascadeInfo.moveOffset, _CascadeIndex);
+        int3 voxelClipmapAccessIndex = BlockClipmapAddressMapping(probeIndex, cascadeInfo.resolution, cascadeInfo.scrolling, _CascadeIndex);
         uint2 bitOccupy = _VoxelBitOccupyClipmap[voxelClipmapAccessIndex].xy;
 
         float3 probeCenter = float(VOXEL_BLOCK_SIZE / 2).xxx - 0.5; // 1.5 is center of [0, 1, 2, 3], unit is voxel
@@ -343,9 +352,8 @@ void PickValidProbe(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : 
 groupshared int gs_SharedProbeState[64];
 groupshared int gs_SharedReadWriteIndex[64];
 
-int _RadianceProbeCount;
+int _MaxRadianceProbeNum;
 
-RWStructuredBuffer<int> _RWRadianceProbeAllocator;
 RWStructuredBuffer<int> _RWRadianceProbeFreeList;
 RWStructuredBuffer<int> _RWRadianceProbeReleaseList;
 
@@ -388,6 +396,7 @@ void RadianceProbeAllocate(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     // 2. head thread allocate space for each probe
     if (groupThreadIndex == 0)
     {
+        // 2.1. count num probes to add or remove in current thread group
         int probeAddCounter = 0;
         int probeReleaseCounter = 0;
         for (int i = 0; i < 64; i++)
@@ -395,14 +404,15 @@ void RadianceProbeAllocate(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
             probeAddCounter += (gs_SharedProbeState[i] == PROBE_STATE_NEED_ADD) ? 1 : 0;
             probeReleaseCounter += (gs_SharedProbeState[i] == PROBE_STATE_NEED_RELEASE) ? 1 : 0;
         }
-
+        
+        // 2.2. allocate space
         int addProbeStartIndex = 0;
-        InterlockedAdd(_RWRadianceProbeAllocator[FREE_PROBE_POINTER], probeAddCounter, addProbeStartIndex);
+        InterlockedAdd(_RWRadianceProbeFreeList[_MaxRadianceProbeNum], probeAddCounter, addProbeStartIndex);
 
         int releaseProbeStartIndex = 0;
-        InterlockedAdd(_RWRadianceProbeAllocator[RELEASE_PROBE_POINTER], probeReleaseCounter, releaseProbeStartIndex);
+        InterlockedAdd(_RWRadianceProbeReleaseList[_MaxRadianceProbeNum], probeReleaseCounter, releaseProbeStartIndex);
 
-        // boardcast read write index to each thread
+        // 2.3 boardcast read write index to each thread
         for (int i = 0; i < 64; i++)
         {
             if (gs_SharedProbeState[i] == PROBE_STATE_NEED_ADD)
@@ -425,7 +435,7 @@ void RadianceProbeAllocate(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     {
         int freeListReadIndex = gs_SharedReadWriteIndex[groupThreadIndex];
 
-        if (freeListReadIndex < _RadianceProbeCount)
+        if (freeListReadIndex < _MaxRadianceProbeNum)
         {
             probeIdInAtlas = _RWRadianceProbeFreeList[freeListReadIndex];
         }
@@ -457,15 +467,17 @@ StructuredBuffer<int> _ValidProbeCounter;
 RWStructuredBuffer<int> _RWProbeReleaseIndirectArgs;
 RWStructuredBuffer<int> _RWProbeCaptureIndirectArgs;
 RWStructuredBuffer<int> _RWProbeOutputMergeIndirectArgs;
+RWStructuredBuffer<int> _RWProbeCountToReleaseCounter;
 
 [numthreads(1, 1, 1)]
 void BuildRadianceProbeReleaseAndCaptureIndirectArgs(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
     int3 probeCountInXYZ = _CascadeResolution / VOXEL_BLOCK_SIZE;
+    int pointerIndex = _MaxRadianceProbeNum; // we use last element as allocator pointer
 
     // 1. build indirect args for atlas space release
-    int freePointer = min(_RWRadianceProbeAllocator[FREE_PROBE_POINTER], _RadianceProbeCount);
-    int releasePointer = _RWRadianceProbeAllocator[RELEASE_PROBE_POINTER];
+    int freePointer = min(_RWRadianceProbeFreeList[pointerIndex], _MaxRadianceProbeNum);
+    int releasePointer = _RWRadianceProbeReleaseList[pointerIndex];
     int probeCountToRelease = releasePointer;
 
     _RWProbeReleaseIndirectArgs[0] = ceil(float(probeCountToRelease) / float(_ThreadCountForProbeRelease));
@@ -473,12 +485,11 @@ void BuildRadianceProbeReleaseAndCaptureIndirectArgs(uint3 threadId : SV_Dispatc
     _RWProbeReleaseIndirectArgs[2] = 1;
 
     // 2. reset pointer
-    _RWRadianceProbeAllocator[FREE_PROBE_POINTER] = freePointer - probeCountToRelease;
-    _RWRadianceProbeAllocator[RELEASE_PROBE_POINTER] = 0;
+    _RWRadianceProbeFreeList[pointerIndex] = freePointer - probeCountToRelease;
+    _RWRadianceProbeReleaseList[pointerIndex] = 0;
 
     // 3. copy for probe release pass
-    _RWRadianceProbeAllocator[FREE_PROBE_POINTER_READ_ONLY] = freePointer;
-    _RWRadianceProbeAllocator[RELEASE_PROBE_POINTER_READ_ONLY] = releasePointer;
+    _RWProbeCountToReleaseCounter[0] = probeCountToRelease;
     
     // 4. build indirect args for radiance probe capture
     int probeCountToCapture = _ValidProbeCounter[0];
@@ -498,18 +509,21 @@ void BuildRadianceProbeReleaseAndCaptureIndirectArgs(uint3 threadId : SV_Dispatc
 // ---------------------------------------- (^^_) ---------------------------------------- //
 #pragma kernel RadianceProbeRelease
 
+StructuredBuffer<int> _ProbeCountToReleaseCounter;
+
 [numthreads(8, 1, 1)]
 void RadianceProbeRelease(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
     int threadIndex = threadId.x;
-    int probeCountToRelease = _RWRadianceProbeAllocator[RELEASE_PROBE_POINTER_READ_ONLY];
+    int pointerIndex = _MaxRadianceProbeNum; // we use last element as allocator pointer
+    int probeCountToRelease = _ProbeCountToReleaseCounter[0];
 
     if (threadIndex >= probeCountToRelease)
     {
         return;
     }
 
-    int freeListOffset = _RWRadianceProbeAllocator[FREE_PROBE_POINTER];
+    int freeListOffset = _RWRadianceProbeFreeList[pointerIndex];
     int writeIndex = freeListOffset + threadIndex;
 
     int pageId = _RWRadianceProbeReleaseList[threadIndex];
@@ -532,25 +546,6 @@ StructuredBuffer<int> _ValidProbeBuffer;
 
 RWTexture2D<float3> _RWRadianceProbeAtlas;
 RWTexture2D<float> _RWRadianceProbeDistanceAtlas;
-
-float3 FetchRadianceFromVoxelScene(VoxelRaytracingRequest RTRequest, VoxelRayTracingHitPayload hit)
-{
-    int voxelPageId = _VoxelPageClipmap.Load(uint4(hit.clipmapAccessIndex, 0)).r;
-    if (voxelPageId == PAGE_ID_INVALID)
-    {
-        return float3(0, 0, 0);
-    }
-
-    int3 indexInPool = PageAddressMapping(voxelPageId, _VoxelPageCountInXYZ, hit.voxelIndex);
-
-    float3 worldNormal = _VoxelPoolNormal.Load(uint4(indexInPool, 0)).rgb * 2 - 1;
-    int isBackFace = dot(worldNormal, -RTRequest.rayDir) < 0;
-
-    int3 twoSideIndex = TwoSideAddressMapping(indexInPool, isBackFace);
-    float3 hitRadiance = _VoxelPoolRadiance.Load(uint4(twoSideIndex, 0)).rgb;
-
-    return hitRadiance;
-}
 
 [numthreads(32, 1, 1)]
 void RadianceProbeCapture(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
@@ -604,8 +599,12 @@ void RadianceProbeCapture(uint3 threadId : SV_DispatchThreadID, uint3 groupThrea
     RTRequest.maxCascadeIndex = _CascadeCount - 1;
     RTRequest.maxStepNum = 128000;
     RTRequest.maxDistance = 12800000;
-
+    
+#if USE_DISTANCE_FIELD
+    VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
+#else
     VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _VoxelBitOccupyClipmap, RTRequest);
+#endif
 
     // 4. fetch radiance
     float3 hitRadiance = float3(0, 0, 0);
@@ -794,6 +793,8 @@ void RadianceToIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 groupThrea
 #pragma kernel IrradianceProbeGather
 
 int _FrameCountMod8;
+int _SampleCount;
+int _TemporalWeight;
 
 #ifndef USE_RADIANCE_PROBE_AS_FALLBACK
 #define USE_RADIANCE_PROBE_AS_FALLBACK (0)
@@ -831,7 +832,7 @@ void IrradianceProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     GroupMemoryBarrierWithGroupSync();
 
     // 2. trace ray
-    int sampleCountPerThread = 2;
+    int sampleCountPerThread = _SampleCount;
     int sampleCountPerProbe = 64 * sampleCountPerThread;
     float uniformSampleSolidAngle = 4 * PI / float(sampleCountPerProbe);
     uint2 randomSeed = Rand3DPCG16(uint3(groupId.x, 0, _FrameCountMod8)).xy;
@@ -852,10 +853,14 @@ void IrradianceProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
         RTRequest.maxDistance = 12800000;
     
 #if USE_RADIANCE_PROBE_AS_FALLBACK
-    RTRequest.maxDistance = GetRadianceProbeSize(cascadeInfo);
+        RTRequest.maxDistance = GetRadianceProbeSize(cascadeInfo);
 #endif
 
+#if USE_DISTANCE_FIELD
+        VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
+#else
         VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _VoxelBitOccupyClipmap, RTRequest);
+#endif
 
     // 3. fetch radiance
         float3 hitRadiance = float3(0, 0, 0);
@@ -932,7 +937,7 @@ void IrradianceProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
 
         for (int i = 0; i < 7; i++)
         {
-            _RWIrradianceProbeClipmap[readWriteIndexBase + int3(i, 0, 0)] = lerp(SHVector[i], SHVectorHistory[i], 0.5);
+            _RWIrradianceProbeClipmap[readWriteIndexBase + int3(i, 0, 0)] = lerp(SHVector[i], SHVectorHistory[i], _TemporalWeight);
         }
     }
 }

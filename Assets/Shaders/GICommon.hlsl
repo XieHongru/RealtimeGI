@@ -11,25 +11,23 @@
 #define MAX_CASCADE_COUNT 4
 #define VOXEL_COUNT_PER_BLOCK (VOXEL_BLOCK_SIZE * VOXEL_BLOCK_SIZE * VOXEL_BLOCK_SIZE)
 
+// we divide volume into 8^3 region to update voxel
+// also is min scroll step when camera move
+#define UPDATE_CHUNK_NUM (8)
+
 #define PAGE_ID_INVALID (0x3FFFFFFF)
-#define FREE_PAGE_POINTER (0)				// value in this index is pointer to next free page's id
-#define RELEASE_PAGE_POINTER (1)			// value in this index is pointer to next location to temporally store released page's id
-#define FREE_PAGE_POINTER_READ_ONLY (2)		// value same as FREE_PAGE_POINTER, for avoid data race when release pages
-#define RELEASE_PAGE_POINTER_READ_ONLY (3)	// value same as RELEASE_PAGE_POINTER, for avoid data race when release pages
 
 #define VOXEL_FACE_FRONT (0)
 #define VOXEL_FACE_BACK (1)
 #define VOXEL_FACE_NUM (2)
 
+#define PROBE_ID_INVALID (0x3FFFFFFF)
+
 #define PROBE_STATE_DO_NOTHING (0)
 #define PROBE_STATE_NEED_ADD (1)
 #define PROBE_STATE_NEED_RELEASE (2)
 
-#define PROBE_ID_INVALID (0x3FFFFFFF)
-#define FREE_PROBE_POINTER (0)				// same as FREE_PAGE_POINTER
-#define RELEASE_PROBE_POINTER (1)			// same as RELEASE_PAGE_POINTER
-#define FREE_PROBE_POINTER_READ_ONLY (2)	// same as FREE_PAGE_POINTER_READ_ONLY
-#define RELEASE_PROBE_POINTER_READ_ONLY (3)	// same as RELEASE_PAGE_POINTER_READ_ONLY
+#define DISTANCE_FIELD_MAX_RANGE (32.0)		// map distance to R8 [0~1], 1 is for 32 voxel's distance
 
 struct ObjectInfo
 {
@@ -327,15 +325,21 @@ int BitCount32(uint u)
     return ((uCount + (uCount >> 3)) & 030707070707) % 63;
 }
 
-// return index to sample clipmap
-int3 ClipmapAddressMapping(int3 voxelIndex, int3 cascadeResolution, int3 cascadeMoveOffset, int cascadeIndex)
+int3 VoxelClipmapAddressMapping(int3 voxelIndex, int3 cascadeResolution, int3 cascadeScrolling, int cascadeIndex)
 {
-	// [0 ~ 128] --> [0 ~ 32]
-    int3 blockIndex = voxelIndex / VOXEL_BLOCK_SIZE;
+    int3 accessIndex = (voxelIndex + cascadeScrolling) % cascadeResolution;
+    accessIndex += int3(0, 0, cascadeResolution.z * cascadeIndex);
+    return accessIndex;
+}
+
+// return index to sample clipmap
+int3 BlockClipmapAddressMapping(int3 blockIndex, int3 cascadeResolution, int3 cascadeScrolling, int cascadeIndex)
+{
     int3 blockCountInXYZ = cascadeResolution / VOXEL_BLOCK_SIZE;
 
 	// if cascade move, we don't move the data, just move address when access cascade
-    int3 roundIndex = (blockIndex + cascadeMoveOffset) % blockCountInXYZ;
+    int3 scrollingInBlock = cascadeScrolling / VOXEL_BLOCK_SIZE;
+    int3 roundIndex = (blockIndex + scrollingInBlock) % blockCountInXYZ;
 
 	// use 32*32*128 to represent 4 layer clipmap, single cascade is 32x32x32
     int3 accessIndex = roundIndex + int3(0, 0, blockCountInXYZ.z * cascadeIndex);
@@ -361,6 +365,17 @@ int3 TwoSideAddressMapping(int3 indexInPool, int isBackFace)
 {
     return indexInPool * int3(1, 1, VOXEL_FACE_NUM) + int3(0, 0, isBackFace);
 }
+
+float EncodeDistance(float distance, float voxelSize)
+{
+    return distance / (voxelSize * DISTANCE_FIELD_MAX_RANGE);
+}
+
+float DecodeDistance(float distance, float voxelSize)
+{
+    return distance * (voxelSize * DISTANCE_FIELD_MAX_RANGE);
+}
+
 
 #endif
 

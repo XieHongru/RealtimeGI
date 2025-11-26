@@ -1,4 +1,4 @@
-#include "../RayTracing/VoxelRayTracing.hlsl"
+#include "../VoxelLighting/VoxelLightingParameters.hlsl"
 #pragma kernel VisualizeClipmap
 
 float4 _ScreenResolution;
@@ -8,20 +8,6 @@ float4x4 _InvViewProjMat;
 int _VisualizeMode;
 int _VisualizeCascadeLevel;
 int _VisualizeUpdateChunk;
-int _CascadeCount;
-int3 _VoxelPageCountInXYZ;
-int3 _CascadeResolution;
-
-float3 _CascadeCenterArray[MAX_CASCADE_COUNT];
-float3 _CascadeSizeArray[MAX_CASCADE_COUNT];
-int3 _CascadeMoveOffsetArray[MAX_CASCADE_COUNT];
-
-Texture3D<uint2> _BitOccupyClipmap;
-Texture3D<int> _VoxelPageClipmap;
-Texture3D<float4> _VoxelPoolBaseColor;
-Texture3D<float4> _VoxelPoolNormal;
-Texture3D<float4> _VoxelPoolEmissive;
-Texture3D<float4> _VoxelPoolRadiance;
 
 Texture2D<float> _SceneDepthTexture;
 RWTexture2D<float4> _RWSceneColorTexture;
@@ -32,8 +18,6 @@ int _UpdateChunkCount;
 float3 _UpdateChunkResolution;
 StructuredBuffer<int> _UpdateChunkList;
 
-SamplerState sampler_LinearClamp;
-
 float3 ReconstructWorldPositionFromDepth(float2 uv, float depth)
 {
     float2 ndcPosition = float2((uv.x - 0.5f) * 2.0f, (uv.y - 0.5f) * 2.0f);
@@ -41,6 +25,10 @@ float3 ReconstructWorldPositionFromDepth(float2 uv, float depth)
     float4 worldPosition = mul(_InvViewProjMat, float4(ndcPosition * realDepth, realDepth, 1.0f));
     return worldPosition.xyz / worldPosition.w;
 }
+
+#ifndef USE_DISTANCE_FIELD
+#define USE_DISTANCE_FIELD 0
+#endif
 
 [numthreads(8, 8, 1)]
 void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
@@ -56,16 +44,11 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     float pixelDepth = (1.0 - rawDepth) * 2.0 - 1.0;
     float3 pixelWorldPosition = ReconstructWorldPositionFromDepth(uv, pixelDepth);
     
+    ClipmapInfo clipmapInfo = ResolveClipmapInfo();
+    
     float3 rayDir = normalize(pixelWorldPosition - _CameraPosition.xyz);
     float3 rayEnd = rayDir * 1000000 + _VoxelOccupy[uint3(0, 0, 0)];
     float3 color = float3(0, 0, 0);
-
-    ClipmapInfo clipmapInfo = (ClipmapInfo) 0;
-    clipmapInfo.cascadeCount = _CascadeCount;
-    clipmapInfo.cascadeResolution = _CascadeResolution;
-    clipmapInfo.cascadeCenterArray = _CascadeCenterArray;
-    clipmapInfo.cascadeSizeArray = _CascadeSizeArray;
-    clipmapInfo.cascadeMoveOffsetArray = _CascadeMoveOffsetArray;
     
     VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
     RTRequest.rayStart = _CameraPosition;
@@ -75,10 +58,23 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     RTRequest.maxStepNum = 128000;
     RTRequest.maxDistance = 200000000;
     
-    VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _BitOccupyClipmap, RTRequest);
+#if USE_DISTANCE_FIELD
+    VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
+#else
+    VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _VoxelBitOccupyClipmap, RTRequest);
+#endif
     
     if (hit.isHit)
     {
+        // print hit distance
+    #if 0
+        _RWSceneColorTexture[pixelCoord] = float4(
+            length(hit.position - _CameraPosition) / 1000.0f,
+            0, 0, 1
+        );
+        return;
+    #endif
+        
         float3 debugColor = float3(0, 0, 0);
         int voxelPageId = _VoxelPageClipmap.Load(uint4(hit.clipmapAccessIndex, 0)).r;
         

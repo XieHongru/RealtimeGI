@@ -41,18 +41,18 @@ public class MiraiGIRenderPass : ScriptableRenderPass
             return;
         }
 
+        RenderTargetIdentifier cameraTarget = renderingData.cameraData.renderer.cameraColorTargetHandle;
         if (m_GIController == null)
         {
             m_GIController = GameObject.Find("GIController").GetComponent<GIController>();
 
-            m_GIController.MiraiGISceneCreate();
+            m_GIController.MiraiGISceneCreate(cameraTarget);
         }
 
         m_GIController.MiraiGISceneUpdate(ref renderingData);
 
         CommandBuffer cmd = CommandBufferPool.Get("Blit Visualize Result");
         
-        RenderTargetIdentifier cameraTarget = renderingData.cameraData.renderer.cameraColorTargetHandle;
         cmd.Blit(m_GIController.miraiGIGPUScene.miraiGIClipmap.GetVisualizeColorTarget(), cameraTarget);
 
         context.ExecuteCommandBuffer(cmd);
