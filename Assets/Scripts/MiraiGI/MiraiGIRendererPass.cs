@@ -7,16 +7,32 @@ using UnityEngine.Rendering.Universal;
 public class MiraiGIRendererFeature : ScriptableRendererFeature
 {
     MiraiGIRenderPass m_MiraiGIRenderPass;
+    PathTracingRenderPass m_PathTracingRenderPass;
 
     public override void Create()
     {
-        m_MiraiGIRenderPass = new MiraiGIRenderPass();
-        m_MiraiGIRenderPass.renderPassEvent = RenderPassEvent.AfterRenderingPostProcessing;
+        if(!GlobalSettings.Instance.usePathTracing)
+        {
+            m_MiraiGIRenderPass = new MiraiGIRenderPass();
+            m_MiraiGIRenderPass.renderPassEvent = RenderPassEvent.AfterRenderingPostProcessing;
+        }
+        else
+        {
+            m_PathTracingRenderPass = new PathTracingRenderPass();
+            m_PathTracingRenderPass.renderPassEvent = RenderPassEvent.AfterRenderingPrePasses;
+        }
     }
 
     public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
     {
-        renderer.EnqueuePass(m_MiraiGIRenderPass);
+        if (!GlobalSettings.Instance.usePathTracing)
+        {
+            renderer.EnqueuePass(m_MiraiGIRenderPass);
+        }
+        else
+        {
+            renderer.EnqueuePass(m_PathTracingRenderPass);
+        }
     }
 
     public void Refresh()

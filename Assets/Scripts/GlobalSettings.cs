@@ -59,4 +59,7 @@ public class GlobalSettings : ScriptableObject
 
     // Distance Field
     public int useDistanceField = 1;
+
+    //PathTracing Pass
+    public bool usePathTracing = false;
 }
