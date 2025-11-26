@@ -33,7 +33,7 @@ Texture2D _SurfaceCacheAtlasDepth;
 SamplerState sampler_LinearClamp;
 
 RWTexture3D<uint2> _RWVoxelBitOccupyClipmap;
-//RWTexture3D<float> _RWVoxelOccupy;
+RWTexture3D<float> _RWVoxelOccupy;
 
 RWTexture3D<int> _RWVoxelPageClipmap;
 RWStructuredBuffer<int> _RWVoxelPageFreeList;
@@ -143,7 +143,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
                 localToWorldMatrix = objectInfo.localToWorldMatrix;
                 distance = worldDistance;
                 
-                //_RWVoxelOccupy[voxelIndex + uint3(0, 0, 128 * _CascadeIndex)] = uvInAtlas.y;
+                _RWVoxelOccupy[voxelIndex + uint3(0, 0, 128 * _CascadeIndex)] = uvInAtlas.y;
                 break;
             }
         }
@@ -221,7 +221,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         int3 writeIndex = PageAddressMapping(gs_VoxelPageId, _VoxelPageCountInXYZ, voxelIndex);
         _RWVoxelPoolBaseColor[writeIndex] = baseColor;
         _RWVoxelPoolNormal[writeIndex] = worldNormal;
-        _RWVoxelPoolEmissive[writeIndex] = emissive;
+        //_RWVoxelPoolEmissive[writeIndex] = emissive;
     }
     
     // 6. write to distance field
