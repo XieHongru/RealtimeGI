@@ -1,145 +1,256 @@
 #include "../VoxelLighting/VoxelLightingParameters.hlsl"
 #include "../RayTracing/MonteCarlo.hlsl"
-#pragma kernel ScreenGather
+#include "../RayTracing/SSRTRayCast.hlsl"
 
+// -------------------------------------------------------------------------------- //
 float4 _ScreenResolution;
 float4 _CameraPosition;
 float4x4 _ProjMat;
 float4x4 _ViewProjMat;
 float4x4 _InvViewProjMat;
-
 int _FrameCountMod8;
-
-Texture2D<float4> _GBuffer0;
-Texture2D<float4> _GBuffer1;
-
-Texture2D<float> _SceneDepthTexture;
-RWTexture2D<float4> _RWScreenGatherOutput;
 
 float3 ReconstructWorldPositionFromDepth(float2 uv, float depth)
 {
-	float2 ndcPosition = float2((uv.x - 0.5f) * 2.0f, (uv.y - 0.5f) * 2.0f);
-	float realDepth = depth;
-	float4 worldPosition = mul(_InvViewProjMat, float4(ndcPosition * realDepth, realDepth, 1.0f));
-	return worldPosition.xyz / worldPosition.w;
+    float2 ndcPosition = float2((uv.x - 0.5f) * 2.0f, (uv.y - 0.5f) * 2.0f);
+    float realDepth = depth;
+    float4 worldPosition = mul(_InvViewProjMat, float4(ndcPosition * realDepth, realDepth, 1.0f));
+    return worldPosition.xyz / worldPosition.w;
 }
 
-void SetupRay(float3 worldPosition, float3 rayDirection, float sceneDepth, float stepCount,
-                out float3 rayStartUVz, out float3 rayStepUVz, out float compareTolerance)
+float4 SetupPixelRandom(float2 uv)
 {
-    float4 rayStartClip = mul(_ViewProjMat, float4(worldPosition, 1));
-    float4 rayEndClip = mul(_ViewProjMat, float4(worldPosition + rayDirection * sceneDepth, 1)); // TODO: is this right?
+    uint2 randomSeed = Rand3DPCG16(uint3(uv * 1145.14, _FrameCountMod8)).xy;
+    float2 E1 = Hammersley16(0, 2, randomSeed);
+    float2 E2 = Hammersley16(1, 2, randomSeed);
 
-    float3 rayStartScreen = rayStartClip.xyz * rcp(rayStartClip.w);
-    float3 rayEndScreen = rayEndClip.xyz * rcp(rayEndClip.w);
-
-    float4 rayDepthClip = rayStartClip + mul(_ProjMat, float4(0, 0, sceneDepth, 0));
-    float3 rayDepthScreen = rayDepthClip.xyz * rcp(rayDepthClip.w);
-    float3 rayStepScreen = rayEndScreen - rayStartScreen;
-
-    compareTolerance = max(abs(rayStepScreen.z), (rayStartScreen.z - rayDepthScreen.z) * 2);
-    rayStartUVz = float3(rayStartScreen.xy * float2(0.5, -0.5) + 0.5, rayStartScreen.z);
-    rayStepUVz = float3(rayStepScreen.xy * float2(0.5, -0.5), rayStepScreen.z);
-
-    float step = 1.0 / float(stepCount);
-    rayStepUVz *= step;
-    compareTolerance *= step;
+    return float4(E1, E2);
 }
+
+float4 SetupRay(float3 worldNormal, float2 E)
+{
+    float3x3 tangentBasis = GetTangentBasis(worldNormal);
+    float4 tangentL = UniformSampleHemisphere(E);
+    float3 rayDirection = mul(tangentL.xyz, tangentBasis);
+    float samplePDF = max(tangentL.w, 1e-3);
+    
+    return float4(rayDirection, samplePDF);
+}
+
+// -------------------------------------------------------------------------------- //
+#pragma kernel InitialSampleScreenTrace
+
+#define DEBUG_AS_SSR 1
+#define FORCE_VOXEL_TRACE 0
+#define TILE_SIZE uint2(8, 8)
+
+SamplerState sampler_PointClamp;
+
+float4 _ScreenPositionScaleBias;
+float4 _PrevScreenPositionScaleBias;
+float4x4 _ClipToPrevClip;
+int2 _ScreenGatherRTSize;
+float4 _HZBUvFactorAndInvFactor;
+
+Texture2D<float4> _GBuffer0;
+Texture2D<float4> _GBuffer1;
+Texture2D<float> _SceneDepthTexture;
+
+Texture2D _HZB;
+Texture2D<float4> _SceneColorHistory;
+RWTexture2D<float4> _RWHitRadianceTexture;
+
+RWStructuredBuffer<int> _RWVoxelTraceRayCounter;
+RWStructuredBuffer<int2> _RWVoxelTraceRayCompactBuffer;
+
+groupshared bool gs_PixelValidMask[64];
+groupshared bool gs_ScreenHitMask[64];
+groupshared int gs_CompactBufferWriteIndex[64];
 
 [numthreads(8, 8, 1)]
-void ScreenGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
-	uint2 pixelCoord = threadId.xy;
-	if (pixelCoord.x >= _ScreenResolution.x || pixelCoord.y >= _ScreenResolution.y)
-	{
-		return;
-	}
-
-    float2 uv = (float2(pixelCoord) + 0.5) / _ScreenResolution.xy;
-    ClipmapInfo clipmapInfo = ResolveClipmapInfo();
-    
     // 1. do some setup
+    const int groupThreadIndex = Index2DTo1D(threadId.xy % TILE_SIZE, TILE_SIZE);
+    const bool isValidPixel = all(threadId.xy < _ScreenGatherRTSize - 1);
+    const int2 pixelCoord = clamp(threadId.xy, 0, _ScreenGatherRTSize - 1);
+    const float2 uv = (float2(pixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
+
+    // 2. setup ray
     float rawDepth = _SceneDepthTexture.Load(int3(pixelCoord, 0)).r;
-    float pixelDepth = (1.0 - rawDepth) * 2.0 - 1.0;
-    float3 worldPosition = ReconstructWorldPositionFromDepth(uv, pixelDepth);
+    float sceneDepth = (1.0 - rawDepth) * 2.0 - 1.0;
+    float3 worldPosition = ReconstructWorldPositionFromDepth(uv, sceneDepth);
     float3 viewDirection = normalize(worldPosition - _CameraPosition);
-	
-    float3 baseColor = _GBuffer0.SampleLevel(sampler_linearClamp, uv, 0).xyz;
+    float3 rayOriginTranslatedWorld = worldPosition - _CameraPosition;
+
     float3 worldNormal = _GBuffer1.SampleLevel(sampler_linearClamp, uv, 0).xyz;
     
-    uint2 randomSeed = Rand3DPCG16(uint3(uv * 1145.14, _FrameCountMod8)).xy;
-    float3x3 tangentBasis = GetTangentBasis(worldNormal);
-    int sampleCount = 4;
-    int stepCount = 16;
+    float4 randomVector = SetupPixelRandom(uv);
+    float3 rayDirection = SetupRay(worldNormal, randomVector.xy).xyz;
+
+#if DEBUG_AS_SSR
+    rayDirection = reflect(viewDirection, worldNormal);
+#endif
+
+    // 3. trace screen ray
+    const int numSteps = 32;
+    float3 hitUVz = float3(0, 0, 0);
+    float hitLevel = 0;
+
+    bool isHit = RayCast(
+        _HZB, sampler_PointClamp,
+        rayOriginTranslatedWorld, rayDirection,
+        0.05, // roughness 
+        sceneDepth,
+        numSteps,
+        randomVector.z, // SSRStepOffset
+        _HZBUvFactorAndInvFactor,
+        false, // debug print
+        _ViewProjMat, _ProjMat,
+        _ScreenPositionScaleBias,
+        hitUVz, hitLevel
+    );
+
+#if FORCE_VOXEL_TRACE
+    isHit = false;
+#endif
+
+    // 4. fetch radiance
     float3 color = float3(0, 0, 0);
-    
-    // 2. trace screen ray
-    for (int i = 0; i < sampleCount; i++)
+    if (isHit)
     {
-        float2 E = Hammersley16(i, sampleCount, randomSeed);
-        float4 tangentL = UniformSampleHemisphere(E);
-        float3 rayDirection = mul(tangentL.xyz, tangentBasis);
-        float samplePDF = max(tangentL.w, 1e-3);
+        float2 sampleUV;
+        float vignette;
+        ReprojectHit(_PrevScreenPositionScaleBias, hitUVz, _ScreenPositionScaleBias, _ClipToPrevClip, sampleUV, vignette);
+        color = _SceneColorHistory.SampleLevel(sampler_linearClamp, sampleUV.xy, 0).rgb;
+    }
 
-        float3 rayStartUVz, rayStepUVz;
-        float compareTolerance;
-        SetupRay(
-            worldPosition, rayDirection, pixelDepth, stepCount, // in
-            rayStartUVz, rayStepUVz, compareTolerance // out
-        );
+    if (isValidPixel)
+    {
+        float3 rayEndPosition = ReconstructWorldPositionFromDepth(hitUVz.xy, hitUVz.z);
+        float rayDistance = length(rayEndPosition - worldPosition);
+        _RWHitRadianceTexture[pixelCoord] = float4(color, rayDistance);
+    }
 
-        float3 rayUVz = rayStartUVz + rayStepUVz * 1;
-        float isHit = 0;
-        for (int j = 0; j < stepCount; j++)
+    gs_PixelValidMask[groupThreadIndex] = isValidPixel;
+    gs_ScreenHitMask[groupThreadIndex] = isHit;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // 5. single head thread count missing ray for off screen voxel trace
+    if (groupThreadIndex == 0)
+    {
+        // 5.1. count ray
+        int rayCounter = 0;
+        for (int i = 0; i < 64; i++)
         {
-            float sampleDepth = _SceneDepthTexture.Load(int3(rayUVz.xy, 0)).r;
-            float depthDiff = rayUVz.z - sampleDepth;
-
-            bool outOfScreen = any(rayUVz.xy > 1) || any(rayUVz.xy < 0);
-            bool hit = abs(depthDiff + compareTolerance) < compareTolerance;
-
-            if (hit || outOfScreen)
+            if (!gs_ScreenHitMask[i] && gs_PixelValidMask[i])
             {
-                isHit = outOfScreen ? 0 : 1;
-                break;
+                rayCounter += 1;
             }
-
-            rayUVz += rayStepUVz;
         }
-    
-        // screen ray hit
-        if (isHit)
-        {
+        
+        // 5.2. allocate space in compact buffer
+        int writeIndex = 0;
+        InterlockedAdd(_RWVoxelTraceRayCounter[0], rayCounter, writeIndex);
 
-        }
-        // screen ray miss
-        else
+        // 5.3. boardcast thread write index
+        for (int i = 0; i < 64; i++)
         {
-            for (int cascadeId = _RadianceProbeMinCascadeLevel; cascadeId < clipmapInfo.cascadeCount; cascadeId++)
+            if (!gs_ScreenHitMask[i] && gs_PixelValidMask[i])
             {
-                CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, cascadeId);
-                float3 translatedPosition = (worldPosition - cascadeInfo.center) / cascadeInfo.size + 0.5;
-                bool isPixelInClipmap = all(0 < translatedPosition) && all(translatedPosition < 1);
-                if (!isPixelInClipmap)
-                {
-                    continue;
-                }
-
-                float3 radiance = ProbeEvaluateRadiance(
-                    _RadianceProbeAtlas, _RadianceProbeDistanceAtlas,
-                    _RadianceProbeIdClipmap, _ProbeOffsetClipmap, sampler_linearClamp,
-                    cascadeInfo, _RadianceProbeCountInAtlasXY, _RadianceProbeResolution,
-                    worldPosition, rayDirection
-                );
-                color += radiance / samplePDF;
-                break;
+                gs_CompactBufferWriteIndex[i] = writeIndex;
+                writeIndex += 1;
             }
-            
         }
     }
 
-    color /= float(sampleCount);
-    color *= baseColor / PI;
+    GroupMemoryBarrierWithGroupSync();
 
-    _RWScreenGatherOutput[pixelCoord] = float4(color, 1);
+    // 6. write pixel info to buffer
+    if (!isHit && isValidPixel)
+    {
+        int writeIndex = gs_CompactBufferWriteIndex[groupThreadIndex];
+        _RWVoxelTraceRayCompactBuffer[writeIndex] = pixelCoord;
+    }
+}
+
+// -------------------------------------------------------------------------------- //
+#pragma kernel BuildVoxelTraceIndirectArgs
+
+int _NumThreadsForVoxelTrace;
+StructuredBuffer<int> _VoxelTraceRayCounter;
+RWStructuredBuffer<int> _RWIndirectArgs;
+
+[numthreads(1, 1, 1)]
+void BuildVoxelTraceIndirectArgs(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    _RWIndirectArgs[0] = ceil(float(_VoxelTraceRayCounter[0]) / float(_NumThreadsForVoxelTrace));
+    _RWIndirectArgs[1] = 1;
+    _RWIndirectArgs[2] = 1;
+}
+
+// -------------------------------------------------------------------------------- //
+#pragma kernel InitialSampleVoxelTrace
+
+StructuredBuffer<int2> _VoxelTraceRayCompactBuffer;
+
+[numthreads(64, 1, 1)]
+void InitialSampleVoxelTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    ClipmapInfo clipmapInfo = ResolveClipmapInfo();
+
+    int rayCount = _VoxelTraceRayCounter[0];
+    if (threadId.x >= rayCount)
+    {
+        return;
+    }
+
+    int2 pixelCoord = _VoxelTraceRayCompactBuffer[threadId.x];
+    const float2 uv = (float2(pixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
+
+    // 1. rebuild tracing context
+    float rawDepth = _SceneDepthTexture.Load(int3(pixelCoord, 0)).r;
+    float sceneDepth = (1.0 - rawDepth) * 2.0 - 1.0;
+    float3 worldPosition = ReconstructWorldPositionFromDepth(uv, sceneDepth);
+    float3 viewDirection = normalize(worldPosition - _CameraPosition);
+    
+    float3 worldNormal = _GBuffer1.SampleLevel(sampler_linearClamp, uv, 0).xyz;
+    
+    float4 randomVector = SetupPixelRandom(uv);
+    float3 rayDirection = SetupRay(worldNormal, randomVector.xy).xyz;
+    float rayDistance = _RWHitRadianceTexture[pixelCoord].w;
+
+    float3 voxelCellSize = GetVoxelCellSize(clipmapInfo, worldPosition);
+    float3 rayStart = worldPosition + worldNormal * voxelCellSize * sqrt(3.0);
+
+    // 2. trace ray
+    VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
+    RTRequest.rayStart = rayStart;
+    RTRequest.rayDir = rayDirection;
+    RTRequest.minCascadeIndex = 0;
+    RTRequest.maxCascadeIndex = clipmapInfo.cascadeCount - 1;
+    RTRequest.maxStepNum = 114514;
+    RTRequest.maxDistance = 191981000;
+
+#if USE_DISTANCE_FIELD
+    VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
+#else
+    VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _VoxelBitOccupyClipmap, RTRequest);
+#endif
+
+    // 3. handle ray hit
+    float3 hitRadiance = float3(0, 0, 0);
+    if (hit.isHit)
+    {
+        hitRadiance = FetchRadianceFromVoxelScene(RTRequest, hit);
+        rayDistance = length(hit.position - worldPosition);
+    }
+    else
+    {
+        rayDistance = 191981000;
+        hitRadiance = float3(1, 1, 1);
+    }
+
+    _RWHitRadianceTexture[pixelCoord] = float4(hitRadiance, rayDistance);
 }

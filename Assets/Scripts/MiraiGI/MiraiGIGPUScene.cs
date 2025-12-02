@@ -58,7 +58,7 @@ public class MiraiGIGPUScene
             // voxel lighting
             // TODO: multi-view
             miraiGIRadianceCache.Update(ref renderingData, this);
-            miraiGIScreenGather.DiffuseIndirectScreenGather(this);
+            //miraiGIScreenGather.Update(ref renderingData, this);
         }
     }
 
@@ -80,6 +80,7 @@ public class MiraiGIGPUScene
     {
         miraiGIClipmap.Release();
         miraiGIRadianceCache.Release();
+        miraiGIScreenGather.Release();
         GPUSceneData.Release();
         surfaceCache.Release();
         occupancyMap.Release();

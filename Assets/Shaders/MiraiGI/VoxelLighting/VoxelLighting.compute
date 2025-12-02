@@ -177,6 +177,7 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
         RTRequest.maxDistance = _ShadowRayMaxDistance;
 
 #if USE_DISTANCE_FIELD
+        RTRequest.minCascadeIndex = 0; // avoid self occlusion when use distance field
         VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
 #else
         VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _VoxelBitOccupyClipmap, RTRequest);

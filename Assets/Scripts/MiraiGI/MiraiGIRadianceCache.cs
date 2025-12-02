@@ -17,7 +17,6 @@ public enum ProbeVisualizeMode
 
 public class MiraiGIRadianceCache
 {
-    public MiraiGIScreenGatherResources screenGatherResources;
     public uint frameNumberRenderThread;
 
     int m_VoxelLightingCheckerBoardSize = 2;
@@ -79,9 +78,6 @@ public class MiraiGIRadianceCache
         GameObject sphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
         m_ProbeSphereMesh = sphere.GetComponent<MeshFilter>().mesh;
         //sphere.SetActive(false);
-
-        screenGatherResources = new MiraiGIScreenGatherResources();
-        screenGatherResources.Init();
     }
 
     public void Release()
@@ -112,8 +108,6 @@ public class MiraiGIRadianceCache
         m_RadianceProbeCaptureIndirectArgs.Release();
         m_RadianceProbeOutputMergeIndirectArgs.Release();
 
-        screenGatherResources.Release();
-
         m_ValidVoxelCounter = null;
         m_ValidVoxelBuffer = null;
         m_VoxelLightingIndirectArgs = null;
@@ -139,8 +133,6 @@ public class MiraiGIRadianceCache
         m_RadianceProbeReleaseIndirectArgs = null;
         m_RadianceProbeCaptureIndirectArgs = null;
         m_RadianceProbeOutputMergeIndirectArgs = null;
-
-        screenGatherResources = null;
     }
 
     public void Update(ref RenderingData renderingData, MiraiGIGPUScene scene)

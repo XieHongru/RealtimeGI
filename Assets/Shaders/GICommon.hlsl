@@ -219,7 +219,7 @@ float3 CalcVoxelCenterPos(float3 index, float3 voxelResolution, float3 boundsCen
 
 float MaskedBilinearFilter(float4 gatherResult, float2 uv, float atlasResolution, float4 validMask)
 {
-    float2 lerpFactor = frac(uv * atlasResolution + 0.5 / atlasResolution);
+    float2 lerpFactor = frac(uv * atlasResolution + 0.5);
 
 	// find min value from all valid value
     float minValue = 100000;
