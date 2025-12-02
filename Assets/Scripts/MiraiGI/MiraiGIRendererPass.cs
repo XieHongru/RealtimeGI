@@ -1,5 +1,6 @@
-using System.Collections;
+﻿using System.Collections;
 using System.Collections.Generic;
+using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
@@ -13,11 +14,13 @@ public class MiraiGIRendererFeature : ScriptableRendererFeature
     {
         if(!GlobalSettings.Instance.usePathTracing)
         {
+            ReplaceShader("Universal Render Pipeline/Lit");
             m_MiraiGIRenderPass = new MiraiGIRenderPass();
             m_MiraiGIRenderPass.renderPassEvent = RenderPassEvent.AfterRenderingPostProcessing;
         }
         else
         {
+            ReplaceShader("PathTracing/Standard");
             m_PathTracingRenderPass = new PathTracingRenderPass();
             m_PathTracingRenderPass.renderPassEvent = RenderPassEvent.AfterRenderingPrePasses;
         }
@@ -32,12 +35,44 @@ public class MiraiGIRendererFeature : ScriptableRendererFeature
         else
         {
             renderer.EnqueuePass(m_PathTracingRenderPass);
+            m_PathTracingRenderPass.setup();
         }
     }
 
     public void Refresh()
     {
         
+    }
+    public void ReplaceShader(string shaderPos)
+    {
+        string folderPath = "Assets/Models/Sponza-master/Materials";
+        string[] matGUIDs = AssetDatabase.FindAssets("t:Material", new[] { folderPath });
+
+        Shader targetShader = Shader.Find(shaderPos);
+        if (targetShader == null)
+        {
+            Debug.LogError("Shader 'PathTracing/Standard' not found! Check the shader name.");
+            return;
+        }
+
+        int count = 0;
+
+        foreach (string guid in matGUIDs)
+        {
+            string path = AssetDatabase.GUIDToAssetPath(guid);
+            Material mat = AssetDatabase.LoadAssetAtPath<Material>(path);
+
+            if (mat != null)
+            {
+                Undo.RecordObject(mat, "Batch Replace Shader");
+                mat.shader = targetShader;
+                EditorUtility.SetDirty(mat);
+                count++;
+            }
+        }
+
+        AssetDatabase.SaveAssets();
+        AssetDatabase.Refresh();
     }
 }
 
