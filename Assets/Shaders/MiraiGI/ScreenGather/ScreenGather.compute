@@ -9,13 +9,20 @@ float4x4 _ProjMat;
 float4x4 _ViewProjMat;
 float4x4 _InvViewProjMat;
 int _FrameCountMod8;
+float4 _ZBufferParam;
+float4x4 _InvProjMat;
+float4x4 _InvViewMat;
 
 float3 ReconstructWorldPositionFromDepth(float2 uv, float depth)
 {
-    float2 ndcPosition = float2((uv.x - 0.5f) * 2.0f, (uv.y - 0.5f) * 2.0f);
-    float realDepth = depth;
-    float4 worldPosition = mul(_InvViewProjMat, float4(ndcPosition * realDepth, realDepth, 1.0f));
-    return worldPosition.xyz / worldPosition.w;
+    float eyeDepth = 1.0 / (_ZBufferParam.z * depth + _ZBufferParam.w);
+    float4 clipPos = float4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+    float4 viewPos = mul(_InvProjMat, clipPos);
+    viewPos /= viewPos.w;
+    
+    float4 worldPos = mul(_InvViewMat, viewPos);
+    
+    return worldPos.xyz;
 }
 
 float4 SetupPixelRandom(float2 uv)
@@ -78,7 +85,7 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
 
     // 2. setup ray
     float rawDepth = _SceneDepthTexture.Load(int3(pixelCoord, 0)).r;
-    float sceneDepth = (1.0 - rawDepth) * 2.0 - 1.0;
+    float sceneDepth = 1.0 - rawDepth;
     float3 worldPosition = ReconstructWorldPositionFromDepth(uv, sceneDepth);
     float3 viewDirection = normalize(worldPosition - _CameraPosition);
     float3 rayOriginTranslatedWorld = worldPosition - _CameraPosition;
@@ -211,7 +218,7 @@ void InitialSampleVoxelTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupTh
 
     // 1. rebuild tracing context
     float rawDepth = _SceneDepthTexture.Load(int3(pixelCoord, 0)).r;
-    float sceneDepth = (1.0 - rawDepth) * 2.0 - 1.0;
+    float sceneDepth = 1.0 - rawDepth;
     float3 worldPosition = ReconstructWorldPositionFromDepth(uv, sceneDepth);
     float3 viewDirection = normalize(worldPosition - _CameraPosition);
     

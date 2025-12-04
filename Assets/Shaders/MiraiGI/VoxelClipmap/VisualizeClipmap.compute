@@ -4,6 +4,9 @@
 float4 _ScreenResolution;
 float4 _CameraPosition;
 float4x4 _InvViewProjMat;
+float4 _ZBufferParam;
+float4x4 _InvProjMat;
+float4x4 _InvViewMat;
 
 int _VisualizeMode;
 int _VisualizeCascadeLevel;
@@ -20,10 +23,15 @@ StructuredBuffer<int> _UpdateChunkList;
 
 float3 ReconstructWorldPositionFromDepth(float2 uv, float depth)
 {
-    float2 ndcPosition = float2((uv.x - 0.5f) * 2.0f, (uv.y - 0.5f) * 2.0f);
-    float realDepth = depth;
-    float4 worldPosition = mul(_InvViewProjMat, float4(ndcPosition * realDepth, realDepth, 1.0f));
-    return worldPosition.xyz / worldPosition.w;
+    float reverseDepth = 1 - depth;
+    float eyeDepth = 1.0 / (_ZBufferParam.z * reverseDepth + _ZBufferParam.w);
+    float4 clipPos = float4(uv * 2.0 - 1.0, reverseDepth * 2.0 - 1.0, 1.0);
+    float4 viewPos = mul(_InvProjMat, clipPos);
+    viewPos /= viewPos.w;
+    
+    float4 worldPos = mul(_InvViewMat, viewPos);
+    
+    return worldPos.xyz;
 }
 
 #ifndef USE_DISTANCE_FIELD
@@ -41,8 +49,7 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
 
     float2 uv = (float2(pixelCoord) + 0.5) / _ScreenResolution.xy;
     float rawDepth = _SceneDepthTexture.Load(int3(pixelCoord, 0)).r;
-    float pixelDepth = (1.0 - rawDepth) * 2.0 - 1.0;
-    float3 pixelWorldPosition = ReconstructWorldPositionFromDepth(uv, pixelDepth);
+    float3 pixelWorldPosition = ReconstructWorldPositionFromDepth(uv, rawDepth);
     
     ClipmapInfo clipmapInfo = ResolveClipmapInfo();
     

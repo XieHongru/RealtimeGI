@@ -697,6 +697,13 @@ public class MiraiGIClipmap
         cmd.SetComputeVectorParam(m_VisualizeClipmapCS, Shader.PropertyToID("_CameraPosition"), camera.transform.position);
         cmd.SetComputeMatrixParam(m_VisualizeClipmapCS, Shader.PropertyToID("_InvViewProjMat"), (camera.projectionMatrix * camera.worldToCameraMatrix).inverse);
 
+        float near = camera.nearClipPlane;
+        float far = camera.farClipPlane;
+        Vector4 zBufferParam = new Vector4(far / near - 1.0f, 1.0f, (far / near - 1.0f) / far, 1.0f / far);
+        cmd.SetComputeVectorParam(m_VisualizeClipmapCS, Shader.PropertyToID("_ZBufferParam"), zBufferParam);
+        cmd.SetComputeMatrixParam(m_VisualizeClipmapCS, Shader.PropertyToID("_InvProjMat"), camera.projectionMatrix.inverse);
+        cmd.SetComputeMatrixParam(m_VisualizeClipmapCS, Shader.PropertyToID("_InvViewMat"), camera.cameraToWorldMatrix);
+
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_RWSceneColorTexture"), m_VisualizeColorTarget);
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_SceneDepthTexture"), Shader.GetGlobalTexture("_CameraDepthTexture"));
 

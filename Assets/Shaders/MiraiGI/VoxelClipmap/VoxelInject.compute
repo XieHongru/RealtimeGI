@@ -93,7 +93,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         float3 objectLocalBoundSize = objectInfo.localBoundsMax - objectInfo.localBoundsMin;
         float3 objectWorldBound = objectLocalBoundSize * objectWorldScale; 
         // note: must sync with projection matrix in CalcCardCaptureViewProjectionMatrix in c#
-        float orthoDepthWorldSize = max(max(objectWorldBound.x, objectWorldBound.y), objectWorldBound.z); 
+        //float orthoDepthWorldSize = max(max(objectWorldBound.x, objectWorldBound.y), objectWorldBound.z); 
         
         // if voxel is too far from object we reject
         float3 localCellSize = voxelCellSize / objectWorldScale;
@@ -115,6 +115,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         {
             CardInfo cardInfo = _CardInfoBuffer[cardOffset + cardIndex];
             float4x4 localToCard = cardInfo.localToCardMatrix;
+            float orthoDepthWorldSize = (cardIndex == 0 || cardIndex == 1) ? objectWorldBound.x : ((cardIndex == 2 || cardIndex == 3) ? objectWorldBound.y : objectWorldBound.z);
             
             // 1.2.1. transform voxel pos to card capture's uv space (like shadowmap)
             float3 cardUVZ = mul(localToCard, float4(localPosition, 1));
@@ -131,7 +132,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
             float cardDepth = SurfaceCacheSampleDepth(_SurfaceCacheAtlasDepth, sampler_LinearClamp, uvInAtlas, _SurfaceCacheAtlasResolution, bilinearValidMask);
             float voxelDepth = (cardUVZ.z * 0.5f) + 0.5f;
 
-            if (cardDepth == 0)
+            if (cardDepth == 0 || voxelDepth < 0 || voxelDepth > 1)
             {
                 continue;
             }
