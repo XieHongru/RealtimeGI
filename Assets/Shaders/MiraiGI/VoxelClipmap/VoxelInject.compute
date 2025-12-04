@@ -93,10 +93,11 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         float3 objectLocalBoundSize = objectInfo.localBoundsMax - objectInfo.localBoundsMin;
         float3 objectWorldBound = objectLocalBoundSize * objectWorldScale; 
         // note: must sync with projection matrix in CalcCardCaptureViewProjectionMatrix in c#
-        //float orthoDepthWorldSize = max(max(objectWorldBound.x, objectWorldBound.y), objectWorldBound.z); 
+        float orthoDepthLocalSize = max(max(objectLocalBoundSize.x, objectLocalBoundSize.y), objectLocalBoundSize.z);
+        float orthoDepthWorldSize = max(max(objectWorldBound.x, objectWorldBound.y), objectWorldBound.z); 
         
         // if voxel is too far from object we reject
-        float3 localCellSize = voxelCellSize / objectWorldScale;
+        float3 localCellSize = voxelCellSize.xxx / objectWorldScale;
         float localSpaceCellRadius = max(max(localCellSize.x, localCellSize.y), localCellSize.z) * 1.414; // sqrt(2) for diagonal
         float3 toleranceBoundMin = objectInfo.localBoundsMin - localSpaceCellRadius.xxx;
         float3 toleranceBoundMax = objectInfo.localBoundsMax + localSpaceCellRadius.xxx;
@@ -115,7 +116,6 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         {
             CardInfo cardInfo = _CardInfoBuffer[cardOffset + cardIndex];
             float4x4 localToCard = cardInfo.localToCardMatrix;
-            float orthoDepthWorldSize = (cardIndex == 0 || cardIndex == 1) ? objectWorldBound.x : ((cardIndex == 2 || cardIndex == 3) ? objectWorldBound.y : objectWorldBound.z);
             
             // 1.2.1. transform voxel pos to card capture's uv space (like shadowmap)
             float3 cardUVZ = mul(localToCard, float4(localPosition, 1));
@@ -137,8 +137,10 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
                 continue;
             }
 
-            float worldDistance = abs(cardDepth - voxelDepth) * orthoDepthWorldSize;
-            if (worldDistance < voxelCellSize * 0.707)  // tolerance radius is sqrt(2) / 2, for unit cube
+            //float worldDistance = abs(cardDepth - voxelDepth) * orthoDepthWorldSize;
+            //if (worldDistance < voxelCellSize * 0.707)  // tolerance radius is sqrt(2) / 2, for unit cube
+            float worldDistance = abs(cardDepth - voxelDepth) * orthoDepthLocalSize;
+            if (worldDistance < localSpaceCellRadius * 0.5)
             {
                 hasVoxel = true;
                 localToWorldMatrix = objectInfo.localToWorldMatrix;
@@ -222,7 +224,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         int3 writeIndex = PageAddressMapping(gs_VoxelPageId, _VoxelPageCountInXYZ, voxelIndex);
         _RWVoxelPoolBaseColor[writeIndex] = baseColor;
         _RWVoxelPoolNormal[writeIndex] = worldNormal;
-        _RWVoxelPoolEmissive[writeIndex] = emissive;
+        //_RWVoxelPoolEmissive[writeIndex] = emissive;
     }
     
     // 6. write to distance field
