@@ -19,7 +19,7 @@ public class MiraiGIRendererFeature : ScriptableRendererFeature
         else
         {
             m_PathTracingRenderPass = new PathTracingRenderPass();
-            m_PathTracingRenderPass.renderPassEvent = RenderPassEvent.AfterRenderingPrePasses;
+            m_PathTracingRenderPass.renderPassEvent = RenderPassEvent.AfterRenderingPostProcessing;
         }
     }
 
@@ -32,6 +32,7 @@ public class MiraiGIRendererFeature : ScriptableRendererFeature
         else
         {
             renderer.EnqueuePass(m_PathTracingRenderPass);
+            m_PathTracingRenderPass.setup();
         }
     }
 
