@@ -1,0 +1,17 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1238cff9941a23246acce6eb0ac99376, type: 3}
+  m_Name: PTSettings
+  m_EditorClassIdentifier: 
+  rayTracingShader: {fileID: 4807578003741378534, guid: f091f72a6b724e64eae3637fc0b345db,
+    type: 3}
+  texture: {fileID: 2800000, guid: 77eb5ffc524d09c4280d3d299248f0b5, type: 3}

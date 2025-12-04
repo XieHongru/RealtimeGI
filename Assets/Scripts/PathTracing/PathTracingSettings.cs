@@ -6,6 +6,7 @@ using UnityEngine.Experimental.Rendering;
 [CreateAssetMenu(menuName = "Settings/Path Tracing Settings")]
 public class PathTracingSettings : ScriptableObject
 {
+    // Start is called before the first frame update
     private static PathTracingSettings m_Instance;
     public static PathTracingSettings Instance
     {
@@ -13,14 +14,11 @@ public class PathTracingSettings : ScriptableObject
         {
             if (m_Instance == null)
             {
-                m_Instance = AssetDatabase.LoadAssetAtPath<PathTracingSettings>("Assets/Settings/PathTracingSettings.asset");
+                m_Instance = AssetDatabase.LoadAssetAtPath<PathTracingSettings>("Assets/Settings/PTSettings.asset");
             }
             return m_Instance;
         }
     }
-    public int bounceCountOpaque = 4;
-    public int bounceCountTransparent = 4;
-    public RayTracingShader rayTracingShader = null;
-    public Vector3 sunDirection = new Vector3(1.0f, 0.0f, 0.0f);
-    public Vector3 sunColor = new Vector3(1.0f, 1.0f, 1.0f);
+    public RayTracingShader rayTracingShader;
+    public Texture2D texture;
 }

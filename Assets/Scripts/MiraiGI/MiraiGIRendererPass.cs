@@ -22,7 +22,7 @@ public class MiraiGIRendererFeature : ScriptableRendererFeature
         {
             ReplaceShader("PathTracing/Standard");
             m_PathTracingRenderPass = new PathTracingRenderPass();
-            m_PathTracingRenderPass.renderPassEvent = RenderPassEvent.AfterRenderingPrePasses;
+            m_PathTracingRenderPass.renderPassEvent = RenderPassEvent.AfterRenderingPostProcessing;
         }
     }
 
