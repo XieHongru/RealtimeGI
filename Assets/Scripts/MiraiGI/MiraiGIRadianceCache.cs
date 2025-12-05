@@ -77,7 +77,7 @@ public class MiraiGIRadianceCache
 
         GameObject sphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
         m_ProbeSphereMesh = sphere.GetComponent<MeshFilter>().mesh;
-        //sphere.SetActive(false);
+        sphere.SetActive(false);
     }
 
     public void Release()

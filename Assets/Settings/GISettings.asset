@@ -19,6 +19,13 @@ MonoBehaviour:
   meshCardResolutionThreshold2: 16
   meshCardResolutionThreshold3: 64
   adaptiveSurfaceCacheCount: 8
+  chunkCountToUpdatePerFrame: 16
+  cullingObjectCountPerChunk: 64
+  voxelCascadeCount: 4
+  voxelSize: 0.2
+  voxelVisualizeMode: 4
+  voxelVisualizeCascadeLevel: 0
+  voxelVisualizeUpdateChunk: 0
   clipmapObjectCullingRejectFactor1: 1
   clipmapObjectCullingRejectFactor2: 2
   clipmapObjectCullingRejectFactor3: 3
@@ -31,4 +38,10 @@ MonoBehaviour:
   visualizeIrradianceProbe: 0
   visualizeRadianceProbe: 0
   radianceProbeResolution: 16
-  irradianceProbeSampleRadianceProbe: 1
+  reuseRadianceProbe: 1
+  useProbeOcclusionTest: 1
+  radianceProbeMinCascadeLevel: 2
+  irradianceProbeSampleCount: 1
+  irradianceProbeTemporalWeight: 0.5
+  visualizeScreenGather: 0
+  useDistanceField: 0

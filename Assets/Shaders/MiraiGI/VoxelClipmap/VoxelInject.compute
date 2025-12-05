@@ -224,7 +224,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         int3 writeIndex = PageAddressMapping(gs_VoxelPageId, _VoxelPageCountInXYZ, voxelIndex);
         _RWVoxelPoolBaseColor[writeIndex] = baseColor;
         _RWVoxelPoolNormal[writeIndex] = worldNormal;
-        //_RWVoxelPoolEmissive[writeIndex] = emissive;
+        _RWVoxelPoolEmissive[writeIndex] = emissive;
     }
     
     // 6. write to distance field

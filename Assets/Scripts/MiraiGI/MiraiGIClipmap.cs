@@ -159,7 +159,7 @@ public class MiraiGIClipmap
         m_VoxelMap.enableRandomWrite = true;
         m_VoxelMap.Create();
 
-        m_VisualizeColorTarget = new RenderTexture(Camera.main.pixelWidth, Camera.main.pixelHeight, 0, RenderTextureFormat.RGB111110Float);
+        m_VisualizeColorTarget = new RenderTexture(Camera.main.pixelWidth, Camera.main.pixelHeight, 0, RenderTextureFormat.ARGBFloat);
         m_VisualizeColorTarget.enableRandomWrite = true;
         m_VisualizeColorTarget.Create();
         m_VisualizeDepthTarget = new RenderTexture(Camera.main.pixelWidth, Camera.main.pixelHeight, 0, RenderTextureFormat.RFloat);
@@ -191,7 +191,7 @@ public class MiraiGIClipmap
             int updateChunkCount = updateChunkDimension.x * updateChunkDimension.y * updateChunkDimension.z;
 
             cascadeInfo.cascadeCenter = Camera.main.transform.position;
-            cascadeInfo.cascadeSize = new Vector3(32, 32, 32) * (1 << cascadeId);
+            cascadeInfo.cascadeSize = new Vector3(16,16,16) * (1 << cascadeId);
             cascadeInfo.scrolling = Vector3Int.zero;
             cascadeInfo.chunkCountInXYZ = updateChunkDimension; // TODO: no effect
             for (int chunkId = 0; chunkId < updateChunkCount; chunkId++)
@@ -233,13 +233,13 @@ public class MiraiGIClipmap
         m_VoxelPoolBaseColor.enableRandomWrite = true;
         m_VoxelPoolBaseColor.Create();
 
-        m_VoxelPoolNormal = new RenderTexture(textureSize.x, textureSize.y, 0, RenderTextureFormat.RGB111110Float);
+        m_VoxelPoolNormal = new RenderTexture(textureSize.x, textureSize.y, 0, RenderTextureFormat.ARGBHalf);
         m_VoxelPoolNormal.dimension = TextureDimension.Tex3D;
         m_VoxelPoolNormal.volumeDepth = textureSize.z;
         m_VoxelPoolNormal.enableRandomWrite = true;
         m_VoxelPoolNormal.Create();
 
-        m_VoxelPoolEmissive = new RenderTexture(textureSize.x, textureSize.y, 0, RenderTextureFormat.RGB111110Float);
+        m_VoxelPoolEmissive = new RenderTexture(textureSize.x, textureSize.y, 0, RenderTextureFormat.ARGBHalf);
         m_VoxelPoolEmissive.dimension = TextureDimension.Tex3D;
         m_VoxelPoolEmissive.volumeDepth = textureSize.z;
         m_VoxelPoolEmissive.enableRandomWrite = true;
@@ -707,7 +707,7 @@ public class MiraiGIClipmap
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_RWSceneColorTexture"), m_VisualizeColorTarget);
         cmd.SetComputeTextureParam(m_VisualizeClipmapCS, kernel, Shader.PropertyToID("_SceneDepthTexture"), Shader.GetGlobalTexture("_CameraDepthTexture"));
 
-        cmd.SetComputeIntParam(m_VisualizeClipmapCS, Shader.PropertyToID("_VisualizeMode"), VISUALIZE_MODE);
+        cmd.SetComputeIntParam(m_VisualizeClipmapCS, Shader.PropertyToID("_VisualizeMode"), GlobalSettings.Instance.voxelVisualizeMode);
         cmd.SetComputeIntParam(m_VisualizeClipmapCS, Shader.PropertyToID("_VisualizeCascadeLevel"), GlobalSettings.Instance.voxelVisualizeCascadeLevel);
 
         int visualizeUpdateChunk = GlobalSettings.Instance.voxelVisualizeUpdateChunk;

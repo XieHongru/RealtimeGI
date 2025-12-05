@@ -140,8 +140,8 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
     // 3. evaluate directional light shadow
     float mainLightShadow = 1.0;
     float3 voxelPosition = CalcVoxelCenterPos(voxelIndex, cascadeInfo.resolution, cascadeInfo.center, cascadeInfo.size);
-    float3 voxelClipPosition = mul(_CameraViewProjectionMatrix, float4(voxelPosition, 1));
-    voxelClipPosition.xyz /= voxelClipPosition.b;
+    float4 voxelClipPosition = mul(_CameraViewProjectionMatrix, float4(voxelPosition, 1));
+    voxelClipPosition.xyz /= voxelClipPosition.w;
     bool isVoxelInFrustum = all(abs(voxelClipPosition.xy) < 1) && voxelClipPosition.z > 0; // voxel may behind camera frustum where csm is invalid
 
     // 3.1. use whole scene shadow map
@@ -156,10 +156,11 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
         //float4 shadowPosition = mul(float4(voxelPosition, 1), _CSMWorldToShadowMatrixs[cascadeIndex]);
         float4 shadowPosition = mul(_CSMWorldToShadowMatrices[cascadeIndex], float4(voxelPosition, 1));
         shadowPosition.xyz /= shadowPosition.w;
-        shadowPosition.y = 0.5f - shadowPosition.y;
-        shadowPosition.z = (shadowPosition.z * 0.5f) + 0.5f;
         float sampleZ = _ShadowDepthTexture.SampleLevel(sampler_PointClamp, shadowPosition.xy, 0).r;
         mainLightShadow *= (shadowPosition.z >= sampleZ);
+        
+        if (mainLightShadow == 0)
+            break;
     }
 
     // 3.2. trace shadow ray as fallback
@@ -172,7 +173,7 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
         RTRequest.rayStart = voxelPosition + positionOffset;
         RTRequest.rayDir = _MainLightDirection;
         RTRequest.maxCascadeIndex = _CascadeCount - 1;
-        RTRequest.minCascadeIndex = min(cascadeIndex + rayBoostClipmapOffset, RTRequest.maxCascadeIndex);
+        RTRequest.minCascadeIndex = min(_CascadeIndex + rayBoostClipmapOffset, RTRequest.maxCascadeIndex);
         RTRequest.maxStepNum = 128000;
         RTRequest.maxDistance = _ShadowRayMaxDistance;
 
@@ -192,7 +193,7 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
         float3 faceNormal = worldNormal * lerp(1, -1, face); // -WorldNormal if back face
 
         // 4.1. evaluate direct lighting
-        radiance += saturate(dot(faceNormal, _MainLightDirection)) * _MainLightColor /** mainLightShadow*/ * baseColor / (3.1415926);
+        radiance += saturate(dot(faceNormal, _MainLightDirection)) * _MainLightColor * mainLightShadow * baseColor / (3.1415926);
 
         // TODO: pre-exposure
         
