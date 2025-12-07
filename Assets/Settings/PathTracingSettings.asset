@@ -9,12 +9,13 @@ MonoBehaviour:
   m_GameObject: {fileID: 0}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 61398a80e0390194e9dd23c68bb40fae, type: 3}
+  m_Script: {fileID: 11500000, guid: 1238cff9941a23246acce6eb0ac99376, type: 3}
   m_Name: PathTracingSettings
   m_EditorClassIdentifier: 
-  bounceCountOpaque: 4
-  bounceCountTransparent: 4
   rayTracingShader: {fileID: 4807578003741378534, guid: d2db1566530091a44b00ef86c0396bb2,
     type: 3}
-  sunDirection: {x: 1, y: 0, z: 0}
-  sunColor: {x: 1, y: 1, z: 1}
+  texture: {fileID: 2800000, guid: 94877d2faf64dd949a3c3f137eca3023, type: 3}
+  bounceCountOpaque: 5
+  bounceCountTransparent: 8
+  sunDirection: {x: 0, y: -1, z: 0}
+  sunColor: {x: 4, y: 5, z: 9}

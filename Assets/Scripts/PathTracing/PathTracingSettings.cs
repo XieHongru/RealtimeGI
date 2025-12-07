@@ -14,11 +14,16 @@ public class PathTracingSettings : ScriptableObject
         {
             if (m_Instance == null)
             {
-                m_Instance = AssetDatabase.LoadAssetAtPath<PathTracingSettings>("Assets/Settings/PTSettings.asset");
+                m_Instance = AssetDatabase.LoadAssetAtPath<PathTracingSettings>("Assets/Settings/PathTracingSettings.asset");
             }
             return m_Instance;
         }
     }
     public RayTracingShader rayTracingShader;
     public Texture2D texture;
+    public int bounceCountOpaque;
+    public int bounceCountTransparent;
+    public Vector3 sunDirection = new Vector3(1.0f, 0.0f, 0.0f);
+    public Vector3 sunColor = new Vector3(1.0f, 1.0f, 1.0f);
+
 }
