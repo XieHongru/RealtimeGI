@@ -159,10 +159,11 @@ public class MiraiGIClipmap
         m_VoxelMap.enableRandomWrite = true;
         m_VoxelMap.Create();
 
-        m_VisualizeColorTarget = new RenderTexture(Camera.main.pixelWidth, Camera.main.pixelHeight, 0, RenderTextureFormat.ARGBFloat);
+        m_VisualizeColorTarget = new RenderTexture(Camera.main.pixelWidth, Camera.main.pixelHeight, 24, RenderTextureFormat.ARGBFloat);
+        m_VisualizeColorTarget.depth = 24;
         m_VisualizeColorTarget.enableRandomWrite = true;
         m_VisualizeColorTarget.Create();
-        m_VisualizeDepthTarget = new RenderTexture(Camera.main.pixelWidth, Camera.main.pixelHeight, 0, RenderTextureFormat.RFloat);
+        m_VisualizeDepthTarget = new RenderTexture(Camera.main.pixelWidth, Camera.main.pixelHeight, 24, RenderTextureFormat.Depth);
         m_VisualizeDepthTarget.Create();
 
         m_VoxelOccupy = new RenderTexture(128, 128, 0, RenderTextureFormat.RFloat);
@@ -191,7 +192,7 @@ public class MiraiGIClipmap
             int updateChunkCount = updateChunkDimension.x * updateChunkDimension.y * updateChunkDimension.z;
 
             cascadeInfo.cascadeCenter = Camera.main.transform.position;
-            cascadeInfo.cascadeSize = new Vector3(16,16,16) * (1 << cascadeId);
+            cascadeInfo.cascadeSize = new Vector3(32, 32, 32) * (1 << cascadeId);
             cascadeInfo.scrolling = Vector3Int.zero;
             cascadeInfo.chunkCountInXYZ = updateChunkDimension; // TODO: no effect
             for (int chunkId = 0; chunkId < updateChunkCount; chunkId++)

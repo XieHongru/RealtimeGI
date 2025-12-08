@@ -63,8 +63,8 @@ Shader "Mirai/VisualizeProbe"
         output.rayDirection = normalize(localPosition);
         output.positionWS = TransformObjectToWorld(input.positionOS.xyz);
         output.positionCS = mul(_CameraViewProjection, float4(worldPosition, 1));
-        output.positionCS.z /= output.positionCS.w;
         output.positionCS.y = -output.positionCS.y;
+        output.positionCS.z = output.positionCS.w - output.positionCS.z;
 
         return output;
     }

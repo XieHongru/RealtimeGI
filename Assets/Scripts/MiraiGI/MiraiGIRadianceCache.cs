@@ -703,7 +703,7 @@ public class MiraiGIRadianceCache
         }
     }
 
-    public void VisualizeProbe(CommandBuffer cmd, MiraiGIGPUScene scene, ProbeVisualizeMode visualizeMode)
+    public void VisualizeProbe(CommandBuffer cmd, MiraiGIGPUScene scene, ref RenderingData renderingData, ProbeVisualizeMode visualizeMode)
     {
         MiraiGIClipmap clipmap = scene.miraiGIClipmap;
         MiraiGICascadeInfo[] cascadeInfos = clipmap.cascadeInfos;
@@ -721,7 +721,19 @@ public class MiraiGIRadianceCache
         Material probeVisualizeMaterial = new Material(probeVisualizeShader);
         probeVisualizeMaterial.enableInstancing = true;
 
-        cmd.SetRenderTarget(clipmap.GetVisualizeColorTarget(), Shader.GetGlobalTexture("_CameraDepthTexture"));
+        Vector4[] cascadeCenterArray = new Vector4[GlobalShared.MAX_CASCADE_COUNT];
+        Vector4[] cascadeSizeArray = new Vector4[GlobalShared.MAX_CASCADE_COUNT];
+        Vector4[] cascadeScrollingArray = new Vector4[GlobalShared.MAX_CASCADE_COUNT];
+
+        for (int cascadeIndex = 0; cascadeIndex < cascadeInfos.Length; cascadeIndex++)
+        {
+            MiraiGICascadeInfo cascadeInfo = cascadeInfos[cascadeIndex];
+            cascadeCenterArray[cascadeIndex] = cascadeInfo.cascadeCenter;
+            cascadeSizeArray[cascadeIndex] = cascadeInfo.cascadeSize;
+            cascadeScrollingArray[cascadeIndex] = (Vector3)cascadeInfo.scrolling;
+        }
+
+        cmd.SetRenderTarget(clipmap.GetVisualizeColorTarget(), renderingData.cameraData.renderer.cameraDepthTarget);
 
         probeVisualizeMaterial.SetInt(Shader.PropertyToID("_VisualizeMode"), (visualizeMode == ProbeVisualizeMode.IrradianceProbe ? 0 : 1));
         probeVisualizeMaterial.SetInt(Shader.PropertyToID("_RadianceProbeResolution"), m_RadianceProbeResolution);
@@ -729,6 +741,9 @@ public class MiraiGIRadianceCache
         probeVisualizeMaterial.SetInt(Shader.PropertyToID("_CascadeIndex"), cascadeId);
         probeVisualizeMaterial.SetInt(Shader.PropertyToID("_CascadeCount"), MiraiGIClipmap.CASCADE_COUNT);
         probeVisualizeMaterial.SetVector(Shader.PropertyToID("_CascadeResolution"), (Vector3)clipmap.voxelResolution);
+        probeVisualizeMaterial.SetVectorArray(Shader.PropertyToID("_CascadeCenterArray"), cascadeCenterArray);
+        probeVisualizeMaterial.SetVectorArray(Shader.PropertyToID("_CascadeSizeArray"), cascadeSizeArray);
+        probeVisualizeMaterial.SetVectorArray(Shader.PropertyToID("_CascadeScrollingArray"), cascadeScrollingArray);
 
         probeVisualizeMaterial.SetTexture(Shader.PropertyToID("_VoxelBitOccupyClipmap"), clipmap.GetVoxelMap());
         probeVisualizeMaterial.SetTexture(Shader.PropertyToID("_IrradianceProbeClipmap"), m_IrradianceProbeClipmap);
