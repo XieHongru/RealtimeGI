@@ -35,7 +35,7 @@ MonoBehaviour:
   voxelLightingCheckerBoardSize: 2
   freezeLightingForDebug: 0
   probeUpdateCheckerBoardSize: 2
-  visualizeIrradianceProbe: 1
+  visualizeIrradianceProbe: 0
   visualizeRadianceProbe: 0
   radianceProbeResolution: 16
   reuseRadianceProbe: 1

@@ -349,6 +349,20 @@ void PickValidProbe(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : 
 }
 
 // -------------------------------------------------------------------------------- //
+#pragma kernel RadianceProbeIdClipmapInit
+
+RWTexture3D<int> _RWRadianceProbeIdClipmap;
+
+[numthreads(4, 4, 4)]
+void RadianceProbeIdClipmapInit(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    uint3 blockIndex = threadId.xyz;
+    //blockIndex.z += _CascadeResolution / VOXEL_BLOCK_SIZE * _CascadeIndex;
+    
+    _RWRadianceProbeIdClipmap[blockIndex] = PROBE_ID_INVALID;
+}
+
+// -------------------------------------------------------------------------------- //
 #pragma kernel RadianceProbeAllocate
 
 groupshared int gs_SharedProbeState[64];
@@ -358,8 +372,6 @@ int _MaxRadianceProbeNum;
 
 RWStructuredBuffer<int> _RWRadianceProbeFreeList;
 RWStructuredBuffer<int> _RWRadianceProbeReleaseList;
-
-RWTexture3D<int> _RWRadianceProbeIdClipmap;
 
 [numthreads(4, 4, 4)]
 void RadianceProbeAllocate(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
