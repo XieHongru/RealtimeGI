@@ -22,9 +22,12 @@ public class MiraiGIScreenGather
     RenderTexture m_DiffuseIndirectHistory;
     RenderTexture m_SceneColorHistory;
 
+    RenderTexture m_HiZBuffer;
+
     Matrix4x4 m_PrevClipMatrix;
     Matrix4x4 m_CurClipMatrix;
 
+    ComputeShader m_HiZBufferGenerateCS;
     ComputeShader m_ScreenGatherCS;
 
     public void Init()
@@ -32,6 +35,7 @@ public class MiraiGIScreenGather
         m_PrevClipMatrix = Matrix4x4.identity;
         m_CurClipMatrix = Matrix4x4.identity;
 
+        m_HiZBufferGenerateCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/RayTracing/HiZBufferGenerate.compute");
         m_ScreenGatherCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/ScreenGather/ScreenGather.compute");
     }
 
@@ -59,24 +63,25 @@ public class MiraiGIScreenGather
         CommandBuffer cmd = CommandBufferPool.Get("Screen Gather");
 
         PrepareRenderResources(ref renderingData, cmd, scene);
-        InitialSampleScreenTrace(cmd, scene);
+        InitialSampleScreenTrace(ref renderingData, cmd, scene);
         InitialSampleVoxelTrace(cmd, scene);
 
         Graphics.ExecuteCommandBuffer(cmd);
         CommandBufferPool.Release(cmd);
     }
 
-    public void VisualizeMiraiGIScreenGather(CommandBuffer cmd, MiraiGIGPUScene scene, RenderTargetIdentifier sceneColorTexture)
+    public void VisualizeMiraiGIScreenGather(CommandBuffer cmd, MiraiGIGPUScene scene)
     {
         if (GlobalSettings.Instance.visualizeScreenGather <= 0)
             return;
 
-        cmd.Blit(m_HitRadianceTexture, sceneColorTexture);
-    }
+        cmd.BeginSample("Visualize Screen Gather");
 
-    public void MiraiGICacheSceneColor(CommandBuffer cmd, MiraiGIGPUScene scene, RenderTargetIdentifier sceneColorTexture)
-    {
-        cmd.Blit(sceneColorTexture, m_SceneColorHistory);
+        MiraiGIClipmap clipmap = scene.miraiGIClipmap;
+
+        cmd.Blit(m_HitRadianceTexture, clipmap.GetVisualizeColorTarget());
+
+        cmd.EndSample("Visualize Screen Gather");
     }
 
     void PrepareRenderResources(ref RenderingData renderingData, CommandBuffer cmd, MiraiGIGPUScene scene)
@@ -104,6 +109,40 @@ public class MiraiGIScreenGather
             m_SceneColorHistory.Create();
         }
 
+        if (m_HiZBuffer == null)
+        {
+            int width = renderingData.cameraData.cameraTargetDescriptor.width;
+            int height = renderingData.cameraData.cameraTargetDescriptor.height;
+
+            m_HiZBuffer = new RenderTexture(width, height, 0, RenderTextureFormat.RFloat);
+            m_HiZBuffer.useMipMap = true;
+            m_HiZBuffer.autoGenerateMips = false;
+            m_HiZBuffer.enableRandomWrite = true;
+            m_HiZBuffer.filterMode = FilterMode.Point;
+            m_HiZBuffer.Create();
+        }
+        {
+            cmd.BeginSample("HiZ Generate");
+
+            int width = renderingData.cameraData.cameraTargetDescriptor.width;
+            int height = renderingData.cameraData.cameraTargetDescriptor.height;
+
+            int kernel = m_HiZBufferGenerateCS.FindKernel("HiZBufferGenerate");
+
+            cmd.SetComputeTextureParam(m_HiZBufferGenerateCS, kernel, Shader.PropertyToID("_DepthTexture"), Shader.GetGlobalTexture("_CameraDepthTexture"));
+
+            for (int mip = 0; (width > 8 || height > 8) && mip <= GlobalShared.MAX_HZB_LEVEL; mip++)
+            {
+                cmd.SetComputeIntParam(m_HiZBufferGenerateCS, Shader.PropertyToID("_MipLevel"), mip);
+                cmd.SetComputeTextureParam(m_HiZBufferGenerateCS, kernel, Shader.PropertyToID("_RWHiZBuffer"), m_HiZBuffer, mip);
+                cmd.DispatchCompute(m_HiZBufferGenerateCS, kernel, Mathf.CeilToInt((float)width / 8), Mathf.CeilToInt((float)height / 8), 1);
+                width = Mathf.Max(1, width >> 1);
+                height = Mathf.Max(1, height >> 1);
+            }
+
+            cmd.EndSample("HiZ Generate");
+        }
+
         if (m_VoxelTraceRayCounter == null)
         {
             m_VoxelTraceRayCounter = new ComputeBuffer(1, sizeof(int));
@@ -124,16 +163,28 @@ public class MiraiGIScreenGather
         m_CurClipMatrix = Camera.main.projectionMatrix * Camera.main.worldToCameraMatrix;
     }
 
-    void InitialSampleScreenTrace(CommandBuffer cmd, MiraiGIGPUScene scene)
+    void InitialSampleScreenTrace(ref RenderingData renderingData, CommandBuffer cmd, MiraiGIGPUScene scene)
     {
+        cmd.BeginSample("Screen Trace");
+
         MiraiGIClipmap clipmap = scene.miraiGIClipmap;
         MiraiGIRadianceCache radianceCache = scene.miraiGIRadianceCache;
 
         int kernel = m_ScreenGatherCS.FindKernel("InitialSampleScreenTrace");
 
+        cmd.Blit(renderingData.cameraData.renderer.cameraColorTargetHandle, m_SceneColorHistory);
+
+        Matrix4x4 viewRotation = Camera.main.worldToCameraMatrix;
+        viewRotation.m03 = viewRotation.m13 = viewRotation.m23 = 0;
+        viewRotation.m30 = viewRotation.m31 = viewRotation.m32 = 0;
+        viewRotation.m33 = 1;
+
+        Matrix4x4 translatedWorldToClip = Camera.main.projectionMatrix * viewRotation;
+
         cmd.SetComputeVectorParam(m_ScreenGatherCS, Shader.PropertyToID("_ScreenResolution"), new Vector4(Camera.main.pixelWidth, Camera.main.pixelHeight));
         cmd.SetComputeVectorParam(m_ScreenGatherCS, Shader.PropertyToID("_CameraPosition"), Camera.main.transform.position);
         cmd.SetComputeMatrixParam(m_ScreenGatherCS, Shader.PropertyToID("_ProjMat"), Camera.main.projectionMatrix);
+        cmd.SetComputeMatrixParam(m_ScreenGatherCS, Shader.PropertyToID("_TranslatedWorldToClip"), translatedWorldToClip);
         cmd.SetComputeMatrixParam(m_ScreenGatherCS, Shader.PropertyToID("_ViewProjMat"), Camera.main.projectionMatrix * Camera.main.worldToCameraMatrix);
         cmd.SetComputeMatrixParam(m_ScreenGatherCS, Shader.PropertyToID("_InvViewProjMat"), (Camera.main.projectionMatrix * Camera.main.worldToCameraMatrix).inverse);
         cmd.SetComputeIntParam(m_ScreenGatherCS, Shader.PropertyToID("_FrameCountMod8"), (int)radianceCache.frameNumberRenderThread % 8);
@@ -145,8 +196,7 @@ public class MiraiGIScreenGather
         cmd.SetComputeMatrixParam(m_ScreenGatherCS, Shader.PropertyToID("_InvProjMat"), Camera.main.projectionMatrix.inverse);
         cmd.SetComputeMatrixParam(m_ScreenGatherCS, Shader.PropertyToID("_InvViewMat"), Camera.main.cameraToWorldMatrix);
 
-        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_GBuffer0"), Shader.GetGlobalTexture("_GBuffer0"));
-        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_GBuffer1"), Shader.GetGlobalTexture("_GBuffer2"));
+        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_GBufferNormal"), Shader.GetGlobalTexture("_GBuffer2"));
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_SceneDepthTexture"), Shader.GetGlobalTexture("_CameraDepthTexture"));
 
         cmd.SetComputeVectorParam(m_ScreenGatherCS, Shader.PropertyToID("_ScreenPositionScaleBias"), new Vector4(0.5f, -0.5f, 0.5f, 0.5f)); // is it right?
@@ -156,19 +206,22 @@ public class MiraiGIScreenGather
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_SceneColorHistory"), m_SceneColorHistory);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWHitRadianceTexture"), m_HitRadianceTexture);
 
-        Vector2 HZBUVFactor = new Vector2(2, 2);
-        RenderTexture HZB = null; // need generate
+        Vector2 HZBUVFactor = new Vector2(0.5f, 0.5f);
 
-        cmd.SetComputeVectorParam(m_ScreenGatherCS, Shader.PropertyToID("_HZBUvFactorAndInvFactor"), new Vector4(HZBUVFactor.x, HZBUVFactor.y, 0, 0));
-        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_HZB"), HZB);
+        cmd.SetComputeVectorParam(m_ScreenGatherCS, Shader.PropertyToID("_HZBUvFactorAndInvFactor"), new Vector4(HZBUVFactor.x, HZBUVFactor.y, 1.0f / HZBUVFactor.x, 1.0f / HZBUVFactor.y));
+        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_HZB"), m_HiZBuffer);
         cmd.SetComputeBufferParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWVoxelTraceRayCounter"), m_VoxelTraceRayCounter);
         cmd.SetComputeBufferParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWVoxelTraceRayCompactBuffer"), m_VoxelTraceRayCompactBuffer);
 
         cmd.DispatchCompute(m_ScreenGatherCS, kernel, Mathf.CeilToInt((float)m_ScreenGatherRTSize.x / 8), Mathf.CeilToInt((float)m_ScreenGatherRTSize.y / 8), 1);
+
+        cmd.EndSample("Screen Trace");
     }
 
     void InitialSampleVoxelTrace(CommandBuffer cmd, MiraiGIGPUScene scene)
     {
+        cmd.BeginSample("Voxel Trace");
+
         MiraiGIClipmap clipmap = scene.miraiGIClipmap;
         MiraiGIRadianceCache radianceCache = scene.miraiGIRadianceCache;
 
@@ -204,8 +257,7 @@ public class MiraiGIScreenGather
             cmd.SetComputeMatrixParam(m_ScreenGatherCS, Shader.PropertyToID("_InvProjMat"), Camera.main.projectionMatrix.inverse);
             cmd.SetComputeMatrixParam(m_ScreenGatherCS, Shader.PropertyToID("_InvViewMat"), Camera.main.cameraToWorldMatrix);
 
-            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_GBuffer0"), Shader.GetGlobalTexture("_GBuffer0"));
-            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_GBuffer1"), Shader.GetGlobalTexture("_GBuffer2"));
+            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_GBufferNormal"), Shader.GetGlobalTexture("_GBuffer2"));
             cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_SceneDepthTexture"), Shader.GetGlobalTexture("_CameraDepthTexture"));
 
             cmd.SetComputeVectorParam(m_ScreenGatherCS, Shader.PropertyToID("_ScreenGatherRTSize"), (Vector2)m_ScreenGatherRTSize);
@@ -215,5 +267,7 @@ public class MiraiGIScreenGather
 
             cmd.DispatchCompute(m_ScreenGatherCS, kernel, m_VoxelTraceIndirectArgs, 0);
         }
+
+        cmd.EndSample("Screen Trace");
     }
 }

@@ -53,7 +53,8 @@ public class MiraiGIRenderPass : ScriptableRenderPass
 
         CommandBuffer cmd = CommandBufferPool.Get("Blit Visualize Result");
         
-        cmd.Blit(m_GIController.miraiGIGPUScene.miraiGIClipmap.GetVisualizeColorTarget(), cameraTarget);
+        if (GlobalSettings.NeedVisualize())
+            cmd.Blit(m_GIController.miraiGIGPUScene.miraiGIClipmap.GetVisualizeColorTarget(), cameraTarget);
 
         context.ExecuteCommandBuffer(cmd);
         CommandBufferPool.Release(cmd);

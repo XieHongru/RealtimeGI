@@ -58,7 +58,7 @@ public class MiraiGIGPUScene
             // voxel lighting
             // TODO: multi-view
             miraiGIRadianceCache.Update(ref renderingData, this);
-            //miraiGIScreenGather.Update(ref renderingData, this);
+            miraiGIScreenGather.Update(ref renderingData, this);
         }
     }
 
@@ -68,7 +68,7 @@ public class MiraiGIGPUScene
         {
             CommandBuffer cmd = CommandBufferPool.Get("Visualize GI Scene");
             miraiGIClipmap.VisualizeMiraiGIScene(cmd, this, camera);
-            miraiGIScreenGather.VisualizeMiraiGIScreenGather(cmd, this, miraiGIClipmap.GetVisualizeColorTarget());
+            miraiGIScreenGather.VisualizeMiraiGIScreenGather(cmd, this);
             miraiGIRadianceCache.VisualizeProbe(cmd, this, ref renderingData, ProbeVisualizeMode.RadianceProbe);
             miraiGIRadianceCache.VisualizeProbe(cmd, this, ref renderingData, ProbeVisualizeMode.IrradianceProbe);
             Graphics.ExecuteCommandBuffer(cmd);

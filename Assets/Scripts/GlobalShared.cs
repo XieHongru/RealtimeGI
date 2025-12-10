@@ -11,6 +11,7 @@ public class GlobalShared
     public static int UPDATE_CHUNK_NUM = 8;
     public static int PAGE_ID_INVALID = 0x3FFFFFFF;
     public static int PROBE_ID_INVALID = 0x3FFFFFFF;
+    public static int MAX_HZB_LEVEL = 6;
 
     public static int Index3DTo1DLinear(Vector3Int index3D, Vector3Int size3D)
     {

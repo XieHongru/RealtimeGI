@@ -23,7 +23,7 @@ MonoBehaviour:
   cullingObjectCountPerChunk: 64
   voxelCascadeCount: 4
   voxelSize: 0.2
-  voxelVisualizeMode: 1
+  voxelVisualizeMode: 4
   voxelVisualizeCascadeLevel: 0
   voxelVisualizeUpdateChunk: 0
   clipmapObjectCullingRejectFactor1: 1
@@ -43,5 +43,5 @@ MonoBehaviour:
   radianceProbeMinCascadeLevel: 2
   irradianceProbeSampleCount: 1
   irradianceProbeTemporalWeight: 0.5
-  visualizeScreenGather: 0
+  visualizeScreenGather: 1
   useDistanceField: 0

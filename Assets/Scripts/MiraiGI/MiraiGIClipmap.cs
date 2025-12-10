@@ -687,6 +687,11 @@ public class MiraiGIClipmap
 
     public void VisualizeMiraiGIScene(CommandBuffer cmd, MiraiGIGPUScene scene, Camera camera)
     {
+        if (GlobalSettings.Instance.voxelVisualizeMode <= 0 || GlobalSettings.Instance.voxelVisualizeMode > 4)
+        {
+            return;
+        }
+
         MiraiGIRadianceCache radianceCache = scene.miraiGIRadianceCache;
 
         int kernel = m_VisualizeClipmapCS.FindKernel("VisualizeClipmap");

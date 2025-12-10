@@ -18,6 +18,12 @@ public class GlobalSettings : ScriptableObject
         }
     }
 
+    public static bool NeedVisualize()
+    {
+        return (m_Instance.voxelVisualizeMode > 0 && m_Instance.voxelVisualizeMode <= 4) || (m_Instance.visualizeScreenGather > 0) ||
+                (m_Instance.visualizeRadianceProbe > 0) || (m_Instance.visualizeIrradianceProbe > 0);
+    }
+
     public int maxObjectCount = 16384;
     public int maxSurfaceCacheCount = 4096;
     public int meshCardDefaultResolution = 32;

@@ -36,19 +36,19 @@ struct SSRTRay
 
 /** Compile a ray for screen space ray casting. */
 SSRTRay InitScreenSpaceRayFromWorldSpace(
-    float4x4 ViewProjectionMatrix,
-    float4x4 ProjectionMatrix,
+    float4x4 TranslatedWorldToClipMatrix,
+    float4x4 ViewToClipMatrix,
 	float3 RayOriginTranslatedWorld,
 	float3 WorldRayDirection,
 	float SceneDepth)
 {
-    float4 RayStartClip = mul(float4(RayOriginTranslatedWorld, 1), ViewProjectionMatrix);
-    float4 RayEndClip = mul(float4(RayOriginTranslatedWorld + WorldRayDirection * SceneDepth, 1), ViewProjectionMatrix);
+    float4 RayStartClip = mul(TranslatedWorldToClipMatrix, float4(RayOriginTranslatedWorld, 1));
+    float4 RayEndClip = mul(TranslatedWorldToClipMatrix, float4(RayOriginTranslatedWorld + WorldRayDirection * SceneDepth, 1));
 
     float3 RayStartScreen = RayStartClip.xyz * rcp(RayStartClip.w);
     float3 RayEndScreen = RayEndClip.xyz * rcp(RayEndClip.w);
 
-    float4 RayDepthClip = RayStartClip + mul(float4(0, 0, SceneDepth, 0), ProjectionMatrix);
+    float4 RayDepthClip = RayStartClip + mul(ViewToClipMatrix, float4(0, 0, SceneDepth, 0));
     float3 RayDepthScreen = RayDepthClip.xyz * rcp(RayDepthClip.w);
 
     SSRTRay Ray;
@@ -95,33 +95,10 @@ bool CastScreenSpaceRay(
 
     RayStepUVz *= Step;
     float3 RayUVz = RayStartUVz + RayStepUVz * StepOffset;
-#if IS_SSGI_SHADER && SSGI_TRACE_CONE
-		RayUVz = RayStartUVz;
-#endif
-	
-#if DEBUG_SSRT
-	{
-		if (bDebugPrint)
-			PrintSample(HZBUvFactorAndInvFactor, RayStartUVz.xy, float4(1, 0, 0, 1));
-	}
-#endif
 	
     float4 MultipleSampleDepthDiff;
     bool4 bMultipleSampleHit; // TODO: Might consumes VGPRS if bug in compiler.
     bool bFoundAnyHit = false;
-	
-#if IS_SSGI_SHADER && SSGI_TRACE_CONE
-		const float ConeAngle = PI / 4;
-		const float d = 1;
-		const float r = d * sin(0.5 * ConeAngle);
-		const float Exp = 1.6; //(d + r) / (d - r);
-		const float ExpLog2 = log2(Exp);
-		const float MaxPower = exp2(log2(Exp) * (NumSteps + 1.0)) - 0.9;
-
-		{
-			//Level = 2;
-		}
-#endif
 
     uint i;
 
@@ -131,32 +108,7 @@ bool CastScreenSpaceRay(
         float2 SamplesUV[SSRT_SAMPLE_BATCH_SIZE];
         float4 SamplesZ;
         float4 SamplesMip;
-
-		// Compute the sample coordinates.
-		#if IS_SSGI_SHADER && SSGI_TRACE_CONE
-		{
-            [unroll(SSRT_SAMPLE_BATCH_SIZE)]
-			for (uint j = 0; j < SSRT_SAMPLE_BATCH_SIZE; j++)
-			{
-				float S = float(i + j) + StepOffset;
-
-				float NormalizedPower = (exp2(ExpLog2 * S) - 0.9) / MaxPower;
-
-				float Offset = NormalizedPower * NumSteps;
-
-				SamplesUV[j] = RayUVz.xy + Offset * RayStepUVz.xy;
-				SamplesZ[j] = RayUVz.z + Offset * RayStepUVz.z;
-			}
-		
-			SamplesMip.xy = Level;
-			Level += (8.0 / NumSteps) * Roughness;
-			//Level += 2.0 * ExpLog2;
-		
-			SamplesMip.zw = Level;
-			Level += (8.0 / NumSteps) * Roughness;
-			//Level += 2.0 * ExpLog2;
-		}
-		#else
+        
 		{
             [unroll(SSRT_SAMPLE_BATCH_SIZE)]
             for (uint j = 0; j < SSRT_SAMPLE_BATCH_SIZE; j++)
@@ -171,7 +123,6 @@ bool CastScreenSpaceRay(
             SamplesMip.zw = Level;
             Level += (8.0 / NumSteps) * Roughness;
         }
-#endif
 
 		// Sample the scene depth.
         float4 SampleDepth;
@@ -179,14 +130,6 @@ bool CastScreenSpaceRay(
             [unroll(SSRT_SAMPLE_BATCH_SIZE)]
             for (uint j = 0; j < SSRT_SAMPLE_BATCH_SIZE; j++)
             {
-#if DEBUG_SSRT
-				{
-					if (bDebugPrint)
-					{
-						PrintSample(HZBUvFactorAndInvFactor, SamplesUV[j], float4(0, 1, 0, 1));
-					}
-				}
-#endif
                 SampleDepth[j] = Texture.SampleLevel(Sampler, SamplesUV[j], SamplesMip[j]).r;
             }
         }
@@ -203,76 +146,12 @@ bool CastScreenSpaceRay(
         }
 
         LastDiff = MultipleSampleDepthDiff.w;
-
-		//#if !SSGI_TRACE_CONE
-		//	RayUVz += SSRT_SAMPLE_BATCH_SIZE * RayStepUVz;
-		//#endif
     } // for( uint i = 0; i < NumSteps; i += 4 )
 	
 	// Compute the output coordinates.
     [branch]
     if (bFoundAnyHit)
     {
-		#if IS_SSGI_SHADER && SSGI_TRACE_CONE
-		{
-			// If hit set to intersect time. If missed set to beyond end of ray
-            float4 HitTime = bMultipleSampleHit ? float4(0, 1, 2, 3) : 4;
-
-			// Take closest hit
-            float Time1 = min(min(min(HitTime.x, HitTime.y), HitTime.z), HitTime.w);
-		
-			float S = float(i + Time1) + StepOffset;
-
-			float NormalizedPower = (exp2(log2(Exp) * S) - 0.9) / MaxPower;
-
-			float Offset = NormalizedPower * NumSteps;
-
-            OutHitUVz = RayUVz + RayStepUVz * Offset;
-		}
-		#elif IS_SSGI_SHADER
-		{
-			// If hit set to intersect time. If missed set to beyond end of ray
-            float4 HitTime = bMultipleSampleHit ? float4(1, 2, 3, 4) : 5;
-
-			// Take closest hit
-            float Time1 = float(i) + min(min(min(HitTime.x, HitTime.y), HitTime.z), HitTime.w);
-		
-            OutHitUVz = RayUVz + RayStepUVz * Time1;
-		}
-		#elif 0 // binary search refinement that has been attempted for SSR.
-        {
-			// If hit set to intersect time. If missed set to beyond end of ray
-            float4 HitTime = bMultipleSampleHit ? float4(1, 2, 3, 4) : 5;
-
-			// Take closest hit
-            float Time1 = float(i) + min(min(min(HitTime.x, HitTime.y), HitTime.z), HitTime.w);
-            float Time0 = Time1 - 1;
-
-            const uint NumBinarySteps = Roughness < 0.2 ? 4 : 0;
-
-			// Binary search
-            for (uint j = 0; j < NumBinarySteps; j++)
-            {
-                CompareTolerance *= 0.5;
-
-                float MidTime = 0.5 * (Time0 + Time1);
-                float3 MidUVz = RayUVz + RayStepUVz * MidTime;
-                float MidDepth = Texture.SampleLevel(Sampler, MidUVz.xy, Level).r;
-                float MidDepthDiff = MidUVz.z - MidDepth;
-
-                if (abs(MidDepthDiff + CompareTolerance) < CompareTolerance)
-                {
-                    Time1 = MidTime;
-                }
-                else
-                {
-                    Time0 = MidTime;
-                }
-            }
-			
-            OutHitUVz = RayUVz + RayStepUVz * Time1;
-        }
-		#else // SSR
         {
             float DepthDiff0 = MultipleSampleDepthDiff[2];
             float DepthDiff1 = MultipleSampleDepthDiff[3];
@@ -303,31 +182,6 @@ bool CastScreenSpaceRay(
             Time0 += float(i);
 
             float Time1 = Time0 + 1;
-#if 0
-			{
-				// Binary search
-				for( uint j = 0; j < 4; j++ )
-				{
-					CompareTolerance *= 0.5;
-
-					float  MidTime = 0.5 * ( Time0 + Time1 );
-					float3 MidUVz = RayUVz + RayStepUVz * MidTime;
-					float  MidDepth = Texture.SampleLevel( Sampler, MidUVz.xy, Level ).r;
-					float  MidDepthDiff = MidUVz.z - MidDepth;
-
-					if( abs( MidDepthDiff + CompareTolerance ) < CompareTolerance )
-					{
-						DepthDiff1	= MidDepthDiff;
-						Time1		= MidTime;
-					}
-					else
-					{
-						DepthDiff0	= MidDepthDiff;
-						Time0		= MidTime;
-					}
-				}
-			}
-#endif
 
 			// Find more accurate hit using line segment intersection
             float TimeLerp = saturate(DepthDiff0 / (DepthDiff0 - DepthDiff1));
@@ -336,14 +190,6 @@ bool CastScreenSpaceRay(
 				
             OutHitUVz = RayUVz + RayStepUVz * IntersectTime;
         }
-#endif
-		
-#if DEBUG_SSRT
-		{
-			if (bDebugPrint)
-				PrintSample(HZBUvFactorAndInvFactor, OutHitUVz.xy, float4(0, 0, 1, 1));
-		}
-#endif
 
         OutHitUVz.xy *= HZBUvFactorAndInvFactor.zw;
         OutHitUVz.xy = OutHitUVz.xy * float2(2, -2) + float2(-1, 1);
@@ -364,13 +210,13 @@ bool RayCast(
 	uint NumSteps, float StepOffset,
 	float4 HZBUvFactorAndInvFactor,
 	bool bDebugPrint,
-    float4x4 ViewProjectionMatrix,
-    float4x4 ProjectionMatrix,
+    float4x4 TranslatedWorldToClipMatrix,
+    float4x4 ViewToClipMatrix,
     float4 ScreenPositionScaleBias,
 	out float3 OutHitUVz,
 	out float Level)
 {
-    SSRTRay Ray = InitScreenSpaceRayFromWorldSpace(ViewProjectionMatrix, ProjectionMatrix, RayOriginTranslatedWorld, RayDirection, SceneDepth);
+    SSRTRay Ray = InitScreenSpaceRayFromWorldSpace(TranslatedWorldToClipMatrix, ViewToClipMatrix, RayOriginTranslatedWorld, RayDirection, SceneDepth);
 
     return CastScreenSpaceRay(
 		Texture, Sampler,

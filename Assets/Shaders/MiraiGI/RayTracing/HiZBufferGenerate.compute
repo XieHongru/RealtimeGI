@@ -1,0 +1,25 @@
+#pragma kernel HiZBufferGenerate
+
+Texture2D<float> _DepthTexture;
+RWTexture2D<float> _RWHiZBuffer;
+int _MipLevel;
+
+[numthreads(8, 8, 1)]
+void HiZBufferGenerate(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    uint step = 1 << _MipLevel; // 2^mipLevel
+    uint2 blockStart = threadId.xy * step;
+    
+    float maxDepth = 0;
+    
+    for (int x = 0; x < step; x++)
+    {
+        for (int y = 0; y < step; y++)
+        {
+            uint2 samplePos = blockStart + uint2(x, y);
+            maxDepth = max(maxDepth, _DepthTexture[samplePos]);
+        }
+    }
+    
+    _RWHiZBuffer[threadId.xy] = maxDepth;
+}
