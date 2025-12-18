@@ -319,15 +319,16 @@ VoxelRayTracingHitPayload DistanceFieldRaytracing(in ClipmapInfo clipmapInfo, in
 
 float3 GetVoxelCellSize(in ClipmapInfo clipmapInfo, float3 worldPosition)
 {
+    const float padding = 3.0f;
     int i = 0;
     float3 voxelCellSize = float3(0, 0, 0);
     for (int i = 0; i < clipmapInfo.cascadeCount; i++)
     {
-        float3 cascadeMin = clipmapInfo.cascadeCenterArray[i] - clipmapInfo.cascadeSizeArray[i] * 0.5;
-        float3 cascadeMax = clipmapInfo.cascadeCenterArray[i] + clipmapInfo.cascadeSizeArray[i] * 0.5;
+        voxelCellSize = clipmapInfo.cascadeSizeArray[i] / float3(clipmapInfo.cascadeResolution);
+        float3 cascadeMin = clipmapInfo.cascadeCenterArray[i] - clipmapInfo.cascadeSizeArray[i] * 0.5 + voxelCellSize * padding;
+        float3 cascadeMax = clipmapInfo.cascadeCenterArray[i] + clipmapInfo.cascadeSizeArray[i] * 0.5 - voxelCellSize * padding;
         if (all(cascadeMin < worldPosition) && all(worldPosition < cascadeMax))
         {
-            voxelCellSize = clipmapInfo.cascadeSizeArray[i] / float3(clipmapInfo.cascadeResolution);
             break;
         }
     }

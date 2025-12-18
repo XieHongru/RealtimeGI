@@ -67,4 +67,18 @@ float3 FetchRadianceFromVoxelScene(VoxelRaytracingRequest RTRequest, VoxelRayTra
     return hitRadiance;
 }
 
+float3 FetchNormalFromVoxelScene(in VoxelRaytracingRequest RTRequest, in VoxelRayTracingHitPayload hit)
+{
+    int voxelPageId = _VoxelPageClipmap[hit.clipmapAccessIndex].r;
+    if (voxelPageId == PAGE_ID_INVALID)
+    {
+        return float3(0, 0, 0);
+    }
+
+    int3 indexInPool = PageAddressMapping(voxelPageId, _VoxelPageCountInXYZ, hit.voxelIndex);
+    float3 worldNormal = _VoxelPoolNormal[indexInPool].rgb * 2 - 1;
+    
+    return worldNormal;
+}
+
 #endif

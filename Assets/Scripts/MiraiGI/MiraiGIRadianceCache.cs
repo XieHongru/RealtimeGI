@@ -171,8 +171,7 @@ public class MiraiGIRadianceCache
         Graphics.ExecuteCommandBuffer(cmd);
         CommandBufferPool.Release(cmd);
 
-        // forbid overflow
-        frameNumberRenderThread = (frameNumberRenderThread + 1) % 8;
+        frameNumberRenderThread++;
     }
 
     public void PrepareRenderResources(CommandBuffer cmd, MiraiGIGPUScene scene)

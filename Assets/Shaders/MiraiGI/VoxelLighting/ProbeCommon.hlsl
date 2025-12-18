@@ -197,7 +197,7 @@ float3 ProbeEvaluateIrradiance(
         
         // 2.3. apply depth test for candidate probe
         float3 worldPositionWithOffset = worldPosition + worldNormal * cascadeInfo.voxelSize.x;
-        float3 occlusionWeight = CalculateProbeOcclusionWeight(cascadeInfo, worldPositionWithOffset, probePosition,
+        float occlusionWeight = CalculateProbeOcclusionWeight(cascadeInfo, worldPositionWithOffset, probePosition,
                                                                 radianceProbeDistanceAtlas, linearSampler,
                                                                 probeIdInAtlas, radianceProbeCountInAtlasXY, radianceProbeResolution);
     

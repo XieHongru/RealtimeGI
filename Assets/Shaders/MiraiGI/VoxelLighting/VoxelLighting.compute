@@ -910,7 +910,7 @@ void IrradianceProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
         SHRadiance.G = MulSH3(SHBasis, hitRadiance.g * uniformSampleSolidAngle);
         SHRadiance.B = MulSH3(SHBasis, hitRadiance.b * uniformSampleSolidAngle);
         
-        SHRadianceSum = AddSH(SHRadiance, SHRadiance);
+        SHRadianceSum = AddSH(SHRadianceSum, SHRadiance);
     }
     
     gs_SharedSHVector[groupThreadIndex] = SHRadianceSum;

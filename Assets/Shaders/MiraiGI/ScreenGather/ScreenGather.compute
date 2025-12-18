@@ -1,24 +1,40 @@
 #include "../VoxelLighting/VoxelLightingParameters.hlsl"
 #include "../RayTracing/MonteCarlo.hlsl"
 #include "../RayTracing/SSRTRayCast.hlsl"
+#include "ReservoirSampling.hlsl"
 
 // -------------------------------------------------------------------------------- //
-float4 _ScreenResolution;
+#define DEBUG_AS_SSR 1
+#define FORCE_VOXEL_TRACE 1
+
+uint _FrameNumber;
+int2 _ScreenGatherRTSize;
+
+SamplerState sampler_PointClamp;
+Texture2D<float4> _NormalDepthTexture;
+Texture2D<float4> _NormalDepthHistory;
+
+float4 _ScreenPositionScaleBias;
+float4x4 _ClipToPrevClip;
+
+// View Params
 float4 _CameraPosition;
 float4x4 _ProjMat;
 float4x4 _TranslatedWorldToClip;
-float4x4 _ViewProjMat;
-float4x4 _InvViewProjMat;
-int _FrameCountMod8;
 float4 _ZBufferParam;
 float4x4 _InvProjMat;
 float4x4 _InvViewMat;
 
+float ConvertFromDeviceZ(float rawDepth)
+{
+    float reverseDepth = 1 - rawDepth;
+    return 1.0 / (_ZBufferParam.z * reverseDepth + _ZBufferParam.w);
+}
+
 float3 ReconstructWorldPositionFromDepth(float2 uv, float depth)
 {
-    float reverseDepth = 1 - depth;
-    float eyeDepth = 1.0 / (_ZBufferParam.z * reverseDepth + _ZBufferParam.w);
-    float4 clipPos = float4(uv * 2.0 - 1.0, reverseDepth * 2.0 - 1.0, 1.0);
+    float eyeDepth = ConvertFromDeviceZ(depth);
+    float4 clipPos = float4(uv * 2.0 - 1.0, (1.0 - depth) * 2.0 - 1.0, 1.0);
     float4 viewPos = mul(_InvProjMat, clipPos);
     viewPos /= viewPos.w;
     
@@ -29,7 +45,7 @@ float3 ReconstructWorldPositionFromDepth(float2 uv, float depth)
 
 float4 SetupPixelRandom(float2 uv)
 {
-    uint2 randomSeed = Rand3DPCG16(uint3(uv * 1145.14, _FrameCountMod8)).xy;
+    uint2 randomSeed = Rand3DPCG16(uint3(uv * 1145.14, _FrameNumber)).xy;
     float2 E1 = Hammersley16(0, 2, randomSeed);
     float2 E2 = Hammersley16(1, 2, randomSeed);
 
@@ -40,33 +56,107 @@ float4 SetupRay(float3 worldNormal, float2 E)
 {
     float3x3 tangentBasis = GetTangentBasis(worldNormal);
     float4 tangentL = UniformSampleHemisphere(E);
-    float3 rayDirection = mul(tangentL.xyz, tangentBasis);
+    float3 rayDirection = mul(tangentBasis, tangentL.xyz);
     float samplePDF = max(tangentL.w, 1e-3);
     
     return float4(rayDirection, samplePDF);
 }
 
+float2 ReprojectPixel(float3 uvz)
+{
+    float2 thisScreen = (uvz.xy - _ScreenPositionScaleBias.wz) / _ScreenPositionScaleBias.xy;
+    float4 thisClip = float4(thisScreen, uvz.z, 1);
+    float4 prevClip = mul(_ClipToPrevClip, thisClip);
+    float2 prevScreen = prevClip.xy / prevClip.w;
+    float2 prevUV = prevScreen.xy * _ScreenPositionScaleBias.xy + _ScreenPositionScaleBias.wz;
+    return prevUV;
+}
+
+struct SampleContext
+{
+    float3 worldPosition;
+    float3 worldNormal;
+    float rawDepth;
+    float sceneDepth;
+    float4 randomVector;
+    float4 rayDirection;
+};
+
+// per pixel ray trace info shared by multiple pass
+SampleContext ResolveSampleContext(float2 uv)
+{
+    SampleContext sampleCtx = (SampleContext) 0;
+
+    float4 normalDepth = _NormalDepthTexture.SampleLevel(sampler_PointClamp, uv, 0);
+    sampleCtx.rawDepth = normalDepth.w;
+    sampleCtx.sceneDepth = ConvertFromDeviceZ(sampleCtx.rawDepth);
+    sampleCtx.worldPosition = ReconstructWorldPositionFromDepth(uv, sampleCtx.rawDepth);
+    sampleCtx.worldNormal = normalDepth.rgb * 2 - 1;
+    sampleCtx.randomVector = SetupPixelRandom(uv);
+    sampleCtx.rayDirection = SetupRay(sampleCtx.worldNormal, sampleCtx.randomVector.xy);
+
+#if DEBUG_AS_SSR
+    float3 viewDirection = normalize(sampleCtx.worldPosition - _CameraPosition);
+    sampleCtx.rayDirection.xyz = reflect(viewDirection, sampleCtx.worldNormal);
+#endif
+
+    return sampleCtx;
+}
+
 // -------------------------------------------------------------------------------- //
-#pragma kernel InitialSampleScreenTrace
+#pragma kernel NormalDepthDownsample
 
-#define DEBUG_AS_SSR 0
-#define FORCE_VOXEL_TRACE 0
-#define TILE_SIZE uint2(8, 8)
-
-SamplerState sampler_PointClamp;
-
-float4 _ScreenPositionScaleBias;
-float4 _PrevScreenPositionScaleBias;
-float4x4 _ClipToPrevClip;
-int2 _ScreenGatherRTSize;
-float4 _HZBUvFactorAndInvFactor;
+uint2 _SceneTextureRTSize;
 
 Texture2D<float4> _GBufferNormal;
 Texture2D<float> _SceneDepthTexture;
+RWTexture2D<float4> _RWNormalDepthTexture;
+
+[numthreads(8, 8, 1)]
+void NormalDepthDownsample(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    const int2 pixelCoord = clamp(threadId.xy, 0, _ScreenGatherRTSize - 1);
+    const float2 uv = (float2(pixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
+    
+    float2 sampleCoords[4];
+    sampleCoords[0] = min(pixelCoord * 2 + uint2(0, 0), _SceneTextureRTSize - 1);
+    sampleCoords[1] = min(pixelCoord * 2 + uint2(0, 1), _SceneTextureRTSize - 1);
+    sampleCoords[2] = min(pixelCoord * 2 + uint2(1, 0), _SceneTextureRTSize - 1);
+    sampleCoords[3] = min(pixelCoord * 2 + uint2(1, 1), _SceneTextureRTSize - 1);
+
+    float4 samples[4];
+    for (uint i = 0; i < 4; ++i)
+    {
+        samples[i].rgb = _GBufferNormal.Load(uint3(sampleCoords[i], 0)).rgb * 0.5f + 0.5f;
+        samples[i].a = _SceneDepthTexture.Load(uint3(sampleCoords[i], 0)).r;
+    }
+	
+    float maxDepth = max(max(samples[0].a, samples[1].a), max(samples[2].a, samples[3].a));
+
+    float4 avgColor = 0.0001f;
+    for (uint i = 0; i < 4; ++i)
+    {
+        float depthA = ConvertFromDeviceZ(samples[i].a);
+        float depthB = ConvertFromDeviceZ(maxDepth);
+        float weight = saturate(1 - abs(depthA - depthB) * 0.01);
+        avgColor += float4(samples[i].rgb, 1) * weight;
+    }
+    avgColor.rgb /= avgColor.w;
+
+    _RWNormalDepthTexture[threadId.xy] = float4(avgColor.rgb, maxDepth);
+}
+
+// -------------------------------------------------------------------------------- //
+#pragma kernel InitialSampleScreenTrace
+
+#define TILE_SIZE uint2(8, 8)
+
+float4 _HZBUvFactorAndInvFactor;
 
 Texture2D _HZB;
 Texture2D<float4> _SceneColorHistory;
-RWTexture2D<float4> _RWHitRadianceTexture;
+RWTexture2D<float4> _RWInitialSampleRadiance;
+RWTexture2D<float4> _RWInitialSampleHitInfo;
 
 RWStructuredBuffer<int> _RWVoxelTraceRayCounter;
 RWStructuredBuffer<int2> _RWVoxelTraceRayCompactBuffer;
@@ -83,34 +173,22 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
     const bool isValidPixel = all(threadId.xy < _ScreenGatherRTSize - 1);
     const int2 pixelCoord = clamp(threadId.xy, 0, _ScreenGatherRTSize - 1);
     const float2 uv = (float2(pixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
-
-    // 2. setup ray
-    float rawDepth = _SceneDepthTexture.SampleLevel(sampler_PointClamp, uv, 0).r;
-    float3 worldPosition = ReconstructWorldPositionFromDepth(uv, rawDepth);
-    float3 viewDirection = normalize(worldPosition - _CameraPosition);
-    float3 rayOriginTranslatedWorld = worldPosition - _CameraPosition;
-
-    float3 worldNormal = _GBufferNormal.SampleLevel(sampler_linearClamp, uv, 0).xyz;
     
-    float4 randomVector = SetupPixelRandom(uv);
-    float3 rayDirection = SetupRay(worldNormal, randomVector.xy).xyz;
-
-#if DEBUG_AS_SSR
-    rayDirection = reflect(viewDirection, worldNormal);
-#endif
-
-    // 3. trace screen ray
+    SampleContext sampleCtx = ResolveSampleContext(uv);
+    float3 rayOriginTranslatedWorld = sampleCtx.worldPosition - _CameraPosition;
+    
+    // 2. trace screen ray
     const int numSteps = 32;
     float3 hitUVz = float3(0, 0, 0);
     float hitLevel = 0;
 
     bool isHit = RayCast(
         _HZB, sampler_PointClamp,
-        rayOriginTranslatedWorld, rayDirection,
+        rayOriginTranslatedWorld, sampleCtx.rayDirection,
         0.05, // roughness 
-        1.0 / (_ZBufferParam.z * (1.0 - rawDepth) + _ZBufferParam.w),
+        sampleCtx.sceneDepth,
         numSteps,
-        randomVector.z, // SSRStepOffset
+        sampleCtx.randomVector.z, // SSRStepOffset
         _HZBUvFactorAndInvFactor,
         false, // debug print
         _TranslatedWorldToClip, _ProjMat,
@@ -122,21 +200,23 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
     isHit = false;
 #endif
 
-    // 4. fetch radiance
-    float3 color = float3(0, 0, 0);
+    // 3. fetch radiance
+    float3 hitRadiance = float3(0, 0, 0);
+    float3 hitNormal = float3(0, 0, 0);
     if (isHit)
     {
-        float2 sampleUV;
-        float vignette;
-        ReprojectHit(_PrevScreenPositionScaleBias, hitUVz, _ScreenPositionScaleBias, _ClipToPrevClip, sampleUV, vignette);
-        color = _SceneColorHistory.SampleLevel(sampler_linearClamp, sampleUV.xy, 0).rgb;
+        float2 sampleUV = ReprojectPixel(hitUVz);
+        hitRadiance = _SceneColorHistory.SampleLevel(sampler_linearClamp, sampleUV.xy, 0).rgb;
+        hitNormal = _NormalDepthHistory.SampleLevel(sampler_PointClamp, sampleUV.xy, 0).rgb;
     }
 
     if (isValidPixel)
     {
+        _RWInitialSampleRadiance[pixelCoord] = float4(hitRadiance, 1);
+
         float3 rayEndPosition = ReconstructWorldPositionFromDepth(hitUVz.xy, hitUVz.z);
-        float rayDistance = length(rayEndPosition - worldPosition);
-        _RWHitRadianceTexture[pixelCoord] = float4(color, rayDistance);
+        float rayDistance = length(rayEndPosition - sampleCtx.worldPosition);
+        _RWInitialSampleHitInfo[pixelCoord] = float4(hitNormal, isHit ? rayDistance : 0);
     }
 
     gs_PixelValidMask[groupThreadIndex] = isValidPixel;
@@ -144,10 +224,10 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
 
     GroupMemoryBarrierWithGroupSync();
 
-    // 5. single head thread count missing ray for off screen voxel trace
+    // 4. single head thread count missing ray for off screen voxel trace
     if (groupThreadIndex == 0)
     {
-        // 5.1. count ray
+        // 4.1. count ray
         int rayCounter = 0;
         for (int i = 0; i < 64; i++)
         {
@@ -157,11 +237,11 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
             }
         }
         
-        // 5.2. allocate space in compact buffer
+        // 4.2. allocate space in compact buffer
         int writeIndex = 0;
         InterlockedAdd(_RWVoxelTraceRayCounter[0], rayCounter, writeIndex);
 
-        // 5.3. boardcast thread write index
+        // 4.3. boardcast thread write index
         for (int i = 0; i < 64; i++)
         {
             if (!gs_ScreenHitMask[i] && gs_PixelValidMask[i])
@@ -174,7 +254,7 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
 
     GroupMemoryBarrierWithGroupSync();
 
-    // 6. write pixel info to buffer
+    // 5. write pixel info to buffer
     if (!isHit && isValidPixel)
     {
         int writeIndex = gs_CompactBufferWriteIndex[groupThreadIndex];
@@ -213,27 +293,17 @@ void InitialSampleVoxelTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupTh
         return;
     }
 
+    // 1. rebuild tracing context
     int2 pixelCoord = _VoxelTraceRayCompactBuffer[threadId.x];
     const float2 uv = (float2(pixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
-
-    // 1. rebuild tracing context
-    float rawDepth = _SceneDepthTexture.SampleLevel(sampler_PointClamp, uv, 0).r;
-    float3 worldPosition = ReconstructWorldPositionFromDepth(uv, rawDepth);
-    float3 viewDirection = normalize(worldPosition - _CameraPosition);
-    
-    float3 worldNormal = _GBufferNormal.SampleLevel(sampler_linearClamp, uv, 0).xyz;
-    
-    float4 randomVector = SetupPixelRandom(uv);
-    float3 rayDirection = SetupRay(worldNormal, randomVector.xy).xyz;
-    float rayDistance = _RWHitRadianceTexture[pixelCoord].w;
-
-    float3 voxelCellSize = GetVoxelCellSize(clipmapInfo, worldPosition);
-    float3 rayStart = worldPosition + worldNormal * voxelCellSize * sqrt(3.0);
+    SampleContext sampleCtx = ResolveSampleContext(uv);
+    float3 voxelCellSize = GetVoxelCellSize(clipmapInfo, sampleCtx.worldPosition);
+    float3 rayStart = sampleCtx.worldPosition + sampleCtx.worldNormal * voxelCellSize * sqrt(3.0);
 
     // 2. trace ray
     VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
     RTRequest.rayStart = rayStart;
-    RTRequest.rayDir = rayDirection;
+    RTRequest.rayDir = sampleCtx.rayDirection;
     RTRequest.minCascadeIndex = 0;
     RTRequest.maxCascadeIndex = clipmapInfo.cascadeCount - 1;
     RTRequest.maxStepNum = 114514;
@@ -247,16 +317,160 @@ void InitialSampleVoxelTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupTh
 
     // 3. handle ray hit
     float3 hitRadiance = float3(0, 0, 0);
+    float3 hitNormal = float3(0, 0, 0);
+    float rayDistance = 0;
     if (hit.isHit)
     {
         hitRadiance = FetchRadianceFromVoxelScene(RTRequest, hit);
-        rayDistance = length(hit.position - worldPosition);
+        rayDistance = length(hit.position - sampleCtx.worldPosition);
+        hitNormal = FetchRadianceFromVoxelScene(RTRequest, hit);
     }
     else
     {
         rayDistance = 191981000;
         hitRadiance = float3(1, 1, 1);
+        hitNormal = sampleCtx.rayDirection * -1;
     }
 
-    _RWHitRadianceTexture[pixelCoord] = float4(hitRadiance, rayDistance);
+    _RWInitialSampleRadiance[pixelCoord] = float4(hitRadiance, rayDistance);
+    _RWInitialSampleHitInfo[pixelCoord] = float4(hitNormal * 0.5 + 0.5, rayDistance);
 }
+
+// -------------------------------------------------------------------------------- //
+#pragma kernel ReservoirTemporalReuse
+
+Texture2D<float4> _InitialSampleRadiance;
+Texture2D<float4> _InitialSampleHitInfo;
+
+Texture2D<float4> _ReservoirDataA;
+Texture2D<float4> _ReservoirDataB;
+Texture2D<float4> _ReservoirDataC;
+Texture2D<float4> _ReservoirDataD;
+
+RWTexture2D<float4> _RWReservoirDataA;
+RWTexture2D<float4> _RWReservoirDataB;
+RWTexture2D<float4> _RWReservoirDataC;
+RWTexture2D<float4> _RWReservoirDataD;
+
+Reservoir FetchReservoir(float2 uv)
+{
+    float4 rawData[4];
+    rawData[0] = _ReservoirDataA.SampleLevel(sampler_PointClamp, uv, 0);
+    rawData[1] = _ReservoirDataB.SampleLevel(sampler_PointClamp, uv, 0);
+    rawData[2] = _ReservoirDataC.SampleLevel(sampler_PointClamp, uv, 0);
+    rawData[3] = _ReservoirDataD.SampleLevel(sampler_PointClamp, uv, 0);
+    return DecodeReservoirData(rawData);
+}
+
+bool IsValidUV(float2 uv)
+{
+    // note: physical texture size may different with viewport size due to UE editor
+    // so max uv boundary decided by ScreenPositionScaleBias, not const 1.0
+    return all(uv >= 0) && all(uv <= _ScreenPositionScaleBias.wz * 2);
+}
+
+[numthreads(8, 8, 1)]
+void ReservoirTemporalReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    if (any(threadId.xy >= (_ScreenGatherRTSize - 1)))
+    {
+        return;
+    }
+
+    // 1. do some setup
+    const int2 pixelCoord = clamp(threadId.xy, 0, _ScreenGatherRTSize - 1);
+    const float2 uv = (float2(pixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
+    SampleContext sampleCtx = ResolveSampleContext(uv);
+
+    // 2. setup reservoir sample for current frame's new sample
+    ReservoirSample newSample = (ReservoirSample) 0;
+    newSample.radiance = _InitialSampleRadiance.SampleLevel(sampler_PointClamp, uv, 0).rgb;
+    newSample.rayStart = sampleCtx.worldPosition;
+    newSample.rayStartNormal = sampleCtx.worldNormal;
+
+    float4 hitInfo = _InitialSampleRadiance.SampleLevel(sampler_PointClamp, uv, 0); // hit normal (xyz) and distance (w)
+    newSample.rayEnd = sampleCtx.worldPosition + sampleCtx.rayDirection.xyz * hitInfo.w;
+    newSample.rayEndNormal = hitInfo.xyz * 2 - 1;
+
+    float targetPDF = EvaluateTargetPDF(newSample.radiance);
+    float sourcePDF = sampleCtx.rayDirection.w;
+    newSample.weight = targetPDF / max(sourcePDF, 1e-3);
+
+    // 3. reproject and search 3x3 to find match pixel
+    float2 reprojectCenterUV = ReprojectPixel(float3(uv, sampleCtx.rawDepth));
+    int2 reprojectCenterCoord = reprojectCenterUV * _ScreenGatherRTSize;
+
+    float minDistance = 11451419.19;
+    float2 reprojectUV = reprojectCenterUV;
+    int reprojectValidCount = 0;
+    const int2 offsets[9] = { int2(-1, -1), int2(-1, 0), int2(-1, 1), int2(0, -1), int2(0, 0), int2(0, 1), int2(1, -1), int2(1, 0), int2(1, 1) };
+    for (int i = 0; i < 9; i++)
+    {
+        int2 neighborPixelCoord = clamp(reprojectCenterCoord + offsets[i], 0, _ScreenGatherRTSize - 1);
+        float2 neighborUV = (float2(neighborPixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
+        reprojectValidCount += IsValidUV(neighborUV);
+        
+        // calculate distance between reservoir and current pixel
+        float3 neighborPosition = _ReservoirDataC.SampleLevel(sampler_PointClamp, neighborUV, 0).xyz; // see DecodeReservoirData()
+        float distance = length(sampleCtx.worldPosition - neighborPosition);
+
+        if (distance < minDistance)
+        {
+            minDistance = distance;
+            reprojectUV = neighborUV;
+        }
+    }
+
+    // 4. fetch temporal reservoir
+    Reservoir temporalReservoir = FetchReservoir(reprojectUV);
+
+    // calculate geometry similarity to decide if we need cleanup reservoir history
+    float distance = length(sampleCtx.worldPosition - temporalReservoir.currentSample.rayStart);
+    float normalDot = abs(dot(sampleCtx.worldNormal, temporalReservoir.currentSample.rayStartNormal));
+    if (distance > 50.0 || reprojectValidCount == 0)
+    {
+        temporalReservoir = (Reservoir) 0;
+    }
+
+    // 5. do temporal reuse
+    UpdateReservoir(temporalReservoir, newSample, sampleCtx.randomVector.w);
+
+    // 6. write reservoir back to buffer
+    float4 reservoirRawData[4];
+    EncodeReservoirData(temporalReservoir, reservoirRawData);
+
+    _RWReservoirDataA[pixelCoord] = reservoirRawData[0];
+    _RWReservoirDataB[pixelCoord] = reservoirRawData[1];
+    _RWReservoirDataC[pixelCoord] = reservoirRawData[2];
+    _RWReservoirDataD[pixelCoord] = reservoirRawData[3];
+}
+
+// -------------------------------------------------------------------------------- //
+#pragma kernel ReservoirEvaluateIrradiance
+
+RWTexture2D<float4> _RWScreenGatherOutputTexture;
+
+[numthreads(8, 8, 1)]
+void ReservoirEvaluateIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    if (any(threadId.xy >= (_ScreenGatherRTSize - 1)))
+    {
+        return;
+    }
+
+    // 1. fetch reservoir
+    const int2 pixelCoord = clamp(threadId.xy, 0, _ScreenGatherRTSize - 1);
+    const float2 uv = (float2(pixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
+
+    SampleContext sampleCtx = ResolveSampleContext(uv);
+    Reservoir reservoir = FetchReservoir(uv);
+
+    // 2. do RIS estimate
+    float3 radiance = reservoir.currentSample.radiance * reservoir.estimatorWeight;
+    float3 rayDir = normalize(reservoir.currentSample.rayEnd - reservoir.currentSample.rayStart);
+    float cosTheta = saturate(dot(rayDir, sampleCtx.worldNormal));
+
+    float3 irradiance = radiance * cosTheta / PI;
+    _RWScreenGatherOutputTexture[pixelCoord] = float4(irradiance, 1);
+}
+
