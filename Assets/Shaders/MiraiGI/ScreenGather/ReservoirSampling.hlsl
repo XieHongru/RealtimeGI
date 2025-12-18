@@ -1,6 +1,33 @@
 #ifndef RESERVOIR_SAMPLING_HLSL
 #define RESERVOIR_SAMPLING_HLSL
 
+// https://blog.demofox.org/2020/05/25/casual-shadertoy-path-tracing-1-basic-camera-diffuse-emissive/
+uint GetSimpleRandomSeed(float2 pixelIndex, uint frameCounter)
+{
+    return uint(
+		uint(pixelIndex.x) * uint(1973) +
+		uint(pixelIndex.y) * uint(9277) +
+		uint(frameCounter) * uint(26699)
+	) | uint(1);
+}
+
+uint wang_hash(inout uint seed)
+{
+    seed = uint(seed ^ uint(61)) ^ uint(seed >> uint(16));
+    seed *= uint(9);
+    seed = seed ^ (seed >> 4);
+    seed *= uint(0x27d4eb2d);
+    seed = seed ^ (seed >> 15);
+    return seed;
+}
+ 
+float SimpleRandom(inout uint seed)
+{
+    return float(wang_hash(seed)) / 4294967296.0;
+}
+
+// -------------------------------------------------------------------------------- //
+// https://d1qx31qr3h6wln.cloudfront.net/publications/ReSTIR%20GI.pdf
 struct ReservoirSample
 {
     float3 radiance;
@@ -19,59 +46,64 @@ struct Reservoir
     float estimatorWeight; // W in paper
 };
 
-float EvaluateTargetPDF(float3 radiance)
+// get target pdf in specific position and surface normal
+float EvaluateTargetPDF(in ReservoirSample sample, float3 evaluatePointPosition, float3 evaluatePointNormal)
 {
-    return max(1e-3, dot(radiance, float3(0.3, 0.3, 0.3)));
+    float cosineWeight = 1.0;
+
+    float3 rayDirection = normalize(sample.rayEnd - evaluatePointPosition); // connect the sample with evaluate point
+    cosineWeight = max(dot(rayDirection, evaluatePointNormal), 0.1); // clamp to prevent firefly
+
+    return dot(sample.radiance, (0.33).xxx) * cosineWeight;
 }
 
-ReservoirSample GetReservoirSample(float3 radiance, float sourcePDF)
+#define LengthSquare(x) (dot(x, x))
+
+void UpdateReservoir(inout Reservoir reservoir, in ReservoirSample newSample, float selectionWeight, float randomNumber)
 {
-    float targetPDF = EvaluateTargetPDF(radiance);
-
-    ReservoirSample result;
-    result.radiance = radiance;
-    result.weight = targetPDF / max(sourcePDF, 1e-3);
-
-    return result;
-}
-
-void UpdateReservoir(inout Reservoir reservoir, in ReservoirSample newSample, float randomNumber)
-{
-    reservoir.weightSum += newSample.weight;
+    // accumulate weight
+    reservoir.weightSum += selectionWeight;
     reservoir.sampleCount += 1;
 
-    if (randomNumber < (newSample.weight / reservoir.weightSum))
+    // randomly accept or discard sample
+    if (randomNumber < (selectionWeight / reservoir.weightSum))
     {
         reservoir.currentSample = newSample;
     }
+}
 
+void ClampSampleNumAndUpdateEstimatorWeight(inout Reservoir reservoir, float3 evaluatePointPosition, float3 evaluatePointNormal, float maxSampleCount)
+{
     // clamp sample num
-#define MAX_SAMPLE_NUM (30.0f)
-    if (reservoir.sampleCount > MAX_SAMPLE_NUM)
+    if (reservoir.sampleCount > maxSampleCount)
     {
-        reservoir.weightSum *= MAX_SAMPLE_NUM / float(reservoir.sampleCount);
-        reservoir.sampleCount = MAX_SAMPLE_NUM;
+        reservoir.weightSum *= maxSampleCount / float(reservoir.sampleCount);
+        reservoir.sampleCount = maxSampleCount;
     }
 
-    // update RIS weight
-    float p_hat = EvaluateTargetPDF(reservoir.currentSample.radiance);
-    reservoir.estimatorWeight = reservoir.weightSum / (reservoir.sampleCount * p_hat);
+    // update estimator weight
+    float targetPDF = EvaluateTargetPDF(reservoir.currentSample, evaluatePointPosition, evaluatePointNormal);
+    reservoir.estimatorWeight = reservoir.weightSum / (reservoir.sampleCount * targetPDF); // W = w / (M * p_hat) in paper
 }
 
-float SimpleRandom(float2 co)
+float2 DirectionToOctahedron(float3 N)
 {
-    return frac(sin(dot(co, float2(12.9898, 78.233))) * 43758.5453);
+    N.xy /= dot(1, abs(N));
+    if (N.z <= 0)
+    {
+        N.xy = (1 - abs(N.yx)) * (N.xy >= 0 ? float2(1, 1) : float2(-1, -1));
+    }
+    return N.xy;
 }
 
-// https://discussions.unity.com/t/pack-two-float3-in-one-float/770749
-float EncodeFloat3ToFloat(float3 c)
+float3 OctahedronToDirection(float2 Oct)
 {
-    return dot(round((c) * 255), float3(65536, 256, 1));
-}
-
-float3 DecodeFloat3FromFloat(float f)
-{
-    return frac((f) / float3(16777216, 65536, 256));
+    float3 N = float3(Oct, 1 - dot(1, abs(Oct)));
+    if (N.z < 0)
+    {
+        N.xy = (1 - abs(N.yx)) * (N.xy >= 0 ? float2(1, 1) : float2(-1, -1));
+    }
+    return normalize(N);
 }
 
 Reservoir DecodeReservoirData(in float4 rawData[4])
@@ -86,29 +118,32 @@ Reservoir DecodeReservoirData(in float4 rawData[4])
     reservoir.currentSample.weight = rawData[1].w;
 
     reservoir.currentSample.rayStart = rawData[2].xyz;
-    reservoir.currentSample.rayStartNormal = DecodeFloat3FromFloat(rawData[2].w) * 2 - 1;
+    reservoir.currentSample.rayStartNormal = OctahedronToDirection(float2(rawData[2].w, rawData[3].w));
     
     reservoir.currentSample.rayEnd = rawData[3].xyz;
-    reservoir.currentSample.rayEndNormal = DecodeFloat3FromFloat(rawData[3].w) * 2 - 1;
+    reservoir.currentSample.rayEndNormal = OctahedronToDirection(float2(rawData[0].w, rawData[1].w));
 
     return reservoir;
 }
 
 void EncodeReservoirData(in Reservoir reservoir, out float4 rawData[4])
 {
+    float2 rayStartNormalOct = DirectionToOctahedron(reservoir.currentSample.rayStartNormal);
+    float2 rayEndNormalOct = DirectionToOctahedron(reservoir.currentSample.rayEndNormal);
+    
     rawData[0].x = reservoir.weightSum;
     rawData[0].y = reservoir.sampleCount;
     rawData[0].z = reservoir.estimatorWeight;
-    rawData[0].w = 0;
+    rawData[0].w = rayEndNormalOct.x;
 
     rawData[1].xyz = reservoir.currentSample.radiance;
-    rawData[1].w = reservoir.currentSample.weight;
+    rawData[1].w = rayEndNormalOct.y;
 
     rawData[2].xyz = reservoir.currentSample.rayStart;
-    rawData[2].w = EncodeFloat3ToFloat(reservoir.currentSample.rayStartNormal * 0.5 + 0.5);
+    rawData[2].w = rayStartNormalOct.x;
 
     rawData[3].xyz = reservoir.currentSample.rayEnd;
-    rawData[3].w = EncodeFloat3ToFloat(reservoir.currentSample.rayEndNormal * 0.5 + 0.5);
+    rawData[3].w = rayStartNormalOct.y;
 }
 
 #endif

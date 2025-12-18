@@ -45,9 +45,10 @@ float3 ReconstructWorldPositionFromDepth(float2 uv, float depth)
 
 float4 SetupPixelRandom(float2 uv)
 {
-    uint2 randomSeed = Rand3DPCG16(uint3(uv * 1145.14, _FrameNumber)).xy;
-    float2 E1 = Hammersley16(0, 2, randomSeed);
-    float2 E2 = Hammersley16(1, 2, randomSeed);
+    uint2 randomSeed1 = Rand3DPCG16(uint3(uv * 1919.114, _FrameNumber)).xy;
+    uint2 randomSeed2 = Rand3DPCG16(uint3(uv * 810.514, _FrameNumber)).xy;
+    float2 E1 = Hammersley16(0, 1, randomSeed1);
+    float2 E2 = Hammersley16(0, 1, randomSeed2);
 
     return float4(E1, E2);
 }
@@ -72,7 +73,7 @@ float2 ReprojectPixel(float3 uvz)
     return prevUV;
 }
 
-struct SampleContext
+struct PixelContext
 {
     float3 worldPosition;
     float3 worldNormal;
@@ -83,24 +84,31 @@ struct SampleContext
 };
 
 // per pixel ray trace info shared by multiple pass
-SampleContext ResolveSampleContext(float2 uv)
+PixelContext ResolvePixelContext(float2 uv)
 {
-    SampleContext sampleCtx = (SampleContext) 0;
+    PixelContext pixelCtx = (PixelContext) 0;
 
     float4 normalDepth = _NormalDepthTexture.SampleLevel(sampler_PointClamp, uv, 0);
-    sampleCtx.rawDepth = normalDepth.w;
-    sampleCtx.sceneDepth = ConvertFromDeviceZ(sampleCtx.rawDepth);
-    sampleCtx.worldPosition = ReconstructWorldPositionFromDepth(uv, sampleCtx.rawDepth);
-    sampleCtx.worldNormal = normalDepth.rgb * 2 - 1;
-    sampleCtx.randomVector = SetupPixelRandom(uv);
-    sampleCtx.rayDirection = SetupRay(sampleCtx.worldNormal, sampleCtx.randomVector.xy);
+    pixelCtx.rawDepth = normalDepth.w;
+    pixelCtx.sceneDepth = ConvertFromDeviceZ(pixelCtx.rawDepth);
+    pixelCtx.worldPosition = ReconstructWorldPositionFromDepth(uv, pixelCtx.rawDepth);
+    pixelCtx.worldNormal = normalDepth.rgb * 2 - 1;
+    pixelCtx.randomVector = SetupPixelRandom(uv);
+    pixelCtx.rayDirection = SetupRay(pixelCtx.worldNormal, pixelCtx.randomVector.xy);
 
 #if DEBUG_AS_SSR
-    float3 viewDirection = normalize(sampleCtx.worldPosition - _CameraPosition);
-    sampleCtx.rayDirection.xyz = reflect(viewDirection, sampleCtx.worldNormal);
+    float3 viewDirection = normalize(pixelCtx.worldPosition - _CameraPosition);
+    pixelCtx.rayDirection.xyz = reflect(viewDirection, pixelCtx.worldNormal);
 #endif
 
-    return sampleCtx;
+    return pixelCtx;
+}
+
+void GetPixelPositionAndNormal(float2 uv, inout float3 outPosition, inout float3 outNormal)
+{
+    float4 normalDepth = _NormalDepthTexture.SampleLevel(sampler_PointClamp, uv, 0);
+    outPosition = ReconstructWorldPositionFromDepth(uv, normalDepth.w);
+    outNormal = normalDepth.xyz * 2 - 1;
 }
 
 // -------------------------------------------------------------------------------- //
@@ -170,25 +178,25 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
 {
     // 1. do some setup
     const int groupThreadIndex = Index2DTo1D(threadId.xy % TILE_SIZE, TILE_SIZE);
-    const bool isValidPixel = all(threadId.xy < _ScreenGatherRTSize - 1);
     const int2 pixelCoord = clamp(threadId.xy, 0, _ScreenGatherRTSize - 1);
     const float2 uv = (float2(pixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
     
-    SampleContext sampleCtx = ResolveSampleContext(uv);
-    float3 rayOriginTranslatedWorld = sampleCtx.worldPosition - _CameraPosition;
-    
+    PixelContext pixelCtx = ResolvePixelContext(uv);
+    const bool isValidPixel = all(threadId.xy < _ScreenGatherRTSize - 1) && pixelCtx.rawDepth > 0;
+
     // 2. trace screen ray
     const int numSteps = 32;
     float3 hitUVz = float3(0, 0, 0);
     float hitLevel = 0;
+    float3 rayOriginTranslatedWorld = pixelCtx.worldPosition - _CameraPosition;
 
     bool isHit = RayCast(
         _HZB, sampler_PointClamp,
-        rayOriginTranslatedWorld, sampleCtx.rayDirection,
+        rayOriginTranslatedWorld, pixelCtx.rayDirection,
         0.05, // roughness 
-        sampleCtx.sceneDepth,
+        pixelCtx.sceneDepth,
         numSteps,
-        sampleCtx.randomVector.z, // SSRStepOffset
+        pixelCtx.randomVector.z, // SSRStepOffset
         _HZBUvFactorAndInvFactor,
         false, // debug print
         _TranslatedWorldToClip, _ProjMat,
@@ -210,13 +218,18 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
         hitNormal = _NormalDepthHistory.SampleLevel(sampler_PointClamp, sampleUV.xy, 0).rgb;
     }
 
-    if (isValidPixel)
+    if (isValidPixel && isHit)
     {
         _RWInitialSampleRadiance[pixelCoord] = float4(hitRadiance, 1);
 
         float3 rayEndPosition = ReconstructWorldPositionFromDepth(hitUVz.xy, hitUVz.z);
-        float rayDistance = length(rayEndPosition - sampleCtx.worldPosition);
-        _RWInitialSampleHitInfo[pixelCoord] = float4(hitNormal, isHit ? rayDistance : 0);
+        float rayDistance = length(rayEndPosition - pixelCtx.worldPosition);
+        _RWInitialSampleHitInfo[pixelCoord] = float4(hitNormal, rayDistance);
+    }
+    else
+    {
+        _RWInitialSampleRadiance[pixelCoord] = float4(0, 0, 0, 0);
+        _RWInitialSampleHitInfo[pixelCoord] = float4(0, 0, 0, 0);
     }
 
     gs_PixelValidMask[groupThreadIndex] = isValidPixel;
@@ -296,14 +309,15 @@ void InitialSampleVoxelTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupTh
     // 1. rebuild tracing context
     int2 pixelCoord = _VoxelTraceRayCompactBuffer[threadId.x];
     const float2 uv = (float2(pixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
-    SampleContext sampleCtx = ResolveSampleContext(uv);
-    float3 voxelCellSize = GetVoxelCellSize(clipmapInfo, sampleCtx.worldPosition);
-    float3 rayStart = sampleCtx.worldPosition + sampleCtx.worldNormal * voxelCellSize * sqrt(3.0);
+    PixelContext pixelCtx = ResolvePixelContext(uv);
+    
+    float3 voxelCellSize = GetVoxelCellSize(clipmapInfo, pixelCtx.worldPosition);
+    float3 rayStart = pixelCtx.worldPosition + pixelCtx.worldNormal * voxelCellSize * sqrt(3.0);
 
     // 2. trace ray
     VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
     RTRequest.rayStart = rayStart;
-    RTRequest.rayDir = sampleCtx.rayDirection;
+    RTRequest.rayDir = pixelCtx.rayDirection;
     RTRequest.minCascadeIndex = 0;
     RTRequest.maxCascadeIndex = clipmapInfo.cascadeCount - 1;
     RTRequest.maxStepNum = 114514;
@@ -322,14 +336,14 @@ void InitialSampleVoxelTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupTh
     if (hit.isHit)
     {
         hitRadiance = FetchRadianceFromVoxelScene(RTRequest, hit);
-        rayDistance = length(hit.position - sampleCtx.worldPosition);
+        rayDistance = length(hit.position - pixelCtx.worldPosition);
         hitNormal = FetchRadianceFromVoxelScene(RTRequest, hit);
     }
     else
     {
         rayDistance = 191981000;
         hitRadiance = float3(1, 1, 1);
-        hitNormal = sampleCtx.rayDirection * -1;
+        hitNormal = pixelCtx.rayDirection * -1;
     }
 
     _RWInitialSampleRadiance[pixelCoord] = float4(hitRadiance, rayDistance);
@@ -372,32 +386,28 @@ bool IsValidUV(float2 uv)
 [numthreads(8, 8, 1)]
 void ReservoirTemporalReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
-    if (any(threadId.xy >= (_ScreenGatherRTSize - 1)))
+    // 1. do some setup
+    const int2 pixelCoord = clamp(threadId.xy, 0, _ScreenGatherRTSize - 1);
+    const float2 uv = (float2(pixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
+    PixelContext pixelCtx = ResolvePixelContext(uv);
+    
+    if (any(threadId.xy >= (_ScreenGatherRTSize - 1)) || pixelCtx.rawDepth <= 0)
     {
         return;
     }
 
-    // 1. do some setup
-    const int2 pixelCoord = clamp(threadId.xy, 0, _ScreenGatherRTSize - 1);
-    const float2 uv = (float2(pixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
-    SampleContext sampleCtx = ResolveSampleContext(uv);
-
     // 2. setup reservoir sample for current frame's new sample
     ReservoirSample newSample = (ReservoirSample) 0;
     newSample.radiance = _InitialSampleRadiance.SampleLevel(sampler_PointClamp, uv, 0).rgb;
-    newSample.rayStart = sampleCtx.worldPosition;
-    newSample.rayStartNormal = sampleCtx.worldNormal;
+    newSample.rayStart = pixelCtx.worldPosition;
+    newSample.rayStartNormal = pixelCtx.worldNormal;
 
-    float4 hitInfo = _InitialSampleRadiance.SampleLevel(sampler_PointClamp, uv, 0); // hit normal (xyz) and distance (w)
-    newSample.rayEnd = sampleCtx.worldPosition + sampleCtx.rayDirection.xyz * hitInfo.w;
+    float4 hitInfo = _InitialSampleHitInfo.SampleLevel(sampler_PointClamp, uv, 0); // hit normal (xyz) and distance (w)
+    newSample.rayEnd = pixelCtx.worldPosition + pixelCtx.rayDirection.xyz * hitInfo.w;
     newSample.rayEndNormal = hitInfo.xyz * 2 - 1;
 
-    float targetPDF = EvaluateTargetPDF(newSample.radiance);
-    float sourcePDF = sampleCtx.rayDirection.w;
-    newSample.weight = targetPDF / max(sourcePDF, 1e-3);
-
     // 3. reproject and search 3x3 to find match pixel
-    float2 reprojectCenterUV = ReprojectPixel(float3(uv, sampleCtx.rawDepth));
+    float2 reprojectCenterUV = ReprojectPixel(float3(uv, pixelCtx.rawDepth));
     int2 reprojectCenterCoord = reprojectCenterUV * _ScreenGatherRTSize;
 
     float minDistance = 11451419.19;
@@ -406,13 +416,13 @@ void ReservoirTemporalReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThr
     const int2 offsets[9] = { int2(-1, -1), int2(-1, 0), int2(-1, 1), int2(0, -1), int2(0, 0), int2(0, 1), int2(1, -1), int2(1, 0), int2(1, 1) };
     for (int i = 0; i < 9; i++)
     {
-        int2 neighborPixelCoord = clamp(reprojectCenterCoord + offsets[i], 0, _ScreenGatherRTSize - 1);
+        int2 neighborPixelCoord = reprojectCenterCoord + offsets[i];
         float2 neighborUV = (float2(neighborPixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
         reprojectValidCount += IsValidUV(neighborUV);
         
         // calculate distance between reservoir and current pixel
         float3 neighborPosition = _ReservoirDataC.SampleLevel(sampler_PointClamp, neighborUV, 0).xyz; // see DecodeReservoirData()
-        float distance = length(sampleCtx.worldPosition - neighborPosition);
+        float distance = length(pixelCtx.worldPosition - neighborPosition);
 
         if (distance < minDistance)
         {
@@ -425,19 +435,113 @@ void ReservoirTemporalReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThr
     Reservoir temporalReservoir = FetchReservoir(reprojectUV);
 
     // calculate geometry similarity to decide if we need cleanup reservoir history
-    float distance = length(sampleCtx.worldPosition - temporalReservoir.currentSample.rayStart);
-    float normalDot = abs(dot(sampleCtx.worldNormal, temporalReservoir.currentSample.rayStartNormal));
+    float distance = length(pixelCtx.worldPosition - temporalReservoir.currentSample.rayStart);
+    float normalDot = abs(dot(pixelCtx.worldNormal, temporalReservoir.currentSample.rayStartNormal));
     if (distance > 50.0 || reprojectValidCount == 0)
     {
         temporalReservoir = (Reservoir) 0;
     }
 
     // 5. do temporal reuse
-    UpdateReservoir(temporalReservoir, newSample, sampleCtx.randomVector.w);
+    float targetPDF = EvaluateTargetPDF(newSample, newSample.rayStart, newSample.rayStartNormal);
+    float sourcePDF = pixelCtx.rayDirection.w;
+    float selectionWeight = targetPDF / sourcePDF;
+    
+    UpdateReservoir(temporalReservoir, newSample, selectionWeight, pixelCtx.randomVector.w);
+    
+    ClampSampleNumAndUpdateEstimatorWeight(temporalReservoir, pixelCtx.worldPosition, pixelCtx.worldNormal, 20);
 
     // 6. write reservoir back to buffer
     float4 reservoirRawData[4];
     EncodeReservoirData(temporalReservoir, reservoirRawData);
+
+    _RWReservoirDataA[pixelCoord] = reservoirRawData[0];
+    _RWReservoirDataB[pixelCoord] = reservoirRawData[1];
+    _RWReservoirDataC[pixelCoord] = reservoirRawData[2];
+    _RWReservoirDataD[pixelCoord] = reservoirRawData[3];
+}
+
+// -------------------------------------------------------------------------------- //
+#pragma kernel ReservoirSpatialReuse
+
+[numthreads(8, 8, 1)]
+void ReservoirSpatialReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    // 1. fetch reservoir
+    const int2 pixelCoord = threadId.xy;
+    const float2 uv = (float2(pixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
+    uint randomSeed = GetSimpleRandomSeed(uv * 1145.14, _FrameNumber);
+    
+    PixelContext pixelCtx = ResolvePixelContext(uv);
+    Reservoir reservoir = FetchReservoir(uv);
+
+    if (any(threadId.xy >= (_ScreenGatherRTSize - 1)) || pixelCtx.rawDepth <= 0)
+    {
+        return;
+    }
+
+    // 2. reuse neighbor reservoirs
+    for (int i = 0; i < 12; i++)
+    {
+        // 2.1. fetch neighbor
+        float2 uvOffset = UniformSampleDisk(float2(SimpleRandom(randomSeed), SimpleRandom(randomSeed)));
+        float2 neighborUV = uv + uvOffset * 0.02;
+        //float2 neighborViewportUV = BufferUVToViewportUV(neighborUV);
+        float2 neighborViewportUV = neighborUV;
+        if (any(neighborViewportUV < 0) || any(neighborViewportUV > 1))
+        {
+            continue;
+        }
+
+        Reservoir neighborReservoir = FetchReservoir(neighborUV);
+
+        // 2.2. consider geometry similarity
+        float3 neighborPixelPosition, neighborPixelNormal;
+        GetPixelPositionAndNormal(neighborUV, neighborPixelPosition, neighborPixelNormal);
+
+        float3 pixelToNeighborPixel = neighborPixelPosition - pixelCtx.worldPosition;
+        float3 reusedPath = neighborReservoir.currentSample.rayEnd - pixelCtx.worldPosition;
+        float3 neighborPath = neighborReservoir.currentSample.rayEnd - neighborReservoir.currentSample.rayStart;
+
+        float hemisphereDot1 = dot(pixelCtx.worldNormal, pixelToNeighborPixel);
+        float hemisphereDot2 = dot(pixelCtx.worldNormal, reusedPath);
+        float hemisphereDot3 = dot(-reusedPath, neighborReservoir.currentSample.rayEndNormal);
+        float normalDot = dot(pixelCtx.worldNormal, neighborPixelNormal);
+        if (hemisphereDot1 < 0 || hemisphereDot2 < 0 || hemisphereDot3 < 0 || normalDot < 0.85)
+        {
+            continue;
+        }
+
+        // 2.3. calculate jacobian to scale solid angle (measurement density)
+        float neighborPathCosine = dot(normalize(-neighborPath), neighborReservoir.currentSample.rayEndNormal);
+        float reusedPathCosine = dot(normalize(-reusedPath), neighborReservoir.currentSample.rayEndNormal);
+        float jacobian = (reusedPathCosine * LengthSquare(neighborPath)) / (neighborPathCosine * LengthSquare(reusedPath));
+        jacobian = 1.0; // @TODO: fix firefly
+
+        if (neighborPathCosine < 0.1 || reusedPathCosine < 0.1)
+        {
+            continue;
+        }
+
+        // 2.4. see other reservoir as one sample, calculate merge weight
+        float targetPDF = EvaluateTargetPDF(neighborReservoir.currentSample, pixelCtx.worldPosition, pixelCtx.worldNormal);
+        targetPDF /= jacobian;
+        float mergeWeight = targetPDF * neighborReservoir.estimatorWeight * neighborReservoir.sampleCount; // p_hat * W * M in paper
+
+        // 2.5. merge reservoir
+        // note: UpdateReservoir() will add 1 to NumSamples, but we dont need it, just record origin value here
+        int sampleCountOld = reservoir.sampleCount;
+        UpdateReservoir(reservoir, neighborReservoir.currentSample, mergeWeight, SimpleRandom(randomSeed));
+        
+        // accumulate sample num, we repeatedly check neighbor sample N times
+        reservoir.sampleCount = sampleCountOld + neighborReservoir.sampleCount;
+        
+        ClampSampleNumAndUpdateEstimatorWeight(reservoir, pixelCtx.worldPosition, pixelCtx.worldNormal, 500);
+    }
+
+    // 3. write reservoir back to buffer
+    float4 reservoirRawData[4];
+    EncodeReservoirData(reservoir, reservoirRawData);
 
     _RWReservoirDataA[pixelCoord] = reservoirRawData[0];
     _RWReservoirDataB[pixelCoord] = reservoirRawData[1];
@@ -453,22 +557,23 @@ RWTexture2D<float4> _RWScreenGatherOutputTexture;
 [numthreads(8, 8, 1)]
 void ReservoirEvaluateIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
-    if (any(threadId.xy >= (_ScreenGatherRTSize - 1)))
-    {
-        return;
-    }
-
     // 1. fetch reservoir
     const int2 pixelCoord = clamp(threadId.xy, 0, _ScreenGatherRTSize - 1);
     const float2 uv = (float2(pixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
 
-    SampleContext sampleCtx = ResolveSampleContext(uv);
+    PixelContext pixelCtx = ResolvePixelContext(uv);
     Reservoir reservoir = FetchReservoir(uv);
+    
+    if (any(threadId.xy >= (_ScreenGatherRTSize - 1)) || pixelCtx.rawDepth <= 0)
+    {
+        _RWScreenGatherOutputTexture[pixelCoord] = float4(0, 0, 0, 0);
+        return;
+    }
 
     // 2. do RIS estimate
     float3 radiance = reservoir.currentSample.radiance * reservoir.estimatorWeight;
-    float3 rayDir = normalize(reservoir.currentSample.rayEnd - reservoir.currentSample.rayStart);
-    float cosTheta = saturate(dot(rayDir, sampleCtx.worldNormal));
+    float3 rayDir = normalize(reservoir.currentSample.rayEnd - pixelCtx.worldPosition);
+    float cosTheta = max(dot(rayDir, pixelCtx.worldNormal), 0.1); // clamp to prevent black hole pixel, see EvaluateTargetPDF()
 
     float3 irradiance = radiance * cosTheta / PI;
     _RWScreenGatherOutputTexture[pixelCoord] = float4(irradiance, 1);

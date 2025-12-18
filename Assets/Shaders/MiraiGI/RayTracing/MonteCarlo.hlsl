@@ -42,6 +42,13 @@ float4 UniformSampleHemisphere(float2 E)
     return float4(H, PDF);
 }
 
+float2 UniformSampleDisk(float2 E)
+{
+    float Theta = 2 * PI * E.x;
+    float Radius = sqrt(E.y);
+    return Radius * float2(cos(Theta), sin(Theta));
+}
+
 float3x3 GetTangentBasis(float3 TangentZ)
 {
     const float Sign = TangentZ.z >= 0 ? 1 : -1;
