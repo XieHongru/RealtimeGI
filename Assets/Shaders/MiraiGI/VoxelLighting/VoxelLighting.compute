@@ -197,8 +197,8 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
 
         // TODO: pre-exposure
         
-        // 4.2. if voxel in frustum we use probe in frustum, else we use whole scene probe as fallback
-        int cascadeIndexForSceneLighting = max(cascadeInfo.cascadeIndex, _RadianceProbeMinCascadeLevel);
+        // 4.2. select probe level to sample
+        int cascadeIndexForSceneLighting = max(cascadeInfo.cascadeIndex, _IrradianceProbeMinCascadeLevel);
         CascadeInfo cascadeInfoForSceneLighting = ResolveCascadeInfo(clipmapInfo, cascadeIndexForSceneLighting);
 
         // 4.3. evaluate indirect lighting
@@ -267,13 +267,6 @@ void PickValidProbe(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : 
     }
     
     gs_ThreadProbeValidMask[groupThreadIndex] = isProbeValid;
-    
-    // lower clip's probe just for screen lighting so we do frustum culling
-	// higher clip's probe will using for whole scene lighting so we fully spawn their
-    if (cascadeInfo.cascadeIndex < _RadianceProbeMinCascadeLevel)
-    {
-        isProbeValid = isProbeValid && IsProbeInsideFrustum(probeIndex, cascadeInfo);
-    }
 
     GroupMemoryBarrierWithGroupSync();
 

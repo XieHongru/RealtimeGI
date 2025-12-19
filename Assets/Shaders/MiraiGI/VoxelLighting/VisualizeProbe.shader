@@ -49,9 +49,9 @@ Shader "Mirai/VisualizeProbe"
         float3 probePosition = probePositionBase;
         probePosition += probePositionOffset;
 
-        float probeSizeScale = 0.1f;
+        float probeSizeScale = cascadeInfo.voxelSize * 0.25f;
         float3 localPosition = input.positionOS.xyz;
-        float3 worldPosition = probePosition + localPosition * probeSizeScale * pow(1.710, _CascadeIndex);
+        float3 worldPosition = probePosition + localPosition * probeSizeScale * (_CascadeIndex * 0.25 + 1);
         if(probePositionOffsetRaw.w == 0)
         {
             worldPosition *= 0.0;

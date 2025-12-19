@@ -111,6 +111,11 @@ void GetPixelPositionAndNormal(float2 uv, inout float3 outPosition, inout float3
     outNormal = normalDepth.xyz * 2 - 1;
 }
 
+float3 ClampNaNs(float3 color)
+{
+    return -min(-color, 0.0);
+}
+
 // -------------------------------------------------------------------------------- //
 #pragma kernel NormalDepthDownsample
 
@@ -215,7 +220,13 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
     {
         float2 sampleUV = ReprojectPixel(hitUVz);
         hitRadiance = _SceneColorHistory.SampleLevel(sampler_linearClamp, sampleUV.xy, 0).rgb;
-        hitNormal = _NormalDepthHistory.SampleLevel(sampler_PointClamp, sampleUV.xy, 0).rgb;
+        hitNormal = _NormalDepthHistory.SampleLevel(sampler_PointClamp, sampleUV.xy, 0).rgb * 2 - 1;
+        
+        // discard back face hit
+        if (dot(hitNormal, pixelCtx.rayDirection) < 0)
+        {
+            isHit = false;
+        }
     }
 
     if (isValidPixel && isHit)
@@ -224,7 +235,7 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
 
         float3 rayEndPosition = ReconstructWorldPositionFromDepth(hitUVz.xy, hitUVz.z);
         float rayDistance = length(rayEndPosition - pixelCtx.worldPosition);
-        _RWInitialSampleHitInfo[pixelCoord] = float4(hitNormal, rayDistance);
+        _RWInitialSampleHitInfo[pixelCoord] = float4(hitNormal * 0.5 + 0.5, rayDistance);
     }
     else
     {
@@ -627,7 +638,7 @@ void FilterIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
         int2 neighborPixelCoord = pixelCoord + offsets[i];
         float2 neighborUV = (float2(neighborPixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
         float3 neighborColor = _ScreenGatherOutputTexture.SampleLevel(sampler_linearClamp, neighborUV, 0).rgb;
-        neighborColor = -min(-neighborColor, 0.0); // prevent NaNs
+        neighborColor = ClampNaNs(neighborColor);
 
         float3 neighborPixelPosition, neighborPixelNormal;
         GetPixelPositionAndNormal(neighborUV, neighborPixelPosition, neighborPixelNormal);
@@ -644,7 +655,7 @@ void FilterIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     // 3. temporal blend after spatial filter (otherwise bias will accumulate cross frame)
     float2 reprojectUV = ReprojectPixel(float3(uv, pixelCtx.rawDepth));
     float3 historyColor = _DiffuseIndirectHistory.SampleLevel(sampler_linearClamp, reprojectUV, 0).rgb;
-    historyColor = -min(-historyColor, 0.0); // prevent NaNs
+    historyColor = ClampNaNs(historyColor);
 
     // reject history if geometry change
     float4 historyNormalDepth = _NormalDepthHistory.SampleLevel(sampler_PointClamp, reprojectUV, 0);
@@ -674,16 +685,54 @@ RWTexture2D<float4> _RWSceneTextureOutputTexture;
 [numthreads(8, 8, 1)]
 void DiffuseComposite(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
+    float2 screenGatherTexelSize = rcp(float2(_ScreenGatherRTSize));
     const int2 pixelCoord = clamp(threadId.xy, 0, _SceneTextureRTSize - 1);
     const float2 uv = (float2(pixelCoord) + 0.5) / float2(_SceneTextureRTSize);
     if (any(threadId.xy >= _SceneTextureRTSize))
     {
         return;
     }
+    
+    float3 worldNormal = _GBufferNormal.SampleLevel(sampler_linearClamp, uv, 0).rgb;
+    
+    float2 sampleUV[4];
+    sampleUV[0] = uv + float2(-0.5f, -0.5f) * screenGatherTexelSize;
+    sampleUV[1] = min(uv + float2(0.5f, -0.5f) * screenGatherTexelSize, float2(1.0f, 1.0f));
+    sampleUV[2] = min(uv + float2(-0.5f, 0.5f) * screenGatherTexelSize, float2(1.0f, 1.0f));
+    sampleUV[3] = min(uv + float2(0.5f, 0.5f) * screenGatherTexelSize, float2(1.0f, 1.0f));
+
+    float weightSum = 1e-3;
+    float3 irradianceSum = float3(0, 0, 0);
+    for (int i = 0; i < 4; i++)
+    {
+        float3 irradiance = _DiffuseIndirectTexture.SampleLevel(sampler_linearClamp, sampleUV[i], 0).rgb;
+        float4 normalDepth = _NormalDepthTexture.SampleLevel(sampler_linearClamp, sampleUV[i], 0);
+        float3 rayStartNormal = normalDepth.xyz * 2 - 1;
+        float rayStartSceneDepth = ConvertFromDeviceZ(normalDepth.a);
+        float weight = 1.0;
+        //weight *= 1.0 / abs(rayStartSceneDepth - _SceneDepthTexture.SampleLevel(sampler_PointClamp, uv, 0).r);
+        weight *= saturate(dot(rayStartNormal, worldNormal));
+
+        // use SH and full-screen gbuffer normal to sharpen result
+#if 1
+        ThreeBandSHVector SHBasis = SHBasisFunction3(rayStartNormal);
+        ThreeBandSHVectorRGB irradianceSH;
+        irradianceSH.R = MulSH3(SHBasis, irradiance.r);
+        irradianceSH.G = MulSH3(SHBasis, irradiance.g);
+        irradianceSH.B = MulSH3(SHBasis, irradiance.b);
+
+        ThreeBandSHVector pixelNormalSH = CalcDiffuseTransferSH3(worldNormal, 1);
+        irradiance = max(float3(0, 0, 0), DotSH3(irradianceSH, pixelNormalSH));
+#endif
+
+        irradianceSum += irradiance * weight;
+        weightSum += weight;
+    }
+
+    float3 diffuseIndirect = irradianceSum / weightSum;
 
     float metallic = 0.0f;
-    float3 diffuseIndirect = _DiffuseIndirectTexture.SampleLevel(sampler_linearClamp, uv, 0).rgb;
     diffuseIndirect *= _GBufferBaseColor.SampleLevel(sampler_linearClamp, uv, 0).rgb * (1.0 - metallic); // @TODO: consider shading models
 
-    _RWSceneTextureOutputTexture[threadId.xy] = float4(diffuseIndirect, 1);
+    _RWSceneTextureOutputTexture[threadId.xy] = float4(ClampNaNs(diffuseIndirect), 1);
 }

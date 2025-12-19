@@ -54,9 +54,10 @@ public class GlobalSettings : ScriptableObject
     public int visualizeIrradianceProbe = 0;
     public int visualizeRadianceProbe = 0;
     public int radianceProbeResolution = 16;
-    public int reuseRadianceProbe = 1;
+    public int reuseRadianceProbe = 0;
     public int useProbeOcclusionTest = 1;
     public int radianceProbeMinCascadeLevel = 2;
+    public int irradianceProbeMinCascadeLevel = 2;
     public int irradianceProbeSampleCount = 1;
     public float irradianceProbeTemporalWeight = 0.5f;
 

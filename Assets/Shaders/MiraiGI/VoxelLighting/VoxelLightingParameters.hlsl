@@ -42,6 +42,7 @@ ClipmapInfo ResolveClipmapInfo()
 int _RadianceProbeResolution;
 int2 _RadianceProbeCountInAtlasXY;
 int _RadianceProbeMinCascadeLevel;
+int _IrradianceProbeMinCascadeLevel;
 Texture3D<float4> _ProbeOffsetClipmap;
 Texture3D<float4> _IrradianceProbeClipmap;
 Texture3D<int> _RadianceProbeIdClipmap;

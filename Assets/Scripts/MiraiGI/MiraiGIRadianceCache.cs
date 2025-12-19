@@ -155,17 +155,18 @@ public class MiraiGIRadianceCache
 
             PickValidProbe(cmd, scene, cascadeId);
 
+            /*
             if (cascadeId >= GlobalSettings.Instance.radianceProbeMinCascadeLevel)
             {
                 RadianceProbeCapture(cmd, scene, cascadeId);
                 RadianceToIrradiance(cmd, scene, cascadeId);
             }
-            /*
             else
+            */
+            if (cascadeId >= GlobalSettings.Instance.irradianceProbeMinCascadeLevel)
             {
                 IrradianceProbeGather(cmd, scene, cascadeId);
             }
-            */
         }
 
         Graphics.ExecuteCommandBuffer(cmd);
@@ -800,6 +801,7 @@ public class MiraiGIRadianceCache
         cmd.SetComputeIntParam(computeShader, Shader.PropertyToID("_RadianceProbeResolution"), m_RadianceProbeResolution);
         cmd.SetComputeVectorParam(computeShader, Shader.PropertyToID("_RadianceProbeCountInAtlasXY"), (Vector2)m_RadianceProbeCountInAtlasXY);
         cmd.SetComputeIntParam(computeShader, Shader.PropertyToID("_RadianceProbeMinCascadeLevel"), GlobalSettings.Instance.radianceProbeMinCascadeLevel);
+        cmd.SetComputeIntParam(computeShader, Shader.PropertyToID("_IrradianceProbeMinCascadeLevel"), GlobalSettings.Instance.irradianceProbeMinCascadeLevel);
         cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_ProbeOffsetClipmap"), m_ProbeOffsetClipmap);
         cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_IrradianceProbeClipmap"), m_IrradianceProbeClipmap);
         cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_RadianceProbeIdClipmap"), m_RadianceProbeIdClipmap);
