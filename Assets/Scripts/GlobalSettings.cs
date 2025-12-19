@@ -64,6 +64,8 @@ public class GlobalSettings : ScriptableObject
     public int visualizeScreenGather = 0;
     public int screenGatherDownsampleFactor = 2;
     public int useReservoirSpatialReuse = 1;
+    public int spatialReuseSampleCount = 12;
+    public float spatialReuseSearchRange = 0.5f;
 
     // Distance Field
     public int useDistanceField = 1;

@@ -52,9 +52,14 @@ public class MiraiGIRenderPass : ScriptableRenderPass
         m_GIController.MiraiGISceneUpdate(ref renderingData);
 
         CommandBuffer cmd = CommandBufferPool.Get("Blit Visualize Result");
-        
+
         if (GlobalSettings.NeedVisualize())
             cmd.Blit(m_GIController.miraiGIGPUScene.miraiGIClipmap.GetVisualizeColorTarget(), cameraTarget);
+        else
+        {
+            m_GIController.MiraiGIScreenDiffuseComposite(ref renderingData);
+            cmd.Blit(m_GIController.miraiGIGPUScene.miraiGIScreenGather.GetDiffuseCompositeTexture(), cameraTarget);
+        }
 
         context.ExecuteCommandBuffer(cmd);
         CommandBufferPool.Release(cmd);

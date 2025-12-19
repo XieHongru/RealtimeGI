@@ -23,7 +23,7 @@ MonoBehaviour:
   cullingObjectCountPerChunk: 64
   voxelCascadeCount: 4
   voxelSize: 0.2
-  voxelVisualizeMode: 1
+  voxelVisualizeMode: 0
   voxelVisualizeCascadeLevel: 0
   voxelVisualizeUpdateChunk: 0
   clipmapObjectCullingRejectFactor1: 1
@@ -46,4 +46,6 @@ MonoBehaviour:
   visualizeScreenGather: 1
   screenGatherDownsampleFactor: 2
   useReservoirSpatialReuse: 0
+  spatialReuseSampleCount: 12
+  spatialReuseSearchRange: 0.5
   useDistanceField: 0

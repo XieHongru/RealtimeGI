@@ -4,7 +4,7 @@
 #include "ReservoirSampling.hlsl"
 
 // -------------------------------------------------------------------------------- //
-#define DEBUG_AS_SSR 1
+#define DEBUG_AS_SSR 0
 #define FORCE_VOXEL_TRACE 1
 
 uint _FrameNumber;
@@ -376,11 +376,13 @@ Reservoir FetchReservoir(float2 uv)
     return DecodeReservoirData(rawData);
 }
 
-bool IsValidUV(float2 uv)
+bool IsUVOutSideScreen(float2 uv)
 {
     // note: physical texture size may different with viewport size due to UE editor
     // so max uv boundary decided by ScreenPositionScaleBias, not const 1.0
-    return all(uv >= 0) && all(uv <= _ScreenPositionScaleBias.wz * 2);
+    //float2 ViewportUV = BufferUVToViewportUV(uv);
+    float2 ViewportUV = uv;
+    return any(ViewportUV <= 0) || any(ViewportUV >= 1);
 }
 
 [numthreads(8, 8, 1)]
@@ -391,8 +393,12 @@ void ReservoirTemporalReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThr
     const float2 uv = (float2(pixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
     PixelContext pixelCtx = ResolvePixelContext(uv);
     
-    if (any(threadId.xy >= (_ScreenGatherRTSize - 1)) || pixelCtx.rawDepth <= 0)
+    if (any(threadId.xy >= _ScreenGatherRTSize) || pixelCtx.rawDepth <= 0)
     {
+        _RWReservoirDataA[pixelCoord] = float4(0, 0, 0, 0);
+        _RWReservoirDataB[pixelCoord] = float4(0, 0, 0, 0);
+        _RWReservoirDataC[pixelCoord] = float4(0, 0, 0, 0);
+        _RWReservoirDataD[pixelCoord] = float4(0, 0, 0, 0);
         return;
     }
 
@@ -418,7 +424,7 @@ void ReservoirTemporalReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThr
     {
         int2 neighborPixelCoord = reprojectCenterCoord + offsets[i];
         float2 neighborUV = (float2(neighborPixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
-        reprojectValidCount += IsValidUV(neighborUV);
+        reprojectValidCount += IsUVOutSideScreen(neighborUV) ? 0 : 1;
         
         // calculate distance between reservoir and current pixel
         float3 neighborPosition = _ReservoirDataC.SampleLevel(sampler_PointClamp, neighborUV, 0).xyz; // see DecodeReservoirData()
@@ -437,7 +443,7 @@ void ReservoirTemporalReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThr
     // calculate geometry similarity to decide if we need cleanup reservoir history
     float distance = length(pixelCtx.worldPosition - temporalReservoir.currentSample.rayStart);
     float normalDot = abs(dot(pixelCtx.worldNormal, temporalReservoir.currentSample.rayStartNormal));
-    if (distance > 50.0 || reprojectValidCount == 0)
+    if (distance > 0.5 || reprojectValidCount == 0 || isnan(temporalReservoir.weightSum) || isnan(temporalReservoir.estimatorWeight))
     {
         temporalReservoir = (Reservoir) 0;
     }
@@ -449,7 +455,7 @@ void ReservoirTemporalReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThr
     
     UpdateReservoir(temporalReservoir, newSample, selectionWeight, pixelCtx.randomVector.w);
     
-    ClampSampleNumAndUpdateEstimatorWeight(temporalReservoir, pixelCtx.worldPosition, pixelCtx.worldNormal, 20);
+    ClampSampleNumAndUpdateEstimatorWeight(temporalReservoir, pixelCtx.worldPosition, pixelCtx.worldNormal, 5);
 
     // 6. write reservoir back to buffer
     float4 reservoirRawData[4];
@@ -464,71 +470,83 @@ void ReservoirTemporalReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThr
 // -------------------------------------------------------------------------------- //
 #pragma kernel ReservoirSpatialReuse
 
+int _SpatialReuseSampleCount;
+float _SpatialReuseSearchRange;
+
 [numthreads(8, 8, 1)]
 void ReservoirSpatialReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
     // 1. fetch reservoir
+    const float2 screenGatherTexelSize = 1.0 / float2(_ScreenGatherRTSize);
     const int2 pixelCoord = threadId.xy;
-    const float2 uv = (float2(pixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
+    const float2 uv = (float2(pixelCoord) + 0.5) * screenGatherTexelSize;
     uint randomSeed = GetSimpleRandomSeed(uv * 1145.14, _FrameNumber);
     
     PixelContext pixelCtx = ResolvePixelContext(uv);
     Reservoir reservoir = FetchReservoir(uv);
 
-    if (any(threadId.xy >= (_ScreenGatherRTSize - 1)) || pixelCtx.rawDepth <= 0)
+    if (any(threadId.xy >= _ScreenGatherRTSize) || pixelCtx.rawDepth <= 0)
     {
+        _RWReservoirDataA[pixelCoord] = float4(0, 0, 0, 0);
+        _RWReservoirDataB[pixelCoord] = float4(0, 0, 0, 0);
+        _RWReservoirDataC[pixelCoord] = float4(0, 0, 0, 0);
+        _RWReservoirDataD[pixelCoord] = float4(0, 0, 0, 0);
         return;
     }
 
-    // 2. reuse neighbor reservoirs
-    for (int i = 0; i < 12; i++)
+    // 2. calculate spatial search range
+    // use cur pixel's depth to keep range constant in world space
+    float3 worldPositionDDXY = ReconstructWorldPositionFromDepth(uv + screenGatherTexelSize, pixelCtx.rawDepth);
+    float3 vectorDDXY = length(pixelCtx.worldPosition - worldPositionDDXY);
+    float distanceDDXY = max(max(vectorDDXY.x, vectorDDXY.y), vectorDDXY.z);
+    float uvSearchRange = clamp((_SpatialReuseSearchRange / distanceDDXY) * screenGatherTexelSize, 0.02, 0.2);
+
+    // 3. reuse neighbor reservoirs
+    for (int i = 0; i < _SpatialReuseSampleCount; i++)
     {
-        // 2.1. fetch neighbor
+        // 3.1. fetch neighbor
         float2 uvOffset = UniformSampleDisk(float2(SimpleRandom(randomSeed), SimpleRandom(randomSeed)));
-        float2 neighborUV = uv + uvOffset * 0.02;
-        //float2 neighborViewportUV = BufferUVToViewportUV(neighborUV);
-        float2 neighborViewportUV = neighborUV;
-        if (any(neighborViewportUV < 0) || any(neighborViewportUV > 1))
+        float2 neighborUV = uv + uvOffset * uvSearchRange;
+        if (IsUVOutSideScreen(neighborUV))
         {
             continue;
         }
 
         Reservoir neighborReservoir = FetchReservoir(neighborUV);
 
-        // 2.2. consider geometry similarity
+        // 3.2. consider geometry similarity
         float3 neighborPixelPosition, neighborPixelNormal;
         GetPixelPositionAndNormal(neighborUV, neighborPixelPosition, neighborPixelNormal);
-
-        float3 pixelToNeighborPixel = neighborPixelPosition - pixelCtx.worldPosition;
+        
         float3 reusedPath = neighborReservoir.currentSample.rayEnd - pixelCtx.worldPosition;
         float3 neighborPath = neighborReservoir.currentSample.rayEnd - neighborReservoir.currentSample.rayStart;
 
-        float hemisphereDot1 = dot(pixelCtx.worldNormal, pixelToNeighborPixel);
-        float hemisphereDot2 = dot(pixelCtx.worldNormal, reusedPath);
-        float hemisphereDot3 = dot(-reusedPath, neighborReservoir.currentSample.rayEndNormal);
+        float hemisphereDot1 = dot(pixelCtx.worldNormal, reusedPath);
+        float hemisphereDot2 = dot(pixelCtx.worldNormal, neighborPath);
+        float hemisphereDot3 = dot(neighborReservoir.currentSample.rayStartNormal, neighborPath);
         float normalDot = dot(pixelCtx.worldNormal, neighborPixelNormal);
-        if (hemisphereDot1 < 0 || hemisphereDot2 < 0 || hemisphereDot3 < 0 || normalDot < 0.85)
+        if (hemisphereDot1 <= 0 || hemisphereDot2 <= 0 || hemisphereDot3 <= 0 || normalDot < 0.8)
         {
             continue;
         }
 
-        // 2.3. calculate jacobian to scale solid angle (measurement density)
+        // 3.3. calculate jacobian to scale solid angle (measurement density)
         float neighborPathCosine = dot(normalize(-neighborPath), neighborReservoir.currentSample.rayEndNormal);
         float reusedPathCosine = dot(normalize(-reusedPath), neighborReservoir.currentSample.rayEndNormal);
-        float jacobian = (reusedPathCosine * LengthSquare(neighborPath)) / (neighborPathCosine * LengthSquare(reusedPath));
-        jacobian = 1.0; // @TODO: fix firefly
+        float jacobian = (neighborPathCosine * LengthSquare(reusedPath)) / (reusedPathCosine * LengthSquare(neighborPath));
 
-        if (neighborPathCosine < 0.1 || reusedPathCosine < 0.1)
+        if (neighborPathCosine <= 0 || reusedPathCosine <= 0)
         {
             continue;
         }
 
-        // 2.4. see other reservoir as one sample, calculate merge weight
+        // 3.4. see other reservoir as one sample, calculate merge weight
+        // evaluate neighbor sample's target pdf with current pixel's position and normal
         float targetPDF = EvaluateTargetPDF(neighborReservoir.currentSample, pixelCtx.worldPosition, pixelCtx.worldNormal);
-        targetPDF /= jacobian;
+        targetPDF /= clamp(jacobian, 0.1, 10); // clamp to prevent firefly
         float mergeWeight = targetPDF * neighborReservoir.estimatorWeight * neighborReservoir.sampleCount; // p_hat * W * M in paper
 
-        // 2.5. merge reservoir
+        // 3.5. merge reservoir
         // note: UpdateReservoir() will add 1 to NumSamples, but we dont need it, just record origin value here
         int sampleCountOld = reservoir.sampleCount;
         UpdateReservoir(reservoir, neighborReservoir.currentSample, mergeWeight, SimpleRandom(randomSeed));
@@ -539,7 +557,7 @@ void ReservoirSpatialReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
         ClampSampleNumAndUpdateEstimatorWeight(reservoir, pixelCtx.worldPosition, pixelCtx.worldNormal, 500);
     }
 
-    // 3. write reservoir back to buffer
+    // 4. write reservoir back to buffer
     float4 reservoirRawData[4];
     EncodeReservoirData(reservoir, reservoirRawData);
 
@@ -564,7 +582,7 @@ void ReservoirEvaluateIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 gro
     PixelContext pixelCtx = ResolvePixelContext(uv);
     Reservoir reservoir = FetchReservoir(uv);
     
-    if (any(threadId.xy >= (_ScreenGatherRTSize - 1)) || pixelCtx.rawDepth <= 0)
+    if (any(threadId.xy >= _ScreenGatherRTSize) || pixelCtx.rawDepth <= 0)
     {
         _RWScreenGatherOutputTexture[pixelCoord] = float4(0, 0, 0, 0);
         return;
@@ -573,9 +591,99 @@ void ReservoirEvaluateIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 gro
     // 2. do RIS estimate
     float3 radiance = reservoir.currentSample.radiance * reservoir.estimatorWeight;
     float3 rayDir = normalize(reservoir.currentSample.rayEnd - pixelCtx.worldPosition);
-    float cosTheta = max(dot(rayDir, pixelCtx.worldNormal), 0.1); // clamp to prevent black hole pixel, see EvaluateTargetPDF()
+    float cosTheta = max(dot(rayDir, pixelCtx.worldNormal), 0.0); // clamp to prevent black hole pixel, see EvaluateTargetPDF()
 
     float3 irradiance = radiance * cosTheta / PI;
     _RWScreenGatherOutputTexture[pixelCoord] = float4(irradiance, 1);
 }
 
+// -------------------------------------------------------------------------------- //
+#pragma kernel FilterIrradiance
+
+Texture2D<float4> _ScreenGatherOutputTexture;
+Texture2D<float4> _DiffuseIndirectHistory;
+RWTexture2D<float4> _RWDiffuseIndirectTexture;
+
+[numthreads(8, 8, 1)]
+void FilterIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    // 1. setup
+    const int2 pixelCoord = clamp(threadId.xy, 0, _ScreenGatherRTSize - 1);
+    const float2 uv = (float2(pixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
+    PixelContext pixelCtx = ResolvePixelContext(uv);
+
+    if (any(threadId.xy >= _ScreenGatherRTSize) || pixelCtx.rawDepth <= 0)
+    {
+        _RWDiffuseIndirectTexture[pixelCoord] = float4(0, 0, 0, 0);
+        return;
+    }
+
+    // 2. filter current frame output
+    float weightSum = 0;
+    float3 colorSum = float3(0, 0, 0);
+    const int2 offsets[9] = { int2(0, 0), int2(-1, -1), int2(-1, 0), int2(-1, 1), int2(0, -1), int2(0, 1), int2(1, -1), int2(1, 0), int2(1, 1) };
+    for (int i = 0; i < 9; i++)
+    {
+        int2 neighborPixelCoord = pixelCoord + offsets[i];
+        float2 neighborUV = (float2(neighborPixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
+        float3 neighborColor = _ScreenGatherOutputTexture.SampleLevel(sampler_linearClamp, neighborUV, 0).rgb;
+        neighborColor = -min(-neighborColor, 0.0); // prevent NaNs
+
+        float3 neighborPixelPosition, neighborPixelNormal;
+        GetPixelPositionAndNormal(neighborUV, neighborPixelPosition, neighborPixelNormal);
+
+        float weight = 1;
+        weight *= saturate(rcp(length(neighborPixelPosition - pixelCtx.worldPosition) / 0.5));
+        weight *= saturate(dot(neighborPixelNormal, pixelCtx.worldNormal));
+
+        colorSum += neighborColor * weight;
+        weightSum += weight;
+    }
+    float3 filterColor = (weightSum > 0) ? (colorSum / weightSum) : 0;
+
+    // 3. temporal blend after spatial filter (otherwise bias will accumulate cross frame)
+    float2 reprojectUV = ReprojectPixel(float3(uv, pixelCtx.rawDepth));
+    float3 historyColor = _DiffuseIndirectHistory.SampleLevel(sampler_linearClamp, reprojectUV, 0).rgb;
+    historyColor = -min(-historyColor, 0.0); // prevent NaNs
+
+    // reject history if geometry change
+    float4 historyNormalDepth = _NormalDepthHistory.SampleLevel(sampler_PointClamp, reprojectUV, 0);
+    float3 historyNormal = historyNormalDepth.xyz * 2 - 1;
+    float historySceneDepth = ConvertFromDeviceZ(historyNormalDepth.w);
+
+    float historyWeight = 0.9;
+    if (IsUVOutSideScreen(reprojectUV) || dot(historyNormal, pixelCtx.worldNormal) < 0.9 || abs(pixelCtx.sceneDepth - historySceneDepth) > 0.5)
+    {
+        historyWeight = 0;
+    }
+    
+    float3 color = lerp(filterColor, historyColor, historyWeight);
+    //_RWDiffuseIndirectTexture[pixelCoord] = float4(color, 1);
+
+    // for debug
+    _RWDiffuseIndirectTexture[pixelCoord] = float4(_ScreenGatherOutputTexture.SampleLevel(sampler_linearClamp, uv, 0).rgb, 1);
+}
+
+// -------------------------------------------------------------------------------- //
+#pragma kernel DiffuseComposite
+
+Texture2D<float4> _GBufferBaseColor;
+Texture2D<float4> _DiffuseIndirectTexture;
+RWTexture2D<float4> _RWSceneTextureOutputTexture;
+
+[numthreads(8, 8, 1)]
+void DiffuseComposite(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    const int2 pixelCoord = clamp(threadId.xy, 0, _SceneTextureRTSize - 1);
+    const float2 uv = (float2(pixelCoord) + 0.5) / float2(_SceneTextureRTSize);
+    if (any(threadId.xy >= _SceneTextureRTSize))
+    {
+        return;
+    }
+
+    float metallic = 0.0f;
+    float3 diffuseIndirect = _DiffuseIndirectTexture.SampleLevel(sampler_linearClamp, uv, 0).rgb;
+    diffuseIndirect *= _GBufferBaseColor.SampleLevel(sampler_linearClamp, uv, 0).rgb * (1.0 - metallic); // @TODO: consider shading models
+
+    _RWSceneTextureOutputTexture[threadId.xy] = float4(diffuseIndirect, 1);
+}

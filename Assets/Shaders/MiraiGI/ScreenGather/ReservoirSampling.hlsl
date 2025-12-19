@@ -50,9 +50,15 @@ struct Reservoir
 float EvaluateTargetPDF(in ReservoirSample sample, float3 evaluatePointPosition, float3 evaluatePointNormal)
 {
     float cosineWeight = 1.0;
-
+    
+    // note: consider cosine will cause better result at out door scene with skylight, but work poor at in door scene (or any gi hard scene)
+    // skylight is smooth so TargetPDF(w) is almost uniform
+    // without cosine, reservoir will weight graze sample (cos <= 0.01) same as other sample. but when evaluate irradiance we must consider cosine contribution, so it cause some dark pixel
+    // anyway, follow the advice of paper, we don't use cosine here
+#if 0
     float3 rayDirection = normalize(sample.rayEnd - evaluatePointPosition); // connect the sample with evaluate point
     cosineWeight = max(dot(rayDirection, evaluatePointNormal), 0.1); // clamp to prevent firefly
+#endif
 
     return dot(sample.radiance, (0.33).xxx) * cosineWeight;
 }
