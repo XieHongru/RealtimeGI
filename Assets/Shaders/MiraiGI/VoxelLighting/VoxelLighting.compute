@@ -948,3 +948,61 @@ void IrradianceProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
         }
     }
 }
+
+// -------------------------------------------------------------------------------- //
+#pragma kernel ClearDirtyVoxelRadiance
+
+int3 _UpdateChunkResolution;
+StructuredBuffer<int> _UpdateChunkCleanupList;
+
+[numthreads(4, 4, 4)]
+void ClearDirtyVoxelRadiance(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    ClipmapInfo clipmapInfo = ResolveClipmapInfo();
+    CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, _CascadeIndex);
+
+    int3 chunkNumXYZ = cascadeInfo.resolution / _UpdateChunkResolution;
+    int chunkIndex = threadId.x / _UpdateChunkResolution.x;
+    int chunkId_1D = _UpdateChunkCleanupList[chunkIndex];
+    int3 chunkId_3D = Index1DTo3D(chunkId_1D, chunkNumXYZ);
+    int3 voxelIndex = chunkId_3D * _UpdateChunkResolution + (threadId % _UpdateChunkResolution);
+    int3 blockIndex = voxelIndex / VOXEL_BLOCK_SIZE;
+
+    int3 clipmapAccessIndex = BlockClipmapAddressMapping(blockIndex, cascadeInfo.resolution, cascadeInfo.scrolling, _CascadeIndex);
+    int voxelPageId = _VoxelPageClipmap[clipmapAccessIndex].r;
+    if (voxelPageId == PAGE_ID_INVALID)
+    {
+        return;
+    }
+
+    int3 indexInPool = PageAddressMapping(voxelPageId, _VoxelPageCountInXYZ, voxelIndex);
+    int3 twoSideIndex0 = TwoSideAddressMapping(indexInPool, false);
+    int3 twoSideIndex1 = TwoSideAddressMapping(indexInPool, true);
+
+    _RWVoxelPoolRadiance[twoSideIndex0] = float4(0, 0, 0, 0);
+    _RWVoxelPoolRadiance[twoSideIndex1] = float4(0, 0, 0, 0);
+}
+
+// -------------------------------------------------------------------------------- //
+#pragma kernel ClearDirtyProbeIrradiance
+
+[numthreads(4, 4, 4)]
+void ClearDirtyProbeIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    ClipmapInfo clipmapInfo = ResolveClipmapInfo();
+    CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, _CascadeIndex);
+
+    int3 blockCountPerUpdateChunk = _UpdateChunkResolution / VOXEL_BLOCK_SIZE;
+    int3 chunkNumXYZ = cascadeInfo.resolution / _UpdateChunkResolution;
+    int chunkIndex = threadId.x / blockCountPerUpdateChunk;
+    int chunkId_1D = _UpdateChunkCleanupList[chunkIndex];
+    int3 chunkId_3D = Index1DTo3D(chunkId_1D, chunkNumXYZ);
+    int3 blockIndex = (chunkId_3D * _UpdateChunkResolution) / VOXEL_BLOCK_SIZE;
+
+    int3 clipmapAccessIndex = BlockClipmapAddressMapping(blockIndex, cascadeInfo.resolution, cascadeInfo.scrolling, _CascadeIndex);
+    int3 readWriteIndexBase = clipmapAccessIndex * int3(7, 1, 1);
+    for (int i = 0; i < 7; i++)
+    {
+        _RWIrradianceProbeClipmap[readWriteIndexBase + int3(i, 0, 0)] = float4(0, 0, 0, 0);
+    }
+}

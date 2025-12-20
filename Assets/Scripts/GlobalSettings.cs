@@ -33,7 +33,7 @@ public class GlobalSettings : ScriptableObject
     public int adaptiveSurfaceCacheCount = 8;
 
     // Clipmap
-    public int chunkCountToUpdatePerFrame = 16;
+    public int chunkCountToUpdatePerFrame = 64;
     public int cullingObjectCountPerChunk = 64;
     public int voxelCascadeCount = 4;
     public float voxelSize = 0.2f;

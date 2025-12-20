@@ -19,7 +19,7 @@ MonoBehaviour:
   meshCardResolutionThreshold2: 16
   meshCardResolutionThreshold3: 64
   adaptiveSurfaceCacheCount: 8
-  chunkCountToUpdatePerFrame: 16
+  chunkCountToUpdatePerFrame: 64
   cullingObjectCountPerChunk: 64
   voxelCascadeCount: 4
   voxelSize: 0.2
@@ -46,7 +46,7 @@ MonoBehaviour:
   irradianceProbeTemporalWeight: 0.75
   visualizeScreenGather: 0
   screenGatherDownsampleFactor: 2
-  useReservoirSpatialReuse: 0
+  useReservoirSpatialReuse: 1
   spatialReuseSampleCount: 12
   spatialReuseSearchRange: 0.5
   temporalAccumulateWeight: 0.8

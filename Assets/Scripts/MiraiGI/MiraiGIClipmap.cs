@@ -12,46 +12,88 @@ using UnityEngine.Rendering.Universal;
 using UnityEngine.UIElements;
 using static Unity.VisualScripting.Dependencies.Sqlite.SQLiteConnection;
 
+public class UpdateChunk
+{
+    public int index1D = 0;
+    public uint timeStamp = 0;
+}
+
 public class MiraiGICascadeInfo
 {
     public Vector3 cascadeCenter;
     public Vector3 cascadeSize;
     public Vector3Int scrolling;
     public Vector3Int chunkCountInXYZ;
-    public List<int> chunksToUpdate = new List<int>();
     public Vector3Int deltaChunk;
     public Vector3Int updateChunkResolution = new Vector3Int(16, 16, 16);
 
-    Queue<int> pendingUpdateChunks = new Queue<int>();
+    Queue<UpdateChunk> pendingUpdateChunks = new Queue<UpdateChunk>();
     HashSet<int> updateChunksLookUp = new HashSet<int>();
+
+    public List<int> chunksToUpdate = new List<int>();  // chunks to update in current frame, chunk may dirty in several frames ago
+    public List<int> chunksToCleanup = new List<int>(); // chunks to cleanup, when a chunk dirty it will be clean at cur frame
 
     public bool HasChunksToUpdate()
     {
         return pendingUpdateChunks.Count > 0;
     }
 
-    public int PopUpdateChunk()
+    public bool PopUpdateChunk(out UpdateChunk outChunk)
     {
         if (pendingUpdateChunks.Count == 0)
         {
-            return -1;
+            outChunk = new UpdateChunk();
+            return false;
         }
 
-        int popElement = pendingUpdateChunks.Dequeue();
-        updateChunksLookUp.Remove(popElement);
+        outChunk = pendingUpdateChunks.Dequeue();
+        updateChunksLookUp.Remove(outChunk.index1D);
 
-        return popElement;
+        return true;
     }
 
-    public void PushUpdateChunk(int chunkId)
+    public void PushUpdateChunk(UpdateChunk chunk)
     {
-        bool isAlreadyInSet = updateChunksLookUp.Add(chunkId);
+        bool isAlreadyInSet = updateChunksLookUp.Add(chunk.index1D);
         if (!isAlreadyInSet)
         {
             return;
         }
 
-        pendingUpdateChunks.Enqueue(chunkId);
+        pendingUpdateChunks.Enqueue(chunk);
+    }
+
+    public void PopulateUpdateChunkList()
+    {
+        int maxUpdateChunkPerFrame = GlobalSettings.Instance.chunkCountToUpdatePerFrame;
+
+        chunksToUpdate.Clear();
+
+        // fetch from pending queue
+        for (int i = 0; i < maxUpdateChunkPerFrame; i++)
+        {
+            UpdateChunk chunk = new UpdateChunk();
+            if (!PopUpdateChunk(out chunk))
+            {
+                break;
+            }
+
+            chunksToUpdate.Add(chunk.index1D);
+        }
+    }
+
+    public void PopulateUpdateChunkCleanupList(uint frameIndex)
+    {
+        chunksToCleanup.Clear();
+
+        // if a chunk been marked as dirty in this frame, we cleanup it
+        foreach (UpdateChunk dirtyChunk in pendingUpdateChunks)
+	    {
+            if (dirtyChunk.timeStamp == frameIndex)
+            {
+                chunksToCleanup.Add(dirtyChunk.index1D);
+            }
+        }
     }
 };
 
@@ -85,7 +127,7 @@ public class MiraiGIClipmap
     public MiraiGICascadeInfo[] cascadeInfos;
 
     const int MAX_OBJECT_NUM_PER_CASCADE = 2048;
-    const int MAX_UPDATE_CHUNK_PER_FRAME = 16;
+    const int MAX_UPDATE_CHUNK_PER_FRAME = 64;
     const int MAX_OBJECT_NUM_PER_UPDATE_CHUNK = 64;
     const int VOXEL_BLOCK_SIZE = 4;
     const int PAGE_ID_INVALID = (0x3FFFFFFF);
@@ -110,6 +152,7 @@ public class MiraiGIClipmap
     ComputeBuffer[] m_ObjectCullParamsCB;
 
     ComputeBuffer[] m_UpdateChunkList;
+    ComputeBuffer[] m_UpdateChunkCleanupList;
     ComputeBuffer m_ClipmapObjectCounter;
     ComputeBuffer m_ClipmapCullingResult;
     ComputeBuffer m_UpdateChunkCullingIndirectArgs;
@@ -140,6 +183,7 @@ public class MiraiGIClipmap
     public RenderTexture GetVisualizeDepthTarget() => m_VisualizeDepthTarget;
     public RenderTexture GetDistanceFieldClipmap() => m_DistanceFieldClipmap[(radianceCache.frameNumberRenderThread + 0) % 2];
     public RenderTexture GetDistanceFieldClipmapNextFrame() => m_DistanceFieldClipmap[(radianceCache.frameNumberRenderThread + 1) % 2];
+    public ComputeBuffer GetUpdateChunkCleanupList(int cascadeId) => m_UpdateChunkCleanupList[cascadeId];
 
     public void CreateClipmap()
     {
@@ -177,6 +221,7 @@ public class MiraiGIClipmap
         m_ObjectCullParamsCB = new ComputeBuffer[CASCADE_COUNT];
 
         m_UpdateChunkList = new ComputeBuffer[CASCADE_COUNT];
+        m_UpdateChunkCleanupList = new ComputeBuffer[CASCADE_COUNT];
 
         for (int cascadeId = 0; cascadeId < CASCADE_COUNT; cascadeId++)
         {
@@ -195,15 +240,20 @@ public class MiraiGIClipmap
             cascadeInfo.cascadeSize = new Vector3(32, 32, 32) * (1 << cascadeId);
             cascadeInfo.scrolling = Vector3Int.zero;
             cascadeInfo.chunkCountInXYZ = updateChunkDimension; // TODO: no effect
+            // mark all chunks dirty
             for (int chunkId = 0; chunkId < updateChunkCount; chunkId++)
             {
-                cascadeInfo.PushUpdateChunk(chunkId);
+                UpdateChunk dirtyChunk = new UpdateChunk();
+                dirtyChunk.index1D = chunkId;
+                dirtyChunk.timeStamp = 0;
+                cascadeInfo.PushUpdateChunk(dirtyChunk);
             }
 
             m_ObjectCullParams[cascadeId] = new ObjectCullParams();
             m_ObjectCullParamsCB[cascadeId] = new ComputeBuffer(1, Marshal.SizeOf<ObjectCullParams>());
 
             m_UpdateChunkList[cascadeId] = new ComputeBuffer(MAX_UPDATE_CHUNK_PER_FRAME, sizeof(int), ComputeBufferType.Raw);
+            m_UpdateChunkCleanupList[cascadeId] = new ComputeBuffer(GlobalShared.UPDATE_CHUNK_NUM * GlobalShared.UPDATE_CHUNK_NUM * GlobalShared.UPDATE_CHUNK_NUM, sizeof(int), ComputeBufferType.Raw);
         }
 
         Vector3Int DFTextureResolution = clipmapResolution * VOXEL_BLOCK_SIZE;
@@ -285,7 +335,7 @@ public class MiraiGIClipmap
         for (int cascadeIndex = 0; cascadeIndex < CASCADE_COUNT; cascadeIndex++)
         {
             UpdateCascadePosition(camera, cascadeIndex);
-            MarkDirtyChunksToUpdate(camera, cascadeIndex);
+            MarkDirtyChunksToUpdate(gpuScene, camera, cascadeIndex);
             UploadChunkIds(gpuScene, camera, cascadeIndex);
             PrepareConstantBuffer(gpuScene, cascadeIndex);
             CullObjectToClipmap(cmd, gpuScene, camera, cascadeIndex);
@@ -331,6 +381,8 @@ public class MiraiGIClipmap
             m_ObjectCullParamsCB[cascadeId] = null;
             m_UpdateChunkList[cascadeId]?.Release();
             m_UpdateChunkList[cascadeId] = null;
+            m_UpdateChunkCleanupList[cascadeId]?.Release();
+            m_UpdateChunkCleanupList[cascadeId] = null;
         }
         m_ClipmapObjectCounter?.Release();
         m_ClipmapCullingResult?.Release();
@@ -342,6 +394,7 @@ public class MiraiGIClipmap
         m_VoxelPageReleaseIndirectArgs?.Release();
         m_PageCountToReleaseCounter?.Release();
         m_UpdateChunkList = null;
+        m_UpdateChunkCleanupList = null;
         m_ClipmapObjectCounter = null;
         m_ClipmapCullingResult = null;
         m_UpdateChunkCullingIndirectArgs = null;
@@ -430,7 +483,7 @@ public class MiraiGIClipmap
         cascadeInfo.deltaChunk = deltaChunk;
     }
 
-    void MarkDirtyChunksToUpdate(Camera camera, int cascadeIndex)
+    void MarkDirtyChunksToUpdate(MiraiGIGPUScene scene, Camera camera, int cascadeIndex)
     {
         MiraiGICascadeInfo cascadeInfo = cascadeInfos[cascadeIndex];
 
@@ -446,15 +499,16 @@ public class MiraiGIClipmap
         Vector3Int deltaChunk = cascadeInfo.deltaChunk;
 
         // 1. move pending dirty chunks that haven't been update
-        List<int> dirtyChunks = new List<int>();
+        List<UpdateChunk> dirtyChunks = new List<UpdateChunk>();
         while (cascadeInfo.HasChunksToUpdate())
         {
-            int chunkIndex1D = cascadeInfo.PopUpdateChunk();
-            dirtyChunks.Add(chunkIndex1D);
+            UpdateChunk updateChunk = new UpdateChunk();
+            cascadeInfo.PopUpdateChunk(out updateChunk);
+            dirtyChunks.Add(updateChunk);
         }
-        foreach (int chunkIndex1d in dirtyChunks)
+        foreach (UpdateChunk dirtyChunk in dirtyChunks)
         {
-            Vector3Int chunkIndex3D = Index1DTo3DLinear(chunkIndex1d, chunkCountInXYZ);
+            Vector3Int chunkIndex3D = Index1DTo3DLinear(dirtyChunk.index1D, chunkCountInXYZ);
             Vector3Int movedChunkIndex3D = chunkIndex3D - deltaChunk;
 
             movedChunkIndex3D.x = movedChunkIndex3D.x % chunkCountInXYZ.x;
@@ -465,15 +519,16 @@ public class MiraiGIClipmap
             movedChunkIndex3D.y += (movedChunkIndex3D.y < 0) ? chunkCountInXYZ.y : 0;
             movedChunkIndex3D.z += (movedChunkIndex3D.z < 0) ? chunkCountInXYZ.z : 0;
 
-            int movedChunkIndex1D = Index3DTo1DLinear(movedChunkIndex3D, chunkCountInXYZ);
-            cascadeInfo.PushUpdateChunk(movedChunkIndex1D);
+            // we don't record time stamp here, cause this chunk is added before
+            dirtyChunk.index1D = Index3DTo1DLinear(movedChunkIndex3D, chunkCountInXYZ);
+            cascadeInfo.PushUpdateChunk(dirtyChunk);
         }
 
         // 2.mark XZ plane's new coming chunks as dirty if volume move along Y axis
         // for 8x8x8 block, we may mark [0~8, 0~1, 0~8] as dirty when volume move 2 block in Y axis
-        MarkChunkPlaneAsDirty(chunkCountInXYZ, deltaChunk, cascadeInfo, 0);
-        MarkChunkPlaneAsDirty(chunkCountInXYZ, deltaChunk, cascadeInfo, 1);
-        MarkChunkPlaneAsDirty(chunkCountInXYZ, deltaChunk, cascadeInfo, 2);
+        MarkChunkPlaneAsDirty(this, scene, chunkCountInXYZ, deltaChunk, cascadeInfo, 0);
+        MarkChunkPlaneAsDirty(this, scene, chunkCountInXYZ, deltaChunk, cascadeInfo, 1);
+        MarkChunkPlaneAsDirty(this, scene, chunkCountInXYZ, deltaChunk, cascadeInfo, 2);
 
         // 3. TODO: mark chunks as dirty when primitive move
     }
@@ -481,34 +536,19 @@ public class MiraiGIClipmap
     void UploadChunkIds(MiraiGIGPUScene scene, Camera camera, int cascadeIndex)
     {
         MiraiGICascadeInfo cascadeInfo = cascadeInfos[cascadeIndex];
+
+        // 1. populate array
+        cascadeInfo.PopulateUpdateChunkCleanupList((uint)scene.frameNumber);
+        cascadeInfo.PopulateUpdateChunkList();
+
         List<int> chunksToUpdate = cascadeInfo.chunksToUpdate;
-        chunksToUpdate.Clear();
+        List<int> chunksToCleanup = cascadeInfo.chunksToCleanup;
 
-        // fetch from pending queue
-        for (int i = 0; i < MAX_UPDATE_CHUNK_PER_FRAME; i++)
-        {
-            int chunkId = cascadeInfo.PopUpdateChunk();
-            if (chunkId == -1)
-                break;
-
-            chunksToUpdate.Add(chunkId);
-        }
-
-        // for debug, give back to queue
-        //{
-        //    for (int i = 0; i < cascadeInfo.numChunksToUpdate; i++)
-        //    {
-        //        int chunkId = chunksToUpdate[i];
-        //        cascadeInfo.pendingUpdateChunks.Enqueue(chunkId);
-        //    }
-        //}
-
+        // 2. upload update chunk list
         m_UpdateChunkList[cascadeIndex].SetData(chunksToUpdate);
 
-        if (chunksToUpdate.Count > 0)
-        {
-            //Debug.Log("update chunks: " + string.Join(", ", chunksToUpdate));
-        }
+        // 3. upload update chunk cleanup list
+        m_UpdateChunkCleanupList[cascadeIndex].SetData(chunksToCleanup);
     }
 
     void PrepareConstantBuffer(MiraiGIGPUScene scene, int cascadeIndex)
@@ -792,7 +832,7 @@ public class MiraiGIClipmap
 
     // mark XZ plane's new coming chunks as dirty if volume move along Y axis
     // for 8x8x8 block, we may mark [0~8, 0~1, 0~8] as dirty when volume move 2 block in Y axis
-    void MarkChunkPlaneAsDirty(Vector3Int chunkCountInXYZ, Vector3Int deltaChunk, MiraiGICascadeInfo cascadeInfo, int axis)
+    void MarkChunkPlaneAsDirty(MiraiGIClipmap miraiGIClipmap, MiraiGIGPUScene scene, Vector3Int chunkCountInXYZ, Vector3Int deltaChunk, MiraiGICascadeInfo cascadeInfo, int axis)
     {
         int deltaChunkInAxis = deltaChunk[axis];
         int chunkCountInX = chunkCountInXYZ[(axis + 0) % 3];
@@ -830,7 +870,10 @@ public class MiraiGIClipmap
                     chunkIndex3D[(axis + 1) % 3] = Y;
                     chunkIndex3D[(axis + 2) % 3] = Z;
 
-                    cascadeInfo.PushUpdateChunk(Index3DTo1DLinear(chunkIndex3D, chunkCountInXYZ));
+                    UpdateChunk dirtyChunk = new UpdateChunk();
+                    dirtyChunk.index1D = Index3DTo1DLinear(chunkIndex3D, chunkCountInXYZ);
+                    dirtyChunk.timeStamp = (uint)scene.frameNumber;
+                    cascadeInfo.PushUpdateChunk(dirtyChunk);
                 }
             }
         }

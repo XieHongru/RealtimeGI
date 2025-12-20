@@ -14,6 +14,7 @@ public class MiraiGIGPUScene
     public GPUSceneData GPUSceneData;
     public SurfaceCache surfaceCache;
     public OccupancyMap occupancyMap;
+    public int frameNumber;
 
     public RenderTargetIdentifier sceneColorTarget;
 
@@ -46,6 +47,7 @@ public class MiraiGIGPUScene
         miraiGIScreenGather = new MiraiGIScreenGather();
         miraiGIScreenGather.Init();
 
+        frameNumber = 0;
         sceneColorTarget = cameraTarget;
     }
 
@@ -60,6 +62,8 @@ public class MiraiGIGPUScene
             miraiGIRadianceCache.Update(ref renderingData, this);
             miraiGIScreenGather.Update(ref renderingData, this);
         }
+
+        frameNumber++;
     }
 
     public void VisualizeGIScene(ref RenderingData renderingData)

@@ -50,6 +50,13 @@ groupshared int gs_VoxelPageId;
 #define USE_DISTANCE_FIELD 0
 #endif
 
+// https://iquilezles.org/articles/distfunctions/
+float DFBox(float3 localSpacePosition, float3 objectLocalBoundSize)
+{
+    float3 q = abs(localSpacePosition) - objectLocalBoundSize * 0.5;
+    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
+}
+
 [numthreads(4, 4, 4)]
 void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
@@ -70,8 +77,8 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
     bool hasVoxel = false;
     float2 uvInAtlas = (float2) 0;
     float4x4 localToWorldMatrix = (float4x4) 0; // for transform hit normal to world
-    float4 bilinearValidMask = (float4) 0; // valid pixel mask when doing bilinear filter in surface cache atlas
-    float distance = 128000;
+    float4 bilinearValidMask = (float4) 0;      // valid pixel mask when doing bilinear filter in surface cache atlas
+    float minDistance = 128000;                 // min distance from cur voxel to object surface
 
     // 1. loop all objects in update chunk, see if clipmap's voxel intersect with object
     for (int i = 0; i < numObjectsInUpdateChunk; i++)
@@ -103,6 +110,12 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         float3 toleranceBoundMax = objectInfo.localBoundsMax + localSpaceCellRadius.xxx;
         if (any(localPosition < toleranceBoundMin) || any(localPosition > toleranceBoundMax))
         {
+            // calculate approximate distance to boost distance field coverage
+#if USE_DISTANCE_FIELD
+            float distanceToObjectApprox = DFBox(localPosition, objectLocalBoundSize) * max(max(objectWorldScale.x, objectWorldScale.y), objectWorldScale.z);
+            distanceToObjectApprox = max(distanceToObjectApprox, voxelCellSize * 2); // prevent distance too small to block the ray
+            minDistance = min(minDistance, distanceToObjectApprox);
+#endif
             continue;
         }
         
@@ -140,11 +153,15 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
             //float worldDistance = abs(cardDepth - voxelDepth) * orthoDepthWorldSize;
             //if (worldDistance < voxelCellSize * 0.707)  // tolerance radius is sqrt(2) / 2, for unit cube
             float worldDistance = abs(cardDepth - voxelDepth) * orthoDepthLocalSize;
+            
+#if USE_DISTANCE_FIELD
+            minDistance = min(minDistance, worldDistancce);
+#endif
+            
             if (worldDistance < localSpaceCellRadius * 0.5)
             {
                 hasVoxel = true;
                 localToWorldMatrix = objectInfo.localToWorldMatrix;
-                distance = worldDistance;
                 
                 //_RWVoxelOccupy[voxelIndex + uint3(0, 0, 128 * _CascadeIndex)] = uvInAtlas.y;
                 break;
@@ -230,7 +247,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
     // 6. write to distance field
 #if USE_DISTANCE_FIELD
     int3 voxelWriteIndex = blockAccessIndex * VOXEL_BLOCK_SIZE + voxelIndex % VOXEL_BLOCK_SIZE;
-    _RWDistanceFieldClipmap[voxelWriteIndex] = hasVoxel ? 0 : 1;
+    _RWDistanceFieldClipmap[voxelWriteIndex] = hasVoxel ? 0 : EncodeDistance(minDistance, voxelCellSize);
 #endif
 }
 

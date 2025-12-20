@@ -149,6 +149,8 @@ public class MiraiGIRadianceCache
                 continue;
             }
 
+            CleanupDirtyUpdateChunk(cmd, scene, cascadeId);
+
             PickValidVoxel(cmd, scene, cascadeId);
 
             VoxelLighting(cmd, ref renderingData, scene, cascadeId);
@@ -194,11 +196,8 @@ public class MiraiGIRadianceCache
             m_VoxelPoolRadiance.enableRandomWrite = true;
             m_VoxelPoolRadiance.Create();
 
-            //CommandBuffer cmd = CommandBufferPool.Get("Init Voxel Pool Radiance");
             cmd.SetComputeTextureParam(m_VoxelPoolInitCS, 1, Shader.PropertyToID("_RWVoxelPoolRadiance"), m_VoxelPoolRadiance);
             cmd.DispatchCompute(m_VoxelPoolInitCS, 1, voxelRadiancePoolSize.x / 4, voxelRadiancePoolSize.y / 4, voxelRadiancePoolSize.z / 8);
-            //Graphics.ExecuteCommandBuffer(cmd);
-            //CommandBufferPool.Release(cmd);
         }
 
         if (m_ValidVoxelCounter == null)
@@ -728,6 +727,44 @@ public class MiraiGIRadianceCache
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWIrradianceProbeClipmap"), m_IrradianceProbeClipmap);
 
             cmd.DispatchCompute(m_VoxelLightingCS, kernel, m_IrradianceProbeGatherIndirectArgs, 0);
+        }
+    }
+
+    void CleanupDirtyUpdateChunk(CommandBuffer cmd, MiraiGIGPUScene scene, int cascadeId)
+    {
+        MiraiGIClipmap clipmap = scene.miraiGIClipmap;
+        MiraiGICascadeInfo cascadeInfo = clipmap.cascadeInfos[cascadeId];
+        int dirtyChunkCount = cascadeInfo.chunksToCleanup.Count;
+
+        if (dirtyChunkCount == 0)
+        {
+            return;
+        }
+
+        // 1. clear voxel radiance
+        {
+            int kernel = m_VoxelLightingCS.FindKernel("ClearDirtyVoxelRadiance");
+
+            clipmap.SetupVoxelRaytracingParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
+            cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_UpdateChunkResolution"), (Vector3)cascadeInfo.updateChunkResolution);
+            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_UpdateChunkCleanupList"), clipmap.GetUpdateChunkCleanupList(cascadeId));
+            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWVoxelPoolRadiance"), m_VoxelPoolRadiance);
+
+            cmd.DispatchCompute(m_VoxelLightingCS, kernel, cascadeInfo.updateChunkResolution.x / 4 * dirtyChunkCount, cascadeInfo.updateChunkResolution.y / 4, cascadeInfo.updateChunkResolution.z / 4);
+        }
+
+        // 2. clear irradiance probe
+        {
+            int kernel = m_VoxelLightingCS.FindKernel("ClearDirtyProbeIrradiance");
+
+            clipmap.SetupVoxelRaytracingParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
+            cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_UpdateChunkResolution"), (Vector3)cascadeInfo.updateChunkResolution);
+            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_UpdateChunkCleanupList"), clipmap.GetUpdateChunkCleanupList(cascadeId));
+            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWIrradianceProbeClipmap"), m_IrradianceProbeClipmap);
+
+            cmd.DispatchCompute(m_VoxelLightingCS, kernel, cascadeInfo.updateChunkResolution.x / GlobalShared.VOXEL_BLOCK_SIZE / 4 * dirtyChunkCount, 
+                                                            cascadeInfo.updateChunkResolution.y / GlobalShared.VOXEL_BLOCK_SIZE / 4, 
+                                                            cascadeInfo.updateChunkResolution.z / GlobalShared.VOXEL_BLOCK_SIZE / 4);
         }
     }
 
