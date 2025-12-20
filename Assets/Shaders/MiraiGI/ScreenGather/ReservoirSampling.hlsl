@@ -51,11 +51,10 @@ float EvaluateTargetPDF(in ReservoirSample sample, float3 evaluatePointPosition,
 {
     float cosineWeight = 1.0;
     
-    // note: consider cosine will cause better result at out door scene with skylight, but work poor at in door scene (or any gi hard scene)
-    // skylight is smooth so TargetPDF(w) is almost uniform
-    // without cosine, reservoir will weight graze sample (cos <= 0.01) same as other sample. but when evaluate irradiance we must consider cosine contribution, so it cause some dark pixel
-    // anyway, follow the advice of paper, we don't use cosine here
-#if 0
+        // note: 
+    // if using next event estimator (NEE) to trace both direct and indirect lighting, we should follow the advice of paper and don't use cosine weight
+    // but we only trace indirect lighting here, so we consider cosine weight to get more smooth result
+#if 1
     float3 rayDirection = normalize(sample.rayEnd - evaluatePointPosition); // connect the sample with evaluate point
     cosineWeight = max(dot(rayDirection, evaluatePointNormal), 0.1); // clamp to prevent firefly
 #endif

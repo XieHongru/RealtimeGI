@@ -224,7 +224,7 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
         hitNormal = _NormalDepthHistory.SampleLevel(sampler_PointClamp, sampleUV.xy, 0).rgb * 2 - 1;
         
         // discard back face hit
-        if (dot(hitNormal, pixelCtx.rayDirection) < 0)
+        if (dot(hitNormal, pixelCtx.rayDirection) > 0)
         {
             isHit = false;
         }

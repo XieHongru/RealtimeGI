@@ -46,8 +46,6 @@ public class GlobalSettings : ScriptableObject
     public float clipmapObjectCullingRejectFactor4 = 4.0f;
 
     // Voxel Lighting
-    public float shadowRayMaxDistance = 128;
-    public int shadowRayBoostClipmapOffset = 1;
     public int voxelLightingCheckerBoardSize = 2;
     public int freezeLightingForDebug = 0;
     public int probeUpdateCheckerBoardSize = 2;

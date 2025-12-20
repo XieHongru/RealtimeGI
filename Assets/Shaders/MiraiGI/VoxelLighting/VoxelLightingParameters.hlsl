@@ -58,10 +58,10 @@ float3 FetchRadianceFromVoxelScene(VoxelRaytracingRequest RTRequest, VoxelRayTra
     }
 
     int3 indexInPool = PageAddressMapping(voxelPageId, _VoxelPageCountInXYZ, hit.voxelIndex);
-
     float3 worldNormal = _VoxelPoolNormal.Load(uint4(indexInPool, 0)).rgb * 2 - 1;
+    
+    // note: select front face voxel based on ray direction
     int isBackFace = dot(worldNormal, -RTRequest.rayDir) < 0;
-
     int3 twoSideIndex = TwoSideAddressMapping(indexInPool, isBackFace);
     float3 hitRadiance = _VoxelPoolRadiance.Load(uint4(twoSideIndex, 0)).rgb;
 
@@ -78,6 +78,10 @@ float3 FetchNormalFromVoxelScene(in VoxelRaytracingRequest RTRequest, in VoxelRa
 
     int3 indexInPool = PageAddressMapping(voxelPageId, _VoxelPageCountInXYZ, hit.voxelIndex);
     float3 worldNormal = _VoxelPoolNormal[indexInPool].rgb * 2 - 1;
+    
+    // note: select front face voxel based on ray direction
+    int isBackFace = dot(worldNormal, -RTRequest.rayDir) < 0;
+    worldNormal *= lerp(1, -1, isBackFace);
     
     return worldNormal;
 }

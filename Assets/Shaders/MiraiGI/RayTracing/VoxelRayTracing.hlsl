@@ -252,9 +252,8 @@ VoxelRayTracingHitPayload DistanceFieldRaytracingSingleCascade(in CascadeInfo ca
         sampleUV.z /= float(cascadeInfo.cascadeCount);
         sampleUV.z += cascadeInfo.cascadeIndex / float(cascadeInfo.cascadeCount);
 
-		// 2. load distance, sqrt is for conservative step scale (propagate distance may > real distance)
+		// 2. load distance
         float distance = DecodeDistance(distanceFieldClipmap.SampleLevel(linearSampler, sampleUV, 0).r, cascadeInfo.voxelSize);
-        distance /= sqrt(3.0f);
 
 		// 3. check if we hit
         if (distance < tolerance)
@@ -263,24 +262,33 @@ VoxelRayTracingHitPayload DistanceFieldRaytracingSingleCascade(in CascadeInfo ca
             break;
         }
 
-        samplePoint += RTRequest.rayDir * distance;
+        // note: sqrt 3 is for conservative step scale (propagate distance may > real distance)
+        samplePoint += RTRequest.rayDir * distance / sqrt(3.0f);
     }
 
 	// 4. find a voxel we actually hit by searching voxel neighbors
 	// note: hit point may outside voxel, cause hit tolerance distance usually larger than voxel center's distance
     int3 voxelIndex = CalcVoxelIndexFromPosition(cascadeInfo, samplePoint);
-    int3 neighborOffsets[6] = { int3(-1, 0, 0), int3(1, 0, 0), int3(0, -1, 0), int3(0, 1, 0), int3(0, 0, -1), int3(0, 0, 1) };
-    for (int i = 0; i < 6; i++)
+    float minRayDistance = 1000;
+    int3 offset = int3(0, 0, 0);
+    int3 neighborOffsets[7] = { int3(0, 0, 0), int3(-1, 0, 0), int3(1, 0, 0), int3(0, -1, 0), int3(0, 1, 0), int3(0, 0, -1), int3(0, 0, 1)};
+    for (int i = 0; i < 7; i++)
     {
         int3 neighborVoxelIndex = clamp(voxelIndex + neighborOffsets[i], int3(0, 0, 0), cascadeInfo.resolution - 1);
-        int3 voxelSampleIndex = VoxelClipmapAddressMapping(neighborVoxelIndex, cascadeInfo.resolution, cascadeInfo.scrolling, cascadeInfo.cascadeIndex);
-        float distance = DecodeDistance(distanceFieldClipmap[voxelSampleIndex].r, cascadeInfo.voxelSize);
-        if (distance < tolerance)
+        int3 neighborSampleIndex = VoxelClipmapAddressMapping(neighborVoxelIndex, cascadeInfo.resolution, cascadeInfo.scrolling, cascadeInfo.cascadeIndex);
+        bool hasVoxel = DecodeDistance(distanceFieldClipmap[neighborSampleIndex].r, cascadeInfo.voxelSize) < tolerance;
+        
+        float3 voxelPos = CalcVoxelCenterPos(neighborVoxelIndex, cascadeInfo.resolution, cascadeInfo.center, cascadeInfo.size);
+        float voxelToCamera = length(voxelPos - RTRequest.rayStart);
+
+        // fint closest voxel as hit voxel
+        if (hasVoxel && voxelToCamera < minRayDistance)
         {
-            voxelIndex += neighborOffsets[i];
-            break;
+            minRayDistance = voxelToCamera;
+            offset = neighborOffsets[i];
         }
     }
+    voxelIndex = clamp(voxelIndex + offset, int3(0, 0, 0), cascadeInfo.resolution - 1);
 
 	// 5. pack hit result
     int3 blockIndex = voxelIndex / VOXEL_BLOCK_SIZE;

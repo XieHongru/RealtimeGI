@@ -94,8 +94,6 @@ void BuildVoxelLightingIndirectArgs(uint3 threadId : SV_DispatchThreadID, uint3 
 float4x4 _CameraViewProjectionMatrix;
 float3 _MainLightDirection;
 float4 _MainLightColor;
-float _ShadowRayMaxDistance;
-int _ShadowRayBoostClipmapOffset;
 int _CSMNumCascades;
 float4 _CSMShadowBounds[4];
 float4x4 _CSMWorldToShadowMatrices[4];
@@ -107,6 +105,55 @@ SamplerState sampler_PointClamp;
 Texture2D<float> _ShadowDepthTexture;
 
 RWTexture3D<float3> _RWVoxelPoolRadiance;
+
+float GetMainLightShadow(in ClipmapInfo clipmapInfo, float3 worldPosition, float3 worldNormal, float3 voxelSize)
+{
+    float mainLightShadow = 1.0;
+    float3 normalBias = worldNormal * voxelSize; // offset to avoid self shadow
+    
+    float4 voxelClipPosition = mul(_CameraViewProjectionMatrix, float4(worldPosition, 1));
+    voxelClipPosition.xyz /= voxelClipPosition.w;
+    bool isVoxelInFrustum = all(abs(voxelClipPosition.xy) < 1) && voxelClipPosition.z > 0; // voxel may behind camera frustum where csm is invalid
+
+    // 1. use whole scene shadow map
+    if (isVoxelInFrustum)
+    {
+        for (int cascadeIndex = 0; cascadeIndex < _CSMNumCascades; cascadeIndex++)
+        {
+            float4 boundSphere = _CSMShadowBounds[cascadeIndex];
+            if (length(worldPosition - boundSphere.xyz) > boundSphere.w)
+            {
+                continue;
+            }
+        
+            float4 shadowPosition = mul(_CSMWorldToShadowMatrices[cascadeIndex], float4(worldPosition + normalBias * 4, 1));
+            shadowPosition.xyz /= shadowPosition.w;
+            float sampleZ = _ShadowDepthTexture.SampleLevel(sampler_PointClamp, shadowPosition.xy, 0).r;
+            mainLightShadow *= (shadowPosition.z >= sampleZ);
+            break;
+        }
+    }
+    // 2. trace shadow ray as fallback
+    else
+    {
+        VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
+        RTRequest.rayStart = worldPosition + normalBias * 2;
+        RTRequest.rayDir = _MainLightDirection;
+        RTRequest.minCascadeIndex = 0;
+        RTRequest.maxCascadeIndex = _CascadeCount - 1;
+        RTRequest.maxStepNum = 1000;
+        RTRequest.maxDistance = 100000;
+
+#if USE_DISTANCE_FIELD
+        VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
+#else
+        VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _VoxelBitOccupyClipmap, RTRequest);
+#endif
+        mainLightShadow = hit.isHit ? 0 : 1;
+    }
+    
+    return mainLightShadow;
+}
 
 [numthreads(8, 1, 1)]
 void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
@@ -136,72 +183,22 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
     float3 baseColor = _VoxelPoolBaseColor.Load(int4(indexInPool, 0));
     float3 worldNormal = _VoxelPoolNormal.Load(int4(indexInPool, 0)) * 2 - 1;
     float3 emissive = _VoxelPoolEmissive.Load(int4(indexInPool, 0));
-
-    // 3. evaluate directional light shadow
-    float mainLightShadow = 1.0;
     float3 voxelPosition = CalcVoxelCenterPos(voxelIndex, cascadeInfo.resolution, cascadeInfo.center, cascadeInfo.size);
-    float4 voxelClipPosition = mul(_CameraViewProjectionMatrix, float4(voxelPosition, 1));
-    voxelClipPosition.xyz /= voxelClipPosition.w;
-    bool isVoxelInFrustum = all(abs(voxelClipPosition.xy) < 1) && voxelClipPosition.z > 0; // voxel may behind camera frustum where csm is invalid
 
-    // 3.1. use whole scene shadow map
-    for (int cascadeIndex = 0; cascadeIndex < _CSMNumCascades; cascadeIndex++)
-    {
-        float4 boundSphere = _CSMShadowBounds[cascadeIndex];
-        if (length(voxelPosition - boundSphere.xyz) > boundSphere.w || !isVoxelInFrustum)
-        {
-            continue;
-        }
-        
-        //float4 shadowPosition = mul(float4(voxelPosition, 1), _CSMWorldToShadowMatrixs[cascadeIndex]);
-        float4 shadowPosition = mul(_CSMWorldToShadowMatrices[cascadeIndex], float4(voxelPosition, 1));
-        shadowPosition.xyz /= shadowPosition.w;
-        float sampleZ = _ShadowDepthTexture.SampleLevel(sampler_PointClamp, shadowPosition.xy, 0).r;
-        mainLightShadow *= (shadowPosition.z >= sampleZ);
-        
-        if (mainLightShadow == 0)
-            break;
-    }
-
-    // 3.2. trace shadow ray as fallback
-    if (!isVoxelInFrustum)
-    {
-        int rayBoostClipmapOffset = _CascadeIndex < (MAX_CASCADE_COUNT / 2) ? _ShadowRayBoostClipmapOffset : 0;
-        float3 positionOffset = worldNormal * cascadeInfo.voxelSize * (1 << rayBoostClipmapOffset); // offset 1 voxel to avoid self shadow
-
-        VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
-        RTRequest.rayStart = voxelPosition + positionOffset;
-        RTRequest.rayDir = _MainLightDirection;
-        RTRequest.maxCascadeIndex = _CascadeCount - 1;
-        RTRequest.minCascadeIndex = min(_CascadeIndex + rayBoostClipmapOffset, RTRequest.maxCascadeIndex);
-        RTRequest.maxStepNum = 128000;
-        RTRequest.maxDistance = _ShadowRayMaxDistance;
-
-#if USE_DISTANCE_FIELD
-        RTRequest.minCascadeIndex = 0; // avoid self occlusion when use distance field
-        VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
-#else
-        VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _VoxelBitOccupyClipmap, RTRequest);
-#endif
-        mainLightShadow = hit.isHit ? 0 : 1;
-    }
-
-    // 4. evaluate direct lighting
+    // 3. evaluate direct lighting
     for (int face = VOXEL_FACE_FRONT; face <= VOXEL_FACE_BACK; face++)
     {
         float3 radiance = emissive;
         float3 faceNormal = worldNormal * lerp(1, -1, face); // -WorldNormal if back face
 
-        // 4.1. evaluate direct lighting
+        // 3.1. evaluate direct lighting
+        float mainLightShadow = GetMainLightShadow(clipmapInfo, voxelPosition, faceNormal, cascadeInfo.voxelSize);
         radiance += saturate(dot(faceNormal, _MainLightDirection)) * _MainLightColor * mainLightShadow * baseColor / (3.1415926);
-
         // TODO: pre-exposure
         
-        // 4.2. select probe level to sample
+        // 3.2. evaluate indirect lighting
         int cascadeIndexForSceneLighting = max(cascadeInfo.cascadeIndex, _IrradianceProbeMinCascadeLevel);
         CascadeInfo cascadeInfoForSceneLighting = ResolveCascadeInfo(clipmapInfo, cascadeIndexForSceneLighting);
-
-        // 4.3. evaluate indirect lighting
         float3 probeLighting = ProbeEvaluateIrradiance(
             _IrradianceProbeClipmap, _ProbeOffsetClipmap,
             _RadianceProbeDistanceAtlas, _RadianceProbeIdClipmap, sampler_linearClamp,
@@ -210,7 +207,7 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
         );
         radiance += probeLighting * baseColor;
 
-        // 4.3. write result
+        // 3.3. write result
         int3 writeIndex = TwoSideAddressMapping(indexInPool, face);
         _RWVoxelPoolRadiance[writeIndex] = radiance;
     }    
