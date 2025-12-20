@@ -104,11 +104,12 @@ PixelContext ResolvePixelContext(float2 uv)
     return pixelCtx;
 }
 
-void GetPixelPositionAndNormal(float2 uv, inout float3 outPosition, inout float3 outNormal)
+float GetPixelPositionAndNormal(float2 uv, inout float3 outPosition, inout float3 outNormal)
 {
     float4 normalDepth = _NormalDepthTexture.SampleLevel(sampler_PointClamp, uv, 0);
     outPosition = ReconstructWorldPositionFromDepth(uv, normalDepth.w);
     outNormal = normalDepth.xyz * 2 - 1;
+    return ConvertFromDeviceZ(normalDepth.w);
 }
 
 float3 ClampNaNs(float3 color)
@@ -609,23 +610,71 @@ void ReservoirEvaluateIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 gro
 }
 
 // -------------------------------------------------------------------------------- //
-#pragma kernel FilterIrradiance
+#pragma kernel IrradianceTemporalAccumulate
 
-Texture2D<float4> _ScreenGatherOutputTexture;
+float _TemporalAccumulateWeight;
+Texture2D<float4> _IrradianceInput;
 Texture2D<float4> _DiffuseIndirectHistory;
-RWTexture2D<float4> _RWDiffuseIndirectTexture;
+RWTexture2D<float4> _RWTemporalAccumulateOutput;
 
 [numthreads(8, 8, 1)]
-void FilterIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+void IrradianceTemporalAccumulate(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
     // 1. setup
     const int2 pixelCoord = clamp(threadId.xy, 0, _ScreenGatherRTSize - 1);
     const float2 uv = (float2(pixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
     PixelContext pixelCtx = ResolvePixelContext(uv);
 
-    if (any(threadId.xy >= _ScreenGatherRTSize) || pixelCtx.rawDepth <= 0)
+    if (any(threadId.xy >= _ScreenGatherRTSize) || IsUVOutSideScreen(uv) || pixelCtx.rawDepth <= 0)
     {
-        _RWDiffuseIndirectTexture[pixelCoord] = float4(0, 0, 0, 0);
+        _RWTemporalAccumulateOutput[pixelCoord] = float4(0, 0, 0, 0);
+        return;
+    }
+
+    float3 currentColor = _IrradianceInput.SampleLevel(sampler_linearClamp, uv, 0).rgb;
+
+    // 2. fetch history
+    float2 reprojectUV = ReprojectPixel(float3(uv, pixelCtx.rawDepth));
+    float3 historyColor = _DiffuseIndirectHistory.SampleLevel(sampler_linearClamp, reprojectUV, 0).rgb;
+    historyColor = ClampNaNs(historyColor);
+
+    // 3. reject history if geometry change
+    float4 historyNormalDepth = _NormalDepthHistory.SampleLevel(sampler_PointClamp, reprojectUV, 0);
+    float3 historyNormal = historyNormalDepth.xyz * 2 - 1;
+    float historySceneDepth = ConvertFromDeviceZ(historyNormalDepth.w);
+
+    float historyWeight = _TemporalAccumulateWeight;
+    if (IsUVOutSideScreen(reprojectUV) || dot(historyNormal, pixelCtx.worldNormal) < 0.9 || abs(pixelCtx.sceneDepth - historySceneDepth) > 0.5)
+    {
+        historyWeight = 0;
+    }
+    
+    float3 color = lerp(currentColor, historyColor, historyWeight);
+    _RWTemporalAccumulateOutput[pixelCoord] = float4(color, 1);
+
+    // for debug
+    //_RWTemporalAccumulateOutput[pixelCoord] = float4(_IrradianceInput.SampleLevel(sampler_linearClamp, uv, 0).rgb, 1);
+}
+
+// -------------------------------------------------------------------------------- //
+#pragma kernel IrradianceSpatialAccumulate
+
+float _FilterRadius;
+
+RWTexture2D<float4> _RWSpatialAccumulateOutput;
+
+[numthreads(8, 8, 1)]
+void IrradianceSpatialAccumulate(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    // 1. setup
+    const float2 screenGatherTexelSize = 1.0 / float2(_ScreenGatherRTSize);
+    const int2 pixelCoord = clamp(threadId.xy, 0, _ScreenGatherRTSize - 1);
+    const float2 uv = (float2(pixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
+    PixelContext pixelCtx = ResolvePixelContext(uv);
+
+    if (any(threadId.xy >= _ScreenGatherRTSize) || IsUVOutSideScreen(uv) || pixelCtx.rawDepth <= 0)
+    {
+        _RWSpatialAccumulateOutput[pixelCoord] = float4(0, 0, 0, 0);
         return;
     }
 
@@ -633,18 +682,24 @@ void FilterIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     float weightSum = 0;
     float3 colorSum = float3(0, 0, 0);
     const int2 offsets[9] = { int2(0, 0), int2(-1, -1), int2(-1, 0), int2(-1, 1), int2(0, -1), int2(0, 1), int2(1, -1), int2(1, 0), int2(1, 1) };
+    const float gaussianWeights[9] = { 0.25, 0.0625, 0.125, 0.0625, 0.125, 0.125, 0.0625, 0.125, 0.0625 };
     for (int i = 0; i < 9; i++)
     {
-        int2 neighborPixelCoord = pixelCoord + offsets[i];
-        float2 neighborUV = (float2(neighborPixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
-        float3 neighborColor = _ScreenGatherOutputTexture.SampleLevel(sampler_linearClamp, neighborUV, 0).rgb;
+        float2 neighborUV = uv + offsets[i] * _FilterRadius * screenGatherTexelSize;
+        if (IsUVOutSideScreen(neighborUV))
+        {
+            continue;
+        }
+
+        float3 neighborColor = _IrradianceInput.SampleLevel(sampler_linearClamp, neighborUV, 0).rgb;
         neighborColor = ClampNaNs(neighborColor);
 
         float3 neighborPixelPosition, neighborPixelNormal;
-        GetPixelPositionAndNormal(neighborUV, neighborPixelPosition, neighborPixelNormal);
+        float neighborDepth = GetPixelPositionAndNormal(neighborUV, neighborPixelPosition, neighborPixelNormal);
 
         float weight = 1;
-        weight *= saturate(rcp(length(neighborPixelPosition - pixelCtx.worldPosition) / 0.5));
+        weight *= gaussianWeights[i];
+        weight *= exp(-abs(neighborDepth - pixelCtx.sceneDepth) * 0.01);
         weight *= saturate(dot(neighborPixelNormal, pixelCtx.worldNormal));
 
         colorSum += neighborColor * weight;
@@ -652,27 +707,7 @@ void FilterIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     }
     float3 filterColor = (weightSum > 0) ? (colorSum / weightSum) : 0;
 
-    // 3. temporal blend after spatial filter (otherwise bias will accumulate cross frame)
-    float2 reprojectUV = ReprojectPixel(float3(uv, pixelCtx.rawDepth));
-    float3 historyColor = _DiffuseIndirectHistory.SampleLevel(sampler_linearClamp, reprojectUV, 0).rgb;
-    historyColor = ClampNaNs(historyColor);
-
-    // reject history if geometry change
-    float4 historyNormalDepth = _NormalDepthHistory.SampleLevel(sampler_PointClamp, reprojectUV, 0);
-    float3 historyNormal = historyNormalDepth.xyz * 2 - 1;
-    float historySceneDepth = ConvertFromDeviceZ(historyNormalDepth.w);
-
-    float historyWeight = 0.9;
-    if (IsUVOutSideScreen(reprojectUV) || dot(historyNormal, pixelCtx.worldNormal) < 0.9 || abs(pixelCtx.sceneDepth - historySceneDepth) > 0.5)
-    {
-        historyWeight = 0;
-    }
-    
-    float3 color = lerp(filterColor, historyColor, historyWeight);
-    //_RWDiffuseIndirectTexture[pixelCoord] = float4(color, 1);
-
-    // for debug
-    _RWDiffuseIndirectTexture[pixelCoord] = float4(_ScreenGatherOutputTexture.SampleLevel(sampler_linearClamp, uv, 0).rgb, 1);
+    _RWSpatialAccumulateOutput[pixelCoord] = float4(filterColor, 1);
 }
 
 // -------------------------------------------------------------------------------- //

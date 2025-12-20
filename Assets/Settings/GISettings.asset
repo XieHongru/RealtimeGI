@@ -38,14 +38,17 @@ MonoBehaviour:
   visualizeIrradianceProbe: 0
   visualizeRadianceProbe: 0
   radianceProbeResolution: 16
-  reuseRadianceProbe: 1
+  reuseRadianceProbe: 0
   useProbeOcclusionTest: 1
   radianceProbeMinCascadeLevel: 2
+  irradianceProbeMinCascadeLevel: 1
   irradianceProbeSampleCount: 1
-  irradianceProbeTemporalWeight: 0.5
-  visualizeScreenGather: 1
+  irradianceProbeTemporalWeight: 0.75
+  visualizeScreenGather: 0
   screenGatherDownsampleFactor: 2
   useReservoirSpatialReuse: 0
   spatialReuseSampleCount: 12
   spatialReuseSearchRange: 0.5
+  temporalAccumulateWeight: 0.8
+  spatialAccumulateIterationCount: 3
   useDistanceField: 0

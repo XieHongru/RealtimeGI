@@ -57,9 +57,9 @@ public class GlobalSettings : ScriptableObject
     public int reuseRadianceProbe = 0;
     public int useProbeOcclusionTest = 1;
     public int radianceProbeMinCascadeLevel = 2;
-    public int irradianceProbeMinCascadeLevel = 2;
+    public int irradianceProbeMinCascadeLevel = 1;
     public int irradianceProbeSampleCount = 1;
-    public float irradianceProbeTemporalWeight = 0.5f;
+    public float irradianceProbeTemporalWeight = 0.75f;
 
     // Screen Gather
     public int visualizeScreenGather = 0;
@@ -67,6 +67,8 @@ public class GlobalSettings : ScriptableObject
     public int useReservoirSpatialReuse = 1;
     public int spatialReuseSampleCount = 12;
     public float spatialReuseSearchRange = 0.5f;
+    public float temporalAccumulateWeight = 0.8f;
+    public int spatialAccumulateIterationCount = 3;
 
     // Distance Field
     public int useDistanceField = 1;
