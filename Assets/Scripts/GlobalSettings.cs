@@ -65,11 +65,19 @@ public class GlobalSettings : ScriptableObject
     public int useReservoirSpatialReuse = 1;
     public int spatialReuseSampleCount = 12;
     public float spatialReuseSearchRange = 0.5f;
-    public float temporalFilterWeight = 0.8f;
-    public int spatialFilterIterationCount = 3;
+
+    public float diffuseTemporalFilterWeight = 0.95f;
+    public float diffuseTemporalFilterHistoryColorBoundScale = 0.1f;
+    public int diffuseSpatialFilterIterationCount = 3;
+
     public float filterGuidanceSSAORange = 1.0f;
     public float filterGuidanceSSAOIntensity = 0.5f;
     public float filterGuidanceSSAOSharpness = 50.0f;
+
+    public float specularTemporalFilterWeight = 0.96f;
+    public float specularTemporalFilterHistoryColorBoundScale = 0.8f;
+    public float specularResolveSearchRange = 4.0f;
+    public int specularSpatialFilterIterationCount = 2;
 
     // Distance Field
     public int useDistanceField = 1;

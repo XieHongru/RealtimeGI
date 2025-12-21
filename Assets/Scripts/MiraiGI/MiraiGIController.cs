@@ -40,8 +40,13 @@ public class GIController : MonoBehaviour
         miraiGIGPUScene.VisualizeGIScene(ref renderingData);
     }
 
-    public void MiraiGIScreenDiffuseComposite(ref RenderingData renderingData)
+    public void MiraiGIDiffuseComposite(ref RenderingData renderingData)
     {
         miraiGIGPUScene.miraiGIScreenGather.DiffuseComposite(ref renderingData);
+    }
+
+    public void MiraiGISpecularComposite(ref RenderingData renderingData)
+    {
+        miraiGIGPUScene.miraiGIScreenGather.SpecularComposite(ref renderingData);
     }
 }

@@ -57,8 +57,10 @@ public class MiraiGIRenderPass : ScriptableRenderPass
             cmd.Blit(m_GIController.miraiGIGPUScene.miraiGIClipmap.GetVisualizeColorTarget(), cameraTarget);
         else
         {
-            m_GIController.MiraiGIScreenDiffuseComposite(ref renderingData);
-            cmd.Blit(m_GIController.miraiGIGPUScene.miraiGIScreenGather.GetDiffuseCompositeTexture(), cameraTarget);
+            m_GIController.MiraiGIDiffuseComposite(ref renderingData);
+            m_GIController.MiraiGISpecularComposite(ref renderingData);
+            //cmd.Blit(m_GIController.miraiGIGPUScene.miraiGIScreenGather.GetDiffuseCompositeTexture(), cameraTarget);
+            cmd.Blit(m_GIController.miraiGIGPUScene.miraiGIScreenGather.GetSpecularCompositeTexture(), cameraTarget);
         }
 
         context.ExecuteCommandBuffer(cmd);

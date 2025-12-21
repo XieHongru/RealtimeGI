@@ -23,15 +23,13 @@ MonoBehaviour:
   cullingObjectCountPerChunk: 64
   voxelCascadeCount: 4
   voxelSize: 0.2
-  voxelVisualizeMode: 4
+  voxelVisualizeMode: 0
   voxelVisualizeCascadeLevel: 0
   voxelVisualizeUpdateChunk: 0
   clipmapObjectCullingRejectFactor1: 1
   clipmapObjectCullingRejectFactor2: 2
   clipmapObjectCullingRejectFactor3: 3
   clipmapObjectCullingRejectFactor4: 4
-  shadowRayMaxDistance: 128
-  shadowRayBoostClipmapOffset: 1
   voxelLightingCheckerBoardSize: 2
   freezeLightingForDebug: 0
   probeUpdateCheckerBoardSize: 2
@@ -49,6 +47,9 @@ MonoBehaviour:
   useReservoirSpatialReuse: 1
   spatialReuseSampleCount: 12
   spatialReuseSearchRange: 0.5
-  temporalAccumulateWeight: 0.8
-  spatialAccumulateIterationCount: 3
+  temporalFilterWeight: 0.8
+  spatialFilterIterationCount: 3
+  filterGuidanceSSAORange: 1
+  filterGuidanceSSAOIntensity: 0.5
+  filterGuidanceSSAOSharpness: 50
   useDistanceField: 1

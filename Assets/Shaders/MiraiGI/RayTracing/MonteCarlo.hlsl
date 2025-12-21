@@ -61,4 +61,49 @@ float3x3 GetTangentBasis(float3 TangentZ)
     return float3x3(TangentX, TangentY, TangentZ);
 }
 
+float VisibleGGXPDF(float3 V, float3 H, float a2)
+{
+    float NoV = V.z;
+    float NoH = H.z;
+    float VoH = dot(V, H);
+
+    float d = (NoH * a2 - NoH) * NoH + 1;
+    float D = a2 / (PI * d * d);
+
+    float PDF = 2 * VoH * D / (NoV + sqrt(NoV * (NoV - NoV * a2) + a2));
+    return PDF;
+}
+
+// [ Heitz 2018, "Sampling the GGX Distribution of Visible Normals" ]
+// http://jcgt.org/published/0007/04/01/
+
+float4 ImportanceSampleVisibleGGX(float2 DiskE, float a2, float3 V)
+{
+	// NOTE: See below for anisotropic version that avoids this sqrt
+    float a = sqrt(a2);
+
+	// stretch
+    float3 Vh = normalize(float3(a * V.xy, V.z));
+
+	// Stable tangent basis based on V
+	// Tangent0 is orthogonal to N
+    float LenSq = Vh.x * Vh.x + Vh.y * Vh.y;
+    float3 Tangent0 = LenSq > 0 ? float3(-Vh.y, Vh.x, 0) * rsqrt(LenSq) : float3(1, 0, 0);
+    float3 Tangent1 = cross(Vh, Tangent0);
+
+    float2 p = DiskE;
+    float s = 0.5 + 0.5 * Vh.z;
+    p.y = (1 - s) * sqrt(1 - p.x * p.x) + s * p.y;
+
+    float3 H;
+    H = p.x * Tangent0;
+    H += p.y * Tangent1;
+    H += sqrt(saturate(1 - dot(p, p))) * Vh;
+
+	// unstretch
+    H = normalize(float3(a * H.xy, max(0.0, H.z)));
+
+    return float4(H, VisibleGGXPDF(V, H, a2));
+}
+
 #endif

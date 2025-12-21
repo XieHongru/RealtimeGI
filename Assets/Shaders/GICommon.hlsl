@@ -376,6 +376,29 @@ float DecodeDistance(float distance, float voxelSize)
     return distance * (voxelSize * DISTANCE_FIELD_MAX_RANGE);
 }
 
+float3 RGBToYCoCg(float3 RGB)
+{
+    float Y = dot(RGB, float3(1, 2, 1)) * 0.25;
+    float Co = dot(RGB, float3(2, 0, -2)) * 0.25 + (0.5 * 256.0 / 255.0);
+    float Cg = dot(RGB, float3(-1, 2, -1)) * 0.25 + (0.5 * 256.0 / 255.0);
+	
+    float3 YCoCg = float3(Y, Co, Cg);
+    return YCoCg;
+}
+
+float3 YCoCgToRGB(float3 YCoCg)
+{
+    float Y = YCoCg.x;
+    float Co = YCoCg.y - (0.5 * 256.0 / 255.0);
+    float Cg = YCoCg.z - (0.5 * 256.0 / 255.0);
+
+    float R = Y + Co - Cg;
+    float G = Y + Cg;
+    float B = Y - Co - Cg;
+
+    float3 RGB = float3(R, G, B);
+    return RGB;
+}
 
 #endif
 
