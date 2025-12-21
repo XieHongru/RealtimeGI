@@ -65,8 +65,11 @@ public class GlobalSettings : ScriptableObject
     public int useReservoirSpatialReuse = 1;
     public int spatialReuseSampleCount = 12;
     public float spatialReuseSearchRange = 0.5f;
-    public float temporalAccumulateWeight = 0.8f;
-    public int spatialAccumulateIterationCount = 3;
+    public float temporalFilterWeight = 0.8f;
+    public int spatialFilterIterationCount = 3;
+    public float filterGuidanceSSAORange = 1.0f;
+    public float filterGuidanceSSAOIntensity = 0.5f;
+    public float filterGuidanceSSAOSharpness = 50.0f;
 
     // Distance Field
     public int useDistanceField = 1;
