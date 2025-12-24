@@ -1173,7 +1173,7 @@ void SpecularSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
 
     if (IsUVOutSideScreen(uv) || rawDepth <= 0)
     {
-        _RWSpecularSpatialFilterOutput = float4(0, 0, 0, 0);
+        _RWSpecularSpatialFilterOutput[pixelCoord] = float4(0, 0, 0, 0);
         return;
     }
 
@@ -1219,7 +1219,7 @@ void SpecularSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     color = color / (1.0 - Luma(color));
 #endif
 
-    _RWSpecularSpatialFilterOutput = float4(color, 1);
+    _RWSpecularSpatialFilterOutput[pixelCoord] = float4(color, 1);
 }
 
 // -------------------------------------------------------------------------------- //

@@ -954,7 +954,7 @@ public class MiraiGIScreenGather
 
         cmd.SetComputeIntParam(m_ScreenGatherCS, Shader.PropertyToID("_FrameNumber"), m_FrameNumber);
         cmd.SetComputeFloatParam(m_ScreenGatherCS, Shader.PropertyToID("_TemporalFilterWeight"), GlobalSettings.Instance.specularTemporalFilterWeight);
-        cmd.SetComputeFloatParam(m_ScreenGatherCS, Shader.PropertyToID("_HistoryColorBoundScale"), GlobalSettings.Instance.histor);
+        cmd.SetComputeFloatParam(m_ScreenGatherCS, Shader.PropertyToID("_HistoryColorBoundScale"), GlobalSettings.Instance.specularTemporalFilterHistoryColorBoundScale);
         cmd.SetComputeVectorParam(m_ScreenGatherCS, Shader.PropertyToID("_SceneTextureRTSize"), (Vector2)m_SceneTextureRTSize);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_SpecularIndirectTexture"), m_SpecularResolveOutputTexture);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_SpecularIndirectHistory"), m_SpecularIndirectHistory);
