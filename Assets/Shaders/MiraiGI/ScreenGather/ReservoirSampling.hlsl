@@ -46,6 +46,8 @@ struct Reservoir
     float estimatorWeight; // W in paper
 };
 
+#define TARGET_PDF_WITH_COSINE 1
+
 // get target pdf in specific position and surface normal
 float EvaluateTargetPDF(in ReservoirSample sample, float3 evaluatePointPosition, float3 evaluatePointNormal)
 {
@@ -54,7 +56,7 @@ float EvaluateTargetPDF(in ReservoirSample sample, float3 evaluatePointPosition,
         // note: 
     // if using next event estimator (NEE) to trace both direct and indirect lighting, we should follow the advice of paper and don't use cosine weight
     // but we only trace indirect lighting here, so we consider cosine weight to get more smooth result
-#if 1
+#if TARGET_PDF_WITH_COSINE
     float3 rayDirection = normalize(sample.rayEnd - evaluatePointPosition); // connect the sample with evaluate point
     cosineWeight = max(dot(rayDirection, evaluatePointNormal), 0.1); // clamp to prevent firefly
 #endif

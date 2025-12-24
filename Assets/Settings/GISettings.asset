@@ -23,7 +23,7 @@ MonoBehaviour:
   cullingObjectCountPerChunk: 64
   voxelCascadeCount: 4
   voxelSize: 0.2
-  voxelVisualizeMode: 0
+  voxelVisualizeMode: 4
   voxelVisualizeCascadeLevel: 0
   voxelVisualizeUpdateChunk: 0
   clipmapObjectCullingRejectFactor1: 1
@@ -39,20 +39,22 @@ MonoBehaviour:
   reuseRadianceProbe: 0
   useProbeOcclusionTest: 1
   radianceProbeMinCascadeLevel: 2
-  irradianceProbeMinCascadeLevel: 1
+  irradianceProbeMinCascadeLevel: 0
   irradianceProbeSampleCount: 1
   irradianceProbeTemporalWeight: 0.75
   visualizeScreenGather: 1
   screenGatherDownsampleFactor: 2
   useReservoirSpatialReuse: 1
-  spatialReuseSampleCount: 12
-  spatialReuseSearchRange: 0.5
+  spatialReuseSampleCount: 8
+  spatialSecondaryReuseSampleCount: 4
+  spatialSecondaryReuse: 0
+  spatialReuseSearchRange: 0.2
   diffuseTemporalFilterWeight: 0.95
   diffuseTemporalFilterHistoryColorBoundScale: 0.1
-  diffuseSpatialFilterIterationCount: 3
+  diffuseSpatialFilterIterationCount: 5
   filterGuidanceSSAORange: 1
   filterGuidanceSSAOIntensity: 0.5
-  filterGuidanceSSAOSharpness: 50
+  filterGuidanceSSAOSharpness: 10
   specularTemporalFilterWeight: 0.96
   specularTemporalFilterHistoryColorBoundScale: 0.8
   specularResolveSearchRange: 4

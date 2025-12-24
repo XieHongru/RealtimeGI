@@ -55,7 +55,7 @@ public class GlobalSettings : ScriptableObject
     public int reuseRadianceProbe = 0;
     public int useProbeOcclusionTest = 1;
     public int radianceProbeMinCascadeLevel = 2;
-    public int irradianceProbeMinCascadeLevel = 1;
+    public int irradianceProbeMinCascadeLevel = 0;
     public int irradianceProbeSampleCount = 1;
     public float irradianceProbeTemporalWeight = 0.75f;
 
@@ -63,16 +63,18 @@ public class GlobalSettings : ScriptableObject
     public int visualizeScreenGather = 0;
     public int screenGatherDownsampleFactor = 2;
     public int useReservoirSpatialReuse = 1;
-    public int spatialReuseSampleCount = 12;
-    public float spatialReuseSearchRange = 0.5f;
+    public int spatialReuseSampleCount = 8;
+    public int spatialSecondaryReuseSampleCount = 4;
+    public int spatialSecondaryReuse = 0;
+    public float spatialReuseSearchRange = 0.2f;
 
     public float diffuseTemporalFilterWeight = 0.95f;
     public float diffuseTemporalFilterHistoryColorBoundScale = 0.1f;
-    public int diffuseSpatialFilterIterationCount = 3;
+    public int diffuseSpatialFilterIterationCount = 5;
 
     public float filterGuidanceSSAORange = 1.0f;
     public float filterGuidanceSSAOIntensity = 0.5f;
-    public float filterGuidanceSSAOSharpness = 50.0f;
+    public float filterGuidanceSSAOSharpness = 10.0f;
 
     public float specularTemporalFilterWeight = 0.96f;
     public float specularTemporalFilterHistoryColorBoundScale = 0.8f;

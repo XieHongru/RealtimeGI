@@ -26,6 +26,22 @@ float4 UniformSampleSphere(float2 E)
     return float4(H, PDF);
 }
 
+float4 CosineSampleHemisphere(float2 E)
+{
+    float Phi = 2 * PI * E.x;
+    float CosTheta = sqrt(E.y);
+    float SinTheta = sqrt(1 - CosTheta * CosTheta);
+
+    float3 H;
+    H.x = SinTheta * cos(Phi);
+    H.y = SinTheta * sin(Phi);
+    H.z = CosTheta;
+
+    float PDF = CosTheta * (1.0 / PI);
+
+    return float4(H, PDF);
+}
+
 float4 UniformSampleHemisphere(float2 E)
 {
     float Phi = 2 * PI * E.x;
