@@ -51,6 +51,14 @@ Texture2D<float> _RadianceProbeDistanceAtlas;
 
 float3 FetchRadianceFromVoxelScene(VoxelRaytracingRequest RTRequest, VoxelRayTracingHitPayload hit)
 {
+    // prevent self intersection when ray start inside block
+    float3 voxelMinCorner = hit.voxelPosition - hit.voxelCellSize * 0.5;
+    float3 voxelMaxCorner = hit.voxelPosition + hit.voxelCellSize * 0.5;
+    if (all(voxelMinCorner < RTRequest.rayStart) && all(RTRequest.rayStart < voxelMaxCorner))
+    {
+        return float3(0, 0, 0);
+    }
+    
     int voxelPageId = _VoxelPageClipmap.Load(uint4(hit.clipmapAccessIndex, 0)).r;
     if (voxelPageId == PAGE_ID_INVALID)
     {

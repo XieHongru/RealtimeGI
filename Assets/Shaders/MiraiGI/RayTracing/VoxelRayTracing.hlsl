@@ -39,6 +39,8 @@ struct VoxelRayTracingHitPayload
     float3 position;
     int isHit;
     int3 voxelIndex;
+    float3 voxelPosition;
+    float voxelCellSize;
     int cascadeIndex;
     int3 clipmapAccessIndex;
 };
@@ -204,6 +206,8 @@ VoxelRayTracingHitPayload VoxelRaytracingSingleCascade(CascadeInfo cascadeInfo, 
     payload.position = samplePoint + cascadeInfo.center;
     payload.isHit = hitMask;
     payload.voxelIndex = voxelIndex;
+    payload.voxelPosition = CalcVoxelCenterPos(voxelIndex, cascadeInfo.resolution, cascadeInfo.center, cascadeInfo.size);
+    payload.voxelCellSize = cascadeInfo.voxelSize.x;
     payload.cascadeIndex = cascadeInfo.cascadeIndex;
     payload.clipmapAccessIndex = clipmapAccessIndex;
 
@@ -298,6 +302,8 @@ VoxelRayTracingHitPayload DistanceFieldRaytracingSingleCascade(in CascadeInfo ca
     payload.position = samplePoint + cascadeInfo.center;
     payload.isHit = hitMask;
     payload.voxelIndex = voxelIndex;
+    payload.voxelPosition = CalcVoxelCenterPos(voxelIndex, cascadeInfo.resolution, cascadeInfo.center, cascadeInfo.size);
+    payload.voxelCellSize = cascadeInfo.voxelSize.x;
     payload.cascadeIndex = cascadeInfo.cascadeIndex;
     payload.clipmapAccessIndex = clipmapAccessIndex;
 

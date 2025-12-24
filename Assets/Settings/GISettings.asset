@@ -42,14 +42,19 @@ MonoBehaviour:
   irradianceProbeMinCascadeLevel: 1
   irradianceProbeSampleCount: 1
   irradianceProbeTemporalWeight: 0.75
-  visualizeScreenGather: 0
+  visualizeScreenGather: 1
   screenGatherDownsampleFactor: 2
   useReservoirSpatialReuse: 1
   spatialReuseSampleCount: 12
   spatialReuseSearchRange: 0.5
-  temporalFilterWeight: 0.8
-  spatialFilterIterationCount: 3
+  diffuseTemporalFilterWeight: 0.95
+  diffuseTemporalFilterHistoryColorBoundScale: 0.1
+  diffuseSpatialFilterIterationCount: 3
   filterGuidanceSSAORange: 1
   filterGuidanceSSAOIntensity: 0.5
   filterGuidanceSSAOSharpness: 50
+  specularTemporalFilterWeight: 0.96
+  specularTemporalFilterHistoryColorBoundScale: 0.8
+  specularResolveSearchRange: 4
+  specularFilterSearchRange: 4
   useDistanceField: 1
