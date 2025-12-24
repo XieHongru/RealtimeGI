@@ -77,7 +77,7 @@ public class GlobalSettings : ScriptableObject
     public float specularTemporalFilterWeight = 0.96f;
     public float specularTemporalFilterHistoryColorBoundScale = 0.8f;
     public float specularResolveSearchRange = 4.0f;
-    public int specularSpatialFilterIterationCount = 2;
+    public float specularFilterSearchRange = 4.0f;
 
     // Distance Field
     public int useDistanceField = 1;

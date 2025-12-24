@@ -390,7 +390,7 @@ void InitialSampleVoxelTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupTh
     
     // prevent self intersection at graze angle
     float NoL = saturate(dot(pixelCtx.worldNormal, pixelCtx.rayDirection));
-    float3 normalOffset = pixelCtx.worldNormal * voxelCellSize * lerp(0.5, 0.05, NoL);
+    float3 normalOffset = pixelCtx.worldNormal * voxelCellSize * lerp(1, 0.05, NoL);
     rayStart += normalOffset;
 
     // 2. trace ray
@@ -675,13 +675,63 @@ void ReservoirEvaluateIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 gro
     _RWDiffuseResolveOutputTexture[pixelCoord] = float4(irradiance, 1);
 }
 
+// ---------------------------------------- (^^_) ---------------------------------------- //
+#pragma kernel FilterGuidanceSSAO
+
+float _AOWorldRange;
+
+[numthreads(8, 8, 1)]
+void FilterGuidanceSSAO(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    float2 screenGatherTexelSize = rcp(float2(_ScreenGatherRTSize));
+    const int2 pixelCoord = clamp(threadId.xy, 0, _ScreenGatherRTSize - 1);
+    const float2 uv = (float2(pixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
+    if (any(threadId.xy >= _ScreenGatherRTSize))
+    {
+        return;
+    }
+    
+    uint2 randomSeed = Rand3DPCG16(uint3(uv * 11451.514, _FrameNumber + 1919)).xy;
+    PixelContext pixelCtx = ResolvePixelContext(uv);
+
+    float3 worldPositionDDXY = ReconstructWorldPositionFromDepth(uv + screenGatherTexelSize, pixelCtx.rawDepth);
+    float3 DDXY = length(pixelCtx.worldPosition - worldPositionDDXY);
+    float distanceDDXY = max(max(DDXY.x, DDXY.y), DDXY.z);
+    float uvSearchRange = clamp((_AOWorldRange / distanceDDXY) * screenGatherTexelSize, 0.005, 0.5);
+
+    const int sampleCount = 8;
+    float AOSum = 0;
+    float weightSum = 0;
+
+    for (int i = 0; i < sampleCount; i++)
+    {
+        float2 E = Hammersley16(i, sampleCount, randomSeed);
+        float2 uvOffset = UniformSampleDisk(E);
+        float2 neighborUV = uv + uvOffset * uvSearchRange;
+
+        float3 samplePosition, sampleNormal;
+        GetPixelPositionAndNormal(neighborUV, samplePosition, sampleNormal);
+
+        float3 pixelToSample = samplePosition - pixelCtx.worldPosition;
+        float cosine = saturate(dot(normalize(pixelToSample), pixelCtx.worldNormal)); // @TODO: using GTAO here
+        float occlusion = (1 - cosine);
+        float fallOff = exp(-length(pixelToSample) / (_AOWorldRange * 2));
+
+        AOSum += occlusion * fallOff;
+        weightSum += fallOff;
+    }
+    float AO = weightSum > 0 ? AOSum / weightSum : 1;
+    
+    _RWDiffuseResolveOutputTexture[pixelCoord] = float4(AO.xxxx);
+}
+
 // -------------------------------------------------------------------------------- //
-#pragma kernel IrradianceTemporalFilter
+#pragma kernel DiffuseTemporalFilter
 
 float _TemporalFilterWeight;
 float _HistoryColorBoundScale;
 
-Texture2D<float4> _IrradianceInput;
+Texture2D<float4> _DiffuseIndirectTexture;
 Texture2D<float4> _DiffuseIndirectHistory;
 RWTexture2D<float4> _RWDiffuseTemporalFilterOutput;
 
@@ -722,7 +772,7 @@ float3 ClampHistory(in float4 colorSamples[9], float3 currentColor, float3 histo
 }
 
 [numthreads(8, 8, 1)]
-void IrradianceTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+void DiffuseTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
     // 1. setup
     const float2 screenGatherTexelSize = 1.0 / float2(_ScreenGatherRTSize);
@@ -740,7 +790,7 @@ void IrradianceTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupT
     for (int i = 0; i < 9; i++)
     {
         float2 neighborUV = uv + offsets3x3[i] * screenGatherTexelSize;
-        colorSamples[i] = _IrradianceInput.SampleLevel(sampler_PointClamp, neighborUV, 0);
+        colorSamples[i] = _DiffuseIndirectTexture.SampleLevel(sampler_PointClamp, neighborUV, 0);
     }
     float4 currentColor = colorSamples[0];
 
@@ -770,7 +820,7 @@ void IrradianceTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupT
 }
 
 // -------------------------------------------------------------------------------- //
-#pragma kernel IrradianceSpatialFilter
+#pragma kernel DiffuseSpatialFilter
 
 int2 _RTSize;
 float _FilterRadius;
@@ -779,7 +829,7 @@ float _AOSharpness;
 RWTexture2D<float4> _RWSpatialFilterOutput;
 
 [numthreads(8, 8, 1)]
-void IrradianceSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+void DiffuseSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
     // 1. setup
     const float2 texelSize = 1.0 / float2(_RTSize);
@@ -794,7 +844,7 @@ void IrradianceSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupTh
     }
 
     // 2. filter current frame output
-    float4 centerColor = _IrradianceInput.SampleLevel(sampler_linearClamp, uv, 0);
+    float4 centerColor = _DiffuseIndirectTexture.SampleLevel(sampler_linearClamp, uv, 0);
     float guidanceSSAO = centerColor.w;
     float weightSum = gaussianWeights3x3[0];
     float4 colorSum = centerColor * gaussianWeights3x3[0];
@@ -807,7 +857,7 @@ void IrradianceSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupTh
             continue;
         }
 
-        float4 neighborColor = _IrradianceInput.SampleLevel(sampler_linearClamp, neighborUV, 0);
+        float4 neighborColor = _DiffuseIndirectTexture.SampleLevel(sampler_linearClamp, neighborUV, 0);
         neighborColor = ClampNaNs(neighborColor);
 
         float3 neighborPixelPosition, neighborPixelNormal;
@@ -833,8 +883,7 @@ void IrradianceSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupTh
 
 float _AOIntensity;
 Texture2D<float4> _GBufferBaseColor;
-Texture2D<float4> _DiffuseIndirectTexture;
-RWTexture2D<float4> _RWSceneTextureOutputTexture;
+RWTexture2D<float4> _RWDiffuseCompositeTexture;
 
 [numthreads(8, 8, 1)]
 void DiffuseComposite(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
@@ -895,57 +944,7 @@ void DiffuseComposite(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     AOSum /= weightSum;
     diffuseIndirect *= lerp(1, AOSum, _AOIntensity);
 
-    _RWSceneTextureOutputTexture[threadId.xy] = float4(ClampNaNs(diffuseIndirect), 1);
-}
-
-// ---------------------------------------- (^^_) ---------------------------------------- //
-#pragma kernel FilterGuidanceSSAO
-
-float _AOWorldRange;
-
-[numthreads(8, 8, 1)]
-void FilterGuidanceSSAO(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
-{
-    float2 screenGatherTexelSize = rcp(float2(_ScreenGatherRTSize));
-    const int2 pixelCoord = clamp(threadId.xy, 0, _ScreenGatherRTSize - 1);
-    const float2 uv = (float2(pixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
-    if (any(threadId.xy >= _ScreenGatherRTSize))
-    {
-        return;
-    }
-    
-    uint2 randomSeed = Rand3DPCG16(uint3(uv * 11451.514, _FrameNumber + 1919)).xy;
-    PixelContext pixelCtx = ResolvePixelContext(uv);
-
-    float3 worldPositionDDXY = ReconstructWorldPositionFromDepth(uv + screenGatherTexelSize, pixelCtx.rawDepth);
-    float3 DDXY = length(pixelCtx.worldPosition - worldPositionDDXY);
-    float distanceDDXY = max(max(DDXY.x, DDXY.y), DDXY.z);
-    float uvSearchRange = clamp((_AOWorldRange / distanceDDXY) * screenGatherTexelSize, 0.005, 0.5);
-
-    const int sampleCount = 8;
-    float AOSum = 0;
-    float weightSum = 0;
-
-    for (int i = 0; i < sampleCount; i++)
-    {
-        float2 E = Hammersley16(i, sampleCount, randomSeed);
-        float2 uvOffset = UniformSampleDisk(E);
-        float2 neighborUV = uv + uvOffset * uvSearchRange;
-
-        float3 samplePosition, sampleNormal;
-        GetPixelPositionAndNormal(neighborUV, samplePosition, sampleNormal);
-
-        float3 pixelToSample = samplePosition - pixelCtx.worldPosition;
-        float cosine = saturate(dot(normalize(pixelToSample), pixelCtx.worldNormal)); // @TODO: using GTAO here
-        float occlusion = (1 - cosine);
-        float fallOff = exp(-length(pixelToSample) / (_AOWorldRange * 2));
-
-        AOSum += occlusion * fallOff;
-        weightSum += fallOff;
-    }
-    float AO = weightSum > 0 ? AOSum / weightSum : 1;
-    
-    _RWDiffuseResolveOutputTexture[pixelCoord] = float4(AO.xxxx);
+    _RWDiffuseCompositeTexture[threadId.xy] = float4(ClampNaNs(diffuseIndirect), 1);
 }
 
 // -------------------------------------------------------------------------------- //
@@ -1069,6 +1068,35 @@ Texture2D<float4> _SpecularIndirectHistory;
 
 RWTexture2D<float4> _RWSpecularTemporalFilterOutput;
 
+float4 SpecularIndirectFetchHistory(float3 worldPosition, float2 currentUV)
+{
+    // reproject pixel
+    float3 currentFrameUVz = WorldToScreen(worldPosition);
+    float2 reprojectUV = ReprojectPixel(currentFrameUVz);
+
+    // fetch history
+    float3 historyColor = _SpecularIndirectHistory.SampleLevel(sampler_linearClamp, reprojectUV, 0).rgb;
+    historyColor = ClampNaNs(historyColor);
+
+    // reject history if geometry change
+    // note: both current and history are sample from half resolution buffer
+    float4 historyNormalDepth = _NormalDepthHistory.SampleLevel(sampler_PointClamp, reprojectUV, 0);
+    float3 historyNormal = historyNormalDepth.xyz * 2 - 1;
+    float historySceneDepth = ConvertFromDeviceZ(historyNormalDepth.w);
+
+    float4 currentNormalDepth = _NormalDepthTexture.SampleLevel(sampler_PointClamp, currentUV, 0);
+    float3 currentNormal = currentNormalDepth.xyz * 2 - 1;
+    float currentSceneDepth = ConvertFromDeviceZ(currentNormalDepth.w);
+
+    float historyWeight = _TemporalFilterWeight;
+    if (IsUVOutSideScreen(reprojectUV) || dot(historyNormal, currentNormal) < 0.5 || abs(historySceneDepth - currentSceneDepth) > 1)
+    {
+        historyWeight = 0;
+    }
+
+    return float4(historyColor, historyWeight);
+}
+
 [numthreads(8, 8, 1)]
 void SpecularTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
@@ -1085,6 +1113,7 @@ void SpecularTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThr
     float3 worldPosition = ReconstructWorldPositionFromDepth(uv, rawDepth);
     
     float4 GBufferNormalRoughness = _GBufferNormal.SampleLevel(sampler_PointClamp, uv, 0);
+    float linearRoughness = sqrt(GBufferNormalRoughness.w);
 
     if (IsUVOutSideScreen(uv) || rawDepth <= 0)
     {
@@ -1102,43 +1131,101 @@ void SpecularTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThr
     float3 currentColor = colorSamples[0].rgb;
     float currentRayDistance = colorSamples[0].w;
 
-    // 3. reproject pixel using ray distance parallex
-    // note: mirror direction ray need parallex to collect bias, but when roughness higher it will cause lag
-    //       so we mix two reprojection ways based on pixel roughness
-    float parallexRayDistance = currentRayDistance * lerp(1, 0, sqrt(GBufferNormalRoughness.w));
+    // 3. reproject pixel using surface position
+    float4 surfaceReprojectResult = SpecularIndirectFetchHistory(worldPosition, uv);
+    surfaceReprojectResult.rgb = ClampHistory(colorSamples, currentColor, surfaceReprojectResult.rgb, _HistoryColorBoundScale);
+
+    // 4. reproject pixel using ray distance parallex
     float3 viewDirection = normalize(worldPosition - _CameraPosition);
-    float3 mirroredHitPoint = worldPosition + viewDirection * parallexRayDistance;
-    float3 currentFrameUVz = WorldToScreen(mirroredHitPoint);
-    float2 reprojectUV = ReprojectPixel(currentFrameUVz);
+    float3 mirroredHitPoint = worldPosition + viewDirection * currentRayDistance;
+    float4 parallexReprojectResult = SpecularIndirectFetchHistory(mirroredHitPoint, uv);
+    parallexReprojectResult.rgb = ClampHistory(colorSamples, currentColor, parallexReprojectResult.rgb, _HistoryColorBoundScale);
+    
+    // 5. mix two reprojection methods based on pixel roughness
+    float3 filteredColorWithSurfaceReproject = lerp(currentColor, surfaceReprojectResult.rgb, surfaceReprojectResult.a);
+    float3 filteredColorWithParallexReproject = lerp(currentColor, parallexReprojectResult.rgb, parallexReprojectResult.a);
+    float3 filteredColor = lerp(filteredColorWithParallexReproject, filteredColorWithSurfaceReproject, linearRoughness);
 
-    // 4. fetch history
-    float historyWeight = _TemporalFilterWeight;
-    float3 historyColor = _SpecularIndirectHistory.SampleLevel(sampler_linearClamp, reprojectUV, 0).rgb;
-    historyColor = ClampNaNs(historyColor);
+    _RWSpecularTemporalFilterOutput[pixelCoord] = float4(filteredColor, 1);
+}
 
-    // 5. reject history if geometry change
-    // note: both current and history are sample from half resolution buffer
-    float4 historyNormalDepth = _NormalDepthHistory.SampleLevel(sampler_PointClamp, reprojectUV, 0);
-    float3 historyNormal = historyNormalDepth.xyz * 2 - 1;
-    float historySceneDepth = ConvertFromDeviceZ(historyNormalDepth.w);
+// -------------------------------------------------------------------------------- //
+#pragma kernel SpecularSpatialFilter
 
-    float4 currentNormalDepth = _NormalDepthTexture.SampleLevel(sampler_PointClamp, uv, 0);
-    float3 currentNormal = currentNormalDepth.xyz * 2 - 1;
-    float currentSceneDepth = ConvertFromDeviceZ(currentNormalDepth.w);
+RWTexture2D<float4> _RWSpecularSpatialFilterOutput;
 
-    if (IsUVOutSideScreen(reprojectUV) /* || dot(HistoryNormal, CurrentNormal) < 0.5 */ || abs(historySceneDepth - currentSceneDepth) > 1)
+[numthreads(8, 8, 1)]
+void SpecularSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    // 1. setup
+    const float2 texelSize = 1.0 / float2(_RTSize);
+    const int2 pixelCoord = clamp(threadId.xy, 0, _RTSize - 1);
+    const float2 uv = (float2(pixelCoord) + 0.5) / float2(_RTSize);
+    if (any(threadId.xy >= _RTSize))
     {
-        historyWeight = 0;
+        return;
+    }
+    
+    uint2 randomSeed = Rand3DPCG16(uint3(uv * 256, _FrameNumber + 1024)).xy;
+    float rawDepth = _SceneDepthTexture.SampleLevel(sampler_PointClamp, uv, 0);
+    float sceneDepth = ConvertFromDeviceZ(rawDepth);
+    float4 GBufferNormalRoughness = _GBufferNormal.SampleLevel(sampler_PointClamp, uv, 0);
+
+    if (IsUVOutSideScreen(uv) || rawDepth <= 0)
+    {
+        _RWSpecularSpatialFilterOutput = float4(0, 0, 0, 0);
+        return;
     }
 
-    // 6. clamp history
-    historyColor = ClampHistory(colorSamples, currentColor, historyColor, _HistoryColorBoundScale);
+    // 2. filter current frame output
+    int sampleCount = 8;
+    float weightSum = 0;
+    float4 colorSum = 0;
+    float searchRange = texelSize * _FilterRadius * lerp(1e-3, 4, GBufferNormalRoughness.w);
 
-    _RWSpecularTemporalFilterOutput[pixelCoord] = float4(lerp(currentColor, historyColor, historyWeight), 1);
+    for (int i = 0; i < sampleCount; i++)
+    {
+        float2 E = Hammersley16(i, sampleCount, randomSeed);
+        float2 uvOffset = UniformSampleDisk(E); // [-1 ~ 1]
+        float2 neighborUV = uv + uvOffset * searchRange;
+
+        if (IsUVOutSideScreen(neighborUV))
+        {
+            continue;
+        }
+
+        float4 neighborColor = _SpecularIndirectTexture.SampleLevel(sampler_linearClamp, neighborUV, 0);
+        neighborColor = ClampNaNs(neighborColor);
+
+#if RADIANCE_TONEMAPPING
+        neighborColor = neighborColor / (1.0 + Luma(neighborColor));
+#endif
+
+        float neighborDepth = ConvertFromDeviceZ(_SceneDepthTexture.SampleLevel(sampler_PointClamp, neighborUV, 0));
+        float3 neighborNormal = _GBufferNormal.SampleLevel(sampler_PointClamp, neighborUV, 0).xyz;
+
+        // float Weight = 1.0;
+        float weight = exp(-length(neighborUV - uv) / searchRange);
+        weight *= exp(-abs(neighborDepth - sceneDepth) * 0.01);
+        weight *= saturate(dot(neighborNormal, GBufferNormalRoughness.xyz));
+
+        colorSum += neighborColor * weight;
+        weightSum += weight;
+    }
+
+    float3 color = (weightSum > 0) ? (colorSum.rgb / weightSum) : 0;
+
+#if RADIANCE_TONEMAPPING
+    color = color / (1.0 - Luma(color));
+#endif
+
+    _RWSpecularSpatialFilterOutput = float4(color, 1);
 }
 
 // -------------------------------------------------------------------------------- //
 #pragma kernel SpecularComposite
+
+RWTexture2D<float4> _RWSpecularCompositeTexture;
 
 [numthreads(8, 8, 1)]
 void SpecularComposite(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
@@ -1167,5 +1254,5 @@ void SpecularComposite(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId
     float3 specularIndirect = irradiance;
 #endif
 
-    _RWSceneTextureOutputTexture[pixelCoord] = float4(specularIndirect, 1);
+    _RWSpecularCompositeTexture[pixelCoord] = float4(specularIndirect, 1);
 }

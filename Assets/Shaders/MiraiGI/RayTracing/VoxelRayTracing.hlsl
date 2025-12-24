@@ -327,7 +327,7 @@ VoxelRayTracingHitPayload DistanceFieldRaytracing(in ClipmapInfo clipmapInfo, in
 
 float3 GetVoxelCellSize(in ClipmapInfo clipmapInfo, float3 worldPosition)
 {
-    const float padding = 3.0f;
+    const float padding = 4.0f;
     int i = 0;
     float3 voxelCellSize = float3(0, 0, 0);
     for (int i = 0; i < clipmapInfo.cascadeCount; i++)
