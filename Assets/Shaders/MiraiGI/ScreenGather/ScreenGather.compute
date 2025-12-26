@@ -606,16 +606,13 @@ void ReservoirSpatialReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
         Reservoir neighborReservoir = FetchReservoir(neighborUV);
 
         // 3.2. consider geometry similarity
-        float3 neighborPixelPosition, neighborPixelNormal;
-        GetPixelPositionAndNormal(neighborUV, neighborPixelPosition, neighborPixelNormal);
-        
         float3 reusedPath = neighborReservoir.currentSample.rayEnd - pixelCtx.worldPosition;
         float3 neighborPath = neighborReservoir.currentSample.rayEnd - neighborReservoir.currentSample.rayStart;
 
         float hemisphereDot1 = dot(pixelCtx.worldNormal, reusedPath);
         float hemisphereDot2 = dot(pixelCtx.worldNormal, neighborPath);
         float hemisphereDot3 = dot(neighborReservoir.currentSample.rayStartNormal, neighborPath);
-        float normalDot = dot(pixelCtx.worldNormal, neighborPixelNormal);
+        float normalDot = dot(pixelCtx.worldNormal, neighborReservoir.currentSample.rayStartNormal);
         if (hemisphereDot1 <= 0 || hemisphereDot2 <= 0 || hemisphereDot3 <= 0 || normalDot < 0.8)
         {
             continue;
