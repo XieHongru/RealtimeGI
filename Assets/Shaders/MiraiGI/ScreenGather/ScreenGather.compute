@@ -32,7 +32,9 @@ float4x4 _ClipToPrevClip;
 
 // View Params
 float4 _CameraPosition;
+float4x4 _ViewMat;
 float4x4 _ProjMat;
+float4x4 _TranslatedWorldToView;
 float4x4 _TranslatedWorldToClip;
 float4 _ZBufferParam;
 float4x4 _InvProjMat;
@@ -465,7 +467,7 @@ bool IsUVOutSideScreen(float2 uv)
     // so max uv boundary decided by ScreenPositionScaleBias, not const 1.0
     //float2 ViewportUV = BufferUVToViewportUV(uv);
     float2 ViewportUV = uv;
-    return any(ViewportUV <= -0.0005) || any(ViewportUV > 1.0005);
+    return any(ViewportUV <= -0.01) || any(ViewportUV > 1.01);
 }
 
 [numthreads(8, 8, 1)]
@@ -687,6 +689,19 @@ void ReservoirEvaluateIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 gro
 #pragma kernel FilterGuidanceSSAO
 
 float _AOWorldRange;
+float _AOSharpness;
+
+float3 TransformPositionWorldToView(float3 worldPosition)
+{
+    float3 translatedWorldPosition = worldPosition - _CameraPosition;
+    float3 viewSpacePosition = mul(_TranslatedWorldToView, float4(translatedWorldPosition, 1));
+    return viewSpacePosition;
+}
+
+float3 TransformDirectionWorldToView(float3 worldNormal)
+{
+    return normalize(mul((half3x3) _TranslatedWorldToView, worldNormal));
+}
 
 [numthreads(8, 8, 1)]
 void FilterGuidanceSSAO(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
@@ -699,38 +714,64 @@ void FilterGuidanceSSAO(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadI
         return;
     }
     
-    uint2 randomSeed = Rand3DPCG16(uint3(uv * 11451.514, _FrameNumber + 1919)).xy;
+    uint2 randomSeed = Rand3DPCG16(uint3(uv * 333, _FrameNumber + 444)).xy;
     PixelContext pixelCtx = ResolvePixelContext(uv);
+    float3 viewDirection = normalize(_CameraPosition - pixelCtx.worldPosition);
+    float3 viewSpacePosition = TransformPositionWorldToView(pixelCtx.worldPosition);
+    float3 viewSpaceNormal = TransformDirectionWorldToView(pixelCtx.worldNormal);
 
     float3 worldPositionDDXY = ReconstructWorldPositionFromDepth(uv + screenGatherTexelSize, pixelCtx.rawDepth);
     float3 DDXY = length(pixelCtx.worldPosition - worldPositionDDXY);
     float distanceDDXY = max(max(DDXY.x, DDXY.y), DDXY.z);
     float uvSearchRange = clamp((_AOWorldRange / distanceDDXY) * screenGatherTexelSize, 0.005, 0.5);
 
-    const int sampleCount = 8;
+    const int directionCount = 4;
+    const int stepCount = 4;
+    float uvSearchStep = uvSearchRange / float(stepCount);
+
+    float2 E = Hammersley16(0, 1, randomSeed);
+    float randomStepOffset = E.x;
+    float rotateAngle = E.y * PI * 2;
+    
     float AOSum = 0;
     float weightSum = 0;
-
-    for (int i = 0; i < sampleCount; i++)
+    float3 samplePosition, sampleNormal;
+    for (int i = 0; i < directionCount; i++)
     {
-        float2 E = Hammersley16(i, sampleCount, randomSeed);
-        float2 uvOffset = UniformSampleDisk(E);
-        float2 neighborUV = uv + uvOffset * uvSearchRange;
+        float2 direction2D = float2(cos(rotateAngle), sin(rotateAngle));
 
-        float3 samplePosition, sampleNormal;
-        GetPixelPositionAndNormal(neighborUV, samplePosition, sampleNormal);
+        float bestOcclusion = 0;
+        for (int j = 0; j < stepCount; j++)
+        {
+            float2 sampleUV = uv + direction2D * uvSearchStep * (float(j) + randomStepOffset);
+            float sampleDepth = GetPixelPositionAndNormal(sampleUV, samplePosition, sampleNormal);
 
-        float3 pixelToSample = samplePosition - pixelCtx.worldPosition;
-        float cosine = saturate(dot(normalize(pixelToSample), pixelCtx.worldNormal)); // @TODO: using GTAO here
-        float occlusion = (1 - cosine);
-        float fallOff = exp(-length(pixelToSample) / (_AOWorldRange * 2));
+            // calculate occlusion for current sample
+            float3 viewSpaceSample = mul(_ViewMat, float4(samplePosition, 1));
+            float3 pixelToSample = viewSpaceSample - viewSpacePosition;
+            float distance = length(pixelToSample);
+            float occlusion = dot(viewSpaceNormal, pixelToSample) / distance;
 
-        AOSum += occlusion * fallOff;
-        weightSum += fallOff;
+            // calculate max horizontal occlusion
+            float delta = max(occlusion - bestOcclusion, 0);
+            bestOcclusion = max(bestOcclusion, occlusion);
+
+            // lerp occlusion based on distance
+            float fallOffWeight = saturate(1 - (distance * distance) / (_AOWorldRange * _AOWorldRange));
+            float AO = delta * fallOffWeight;
+
+            AOSum += AO;
+            weightSum += fallOffWeight;
+        }
+        
+        rotateAngle += 2 * PI / float(directionCount);
     }
-    float AO = weightSum > 0 ? AOSum / weightSum : 1;
     
-    _RWDiffuseResolveOutputTexture[pixelCoord] = float4(AO.xxxx);
+    float finalOcclusion = AOSum / weightSum;
+    finalOcclusion = saturate(1 - finalOcclusion);
+    finalOcclusion = pow(finalOcclusion, _AOSharpness);
+    
+    _RWDiffuseResolveOutputTexture[pixelCoord] = float4(finalOcclusion.xxxx);
 }
 
 // -------------------------------------------------------------------------------- //
@@ -820,11 +861,18 @@ void DiffuseTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     
     // 4. clamp history
     historyColor.rgb = ClampHistory(colorSamples, currentColor.rgb, historyColor.rgb, _HistoryColorBoundScale);
+    float4 outColor = float4(0, 0, 0, 0);
+    outColor.rgb = lerp(currentColor.rgb, historyColor.rgb, historyWeight);
+    
+    // filter guidance ssao
+    float AOSum = 0;
+    for (int i = 0; i < 9; i++)
+    {
+        AOSum += colorSamples[i].a;
+    }
+    outColor.a = lerp(AOSum / 9.0, historyColor.a, 0.8);
  
-    _RWDiffuseTemporalFilterOutput[pixelCoord] = lerp(currentColor, historyColor, historyWeight);
-
-    // for debug
-    //_RWDiffuseTemporalFilterOutput[pixelCoord] = float4(_IrradianceInput.SampleLevel(sampler_linearClamp, uv, 0).rgb, 1);
+    _RWDiffuseTemporalFilterOutput[pixelCoord] = outColor;
 }
 
 // -------------------------------------------------------------------------------- //
@@ -834,7 +882,7 @@ void DiffuseTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
 
 int2 _RTSize;
 float _FilterRadius;
-float _AOSharpness;
+float _SSAOGuidanceWeight;
 
 RWTexture2D<float4> _RWSpatialFilterOutput;
 
@@ -880,7 +928,7 @@ void DiffuseSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThrea
         weight *= gaussianWeights3x3[i];
         weight *= exp(-abs(neighborDepth - pixelCtx.sceneDepth) * 0.01);
         weight *= saturate(dot(neighborPixelNormal, pixelCtx.worldNormal));
-        weight *= exp(-abs(guidanceSSAO - neighborColor.w) * _AOSharpness);
+        weight *= exp(-abs(guidanceSSAO - neighborColor.w) * _SSAOGuidanceWeight);
 
         colorSum += neighborColor * weight;
         weightSum += weight;
@@ -904,6 +952,7 @@ void DiffuseComposite(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     float2 screenGatherTexelSize = rcp(float2(_ScreenGatherRTSize));
     const int2 pixelCoord = clamp(threadId.xy, 0, _SceneTextureRTSize - 1);
     const float2 uv = (float2(pixelCoord) + 0.5) / float2(_SceneTextureRTSize);
+    uint2 randomSeed = Rand3DPCG16(uint3(uv * 11451.514, _FrameNumber + 1919)).xy;
     if (any(threadId.xy >= _SceneTextureRTSize))
     {
         return;
@@ -911,53 +960,40 @@ void DiffuseComposite(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     
     float3 worldNormal = _GBufferNormal.SampleLevel(sampler_linearClamp, uv, 0).rgb;
     
-    float2 sampleUV[4];
-    sampleUV[0] = uv + float2(-0.5f, -0.5f) * screenGatherTexelSize;
-    sampleUV[1] = min(uv + float2(0.5f, -0.5f) * screenGatherTexelSize, float2(1.0f, 1.0f));
-    sampleUV[2] = min(uv + float2(-0.5f, 0.5f) * screenGatherTexelSize, float2(1.0f, 1.0f));
-    sampleUV[3] = min(uv + float2(0.5f, 0.5f) * screenGatherTexelSize, float2(1.0f, 1.0f));
-
-    float weightSum = 1e-3;
-    float3 irradianceSum = float3(0, 0, 0);
-    float AOSum = 0;
-    
-    for (int i = 0; i < 4; i++)
+    float weightSum = 0;
+    float4 colorSum = 0;
+    const int sampleCount = 4;
+    const float searchRange = 2.0;
+    for (int i = 0; i < sampleCount; i++)
     {
-        float4 irradianceAndAO = _DiffuseIndirectTexture.SampleLevel(sampler_linearClamp, sampleUV[i], 0);
-        float3 irradiance = irradianceAndAO.rgb;
-        float4 normalDepth = _NormalDepthTexture.SampleLevel(sampler_linearClamp, sampleUV[i], 0);
-        float3 rayStartNormal = normalDepth.xyz * 2 - 1;
-        float rayStartSceneDepth = ConvertFromDeviceZ(normalDepth.a);
-        
+        float2 uvOffset = Hammersley16(i, sampleCount, randomSeed) * 2 - 1;
+        float2 neighborUV = uv + uvOffset * screenGatherTexelSize * searchRange;
+
+        float4 color = _DiffuseIndirectTexture.SampleLevel(sampler_PointClamp, neighborUV, 0);
+        float4 normalDepth = _NormalDepthTexture.SampleLevel(sampler_PointClamp, neighborUV, 0);
+        float3 neighborNormal = normalDepth.xyz * 2 - 1;
+        float neighborDepth = ConvertFromDeviceZ(normalDepth.a);
+
         float weight = 1.0;
-        //weight *= 1.0 / abs(rayStartSceneDepth - _SceneDepthTexture.SampleLevel(sampler_PointClamp, uv, 0).r);
-        weight *= saturate(dot(rayStartNormal, worldNormal));
+        weight *= exp(-abs(neighborDepth - ConvertFromDeviceZ(_SceneDepthTexture.SampleLevel(sampler_PointClamp, uv, 0))));
+        weight *= saturate(dot(neighborNormal, worldNormal));
 
-        // use SH and full-screen gbuffer normal to sharpen result
-        ThreeBandSHVector SHBasis = SHBasisFunction3(rayStartNormal);
-        ThreeBandSHVectorRGB irradianceSH;
-        irradianceSH.R = MulSH3(SHBasis, irradiance.r);
-        irradianceSH.G = MulSH3(SHBasis, irradiance.g);
-        irradianceSH.B = MulSH3(SHBasis, irradiance.b);
-
-        ThreeBandSHVector pixelNormalSH = CalcDiffuseTransferSH3(worldNormal, 1);
-        irradiance = max(float3(0, 0, 0), DotSH3(irradianceSH, pixelNormalSH));
-
-        irradianceSum += irradiance * weight;
-        AOSum += irradianceAndAO.w * weight;
+        colorSum += color * weight;
         weightSum += weight;
     }
+    float4 filterColor = colorSum / weightSum;
 
-    float3 diffuseIndirect = irradianceSum / weightSum;
+    // apply diffuse lighting
+    float metallic = 0;
+    float3 diffuseIndirect = filterColor.rgb;
+    diffuseIndirect *= _GBufferBaseColor.SampleLevel(sampler_PointClamp, uv, 0) * (1.0 - metallic); // @TODO: consider shading models
 
-    float metallic = 0.0f;
-    diffuseIndirect *= _GBufferBaseColor.SampleLevel(sampler_linearClamp, uv, 0).rgb * (1.0 - metallic); // @TODO: consider shading models
-    
     // apply a little AO, not physically based here, just a trick
-    AOSum /= weightSum;
-    diffuseIndirect *= lerp(1, AOSum, _AOIntensity);
+    float AO = filterColor.a;
+    diffuseIndirect *= lerp(1, AO, _AOIntensity);
 
     _RWDiffuseCompositeTexture[threadId.xy] = float4(ClampNaNs(diffuseIndirect), 1);
+    // _RWDiffuseCompositeTexture[threadId.xy] = _DiffuseIndirectTexture.SampleLevel(sampler_linearClamp, uv, 0).wwww;   // debug ssao
 }
 
 // -------------------------------------------------------------------------------- //
