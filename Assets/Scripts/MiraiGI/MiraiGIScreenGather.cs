@@ -1019,7 +1019,7 @@ public class MiraiGIScreenGather
         {
             bool filterIndirectShadow = i < 2;
 
-            SpatialFilter(cmd, m_DiffuseSpatialFilterOutput, m_DiffuseSpatialFilterOutputSwap, (1 << i),
+            SpatialFilter(cmd, m_DiffuseSpatialFilterOutput, m_DiffuseSpatialFilterOutputSwap, i * 2 + 1,
                                 m_IndirectShadowSpatialFilterOutput, m_IndirectShadowSpatialFilterOutputSwap, filterIndirectShadow);
 
             RenderTexture temp = m_DiffuseSpatialFilterOutput;

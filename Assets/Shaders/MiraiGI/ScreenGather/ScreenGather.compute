@@ -994,8 +994,6 @@ void DiffuseTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
 // -------------------------------------------------------------------------------- //
 #pragma kernel DiffuseSpatialFilter
 
-#define ATROUS_SAFE_RANGE (4.0)
-
 int2 _RTSize;
 float _FilterRadius;
 float _SSAOGuidanceWeight;
@@ -1012,7 +1010,6 @@ void DiffuseSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThrea
     const float2 texelSize = 1.0 / float2(_RTSize);
     const int2 pixelCoord = clamp(threadId.xy, 0, _RTSize - 1);
     const float2 uv = (float2(pixelCoord) + 0.5) / float2(_RTSize);
-    uint2 randomSeed = Rand3DPCG16(uint3(uv * 11451.514, _FrameNumber + 1919)).xy;
     PixelContext pixelCtx = ResolvePixelContext(uv);
 
     if (any(threadId.xy >= _RTSize) || IsUVOutSideScreen(uv) || pixelCtx.rawDepth <= 0)
@@ -1033,9 +1030,7 @@ void DiffuseSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThrea
     
     for (int i = 1; i < 9; i++)
     {
-        float2 E = Hammersley16(i - 1, 9 - 1, randomSeed) * 2 - 1;
-        float2 uvJitter = (_FilterRadius > ATROUS_SAFE_RANGE) ? E * 0.25 : 0;
-        float2 neighborUV = uv + (offsets3x3[i] + uvJitter) * _FilterRadius * texelSize;
+        float2 neighborUV = uv + offsets3x3[i] * _FilterRadius * texelSize;
         if (IsUVOutSideScreen(neighborUV))
         {
             continue;

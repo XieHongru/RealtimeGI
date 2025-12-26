@@ -49,10 +49,12 @@ MonoBehaviour:
   spatialSecondaryReuseSampleCount: 4
   spatialSecondaryReuse: 0
   indirectShadowEnable: 1
+  indirectShadowSharpness: 1
+  indirectShadowIntensity: 1
   spatialReuseSearchRange: 0.5
   diffuseTemporalFilterWeight: 0.95
   diffuseTemporalFilterHistoryColorBoundScale: 0.1
-  diffuseSpatialFilterIterationCount: 5
+  diffuseSpatialFilterIterationCount: 6
   filterGuidanceSSAORange: 1
   filterGuidanceSSAOIntensity: 1
   filterGuidanceSSAOSharpness: 2
