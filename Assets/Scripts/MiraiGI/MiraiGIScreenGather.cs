@@ -28,6 +28,7 @@ public class MiraiGIScreenGather
     Vector2Int m_SceneTextureRTSize;
     Vector2Int m_ScreenGatherRTSize;
     RenderTexture m_NormalDepthTexture;
+    RenderTexture m_MiniDepthTexture;
     RenderTexture m_NormalDepthHistory;
     RenderTexture m_SceneColorHistory;
 
@@ -106,6 +107,7 @@ public class MiraiGIScreenGather
     public void Release()
     {
         m_NormalDepthTexture?.Release();
+        m_MiniDepthTexture?.Release();
         m_NormalDepthHistory?.Release();
         m_SceneColorHistory?.Release();
 
@@ -152,6 +154,7 @@ public class MiraiGIScreenGather
         m_SpecularCompositeTexture?.Release();
 
         m_NormalDepthTexture = null;
+        m_MiniDepthTexture = null;
         m_NormalDepthHistory = null;
         m_SceneColorHistory = null;
 
@@ -260,6 +263,8 @@ public class MiraiGIScreenGather
         cmd.SetComputeVectorParam(m_ScreenGatherCS, Shader.PropertyToID("_ScreenGatherRTSize"), (Vector2)m_ScreenGatherRTSize);
         cmd.SetComputeIntParam(m_ScreenGatherCS, Shader.PropertyToID("_FrameNumber"), m_FrameNumber);
         cmd.SetComputeFloatParam(m_ScreenGatherCS, Shader.PropertyToID("_AOIntensity"), GlobalSettings.Instance.filterGuidanceSSAOIntensity);
+        cmd.SetComputeFloatParam(m_ScreenGatherCS, Shader.PropertyToID("_IndirectShadowSharpness"), GlobalSettings.Instance.indirectShadowSharpness);
+        cmd.SetComputeFloatParam(m_ScreenGatherCS, Shader.PropertyToID("_IndirectShadowIntensity"), GlobalSettings.Instance.indirectShadowIntensity);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_NormalDepthTexture"), m_NormalDepthTexture);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_GBufferBaseColor"), Shader.GetGlobalTexture("_GBuffer0"));
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_GBufferNormal"), Shader.GetGlobalTexture("_GBuffer2"));
@@ -357,6 +362,13 @@ public class MiraiGIScreenGather
             m_NormalDepthTexture = new RenderTexture(m_ScreenGatherRTSize.x, m_ScreenGatherRTSize.y, 0, RenderTextureFormat.ARGBFloat);
             m_NormalDepthTexture.enableRandomWrite = true;
             m_NormalDepthTexture.Create();
+        }
+
+        if (m_MiniDepthTexture == null)
+        {
+            m_MiniDepthTexture = new RenderTexture(m_ScreenGatherRTSize.x, m_ScreenGatherRTSize.y, 0, RenderTextureFormat.R16);
+            m_MiniDepthTexture.enableRandomWrite = true;
+            m_MiniDepthTexture.Create();
         }
 
         if (m_NormalDepthHistory == null)
@@ -632,6 +644,7 @@ public class MiraiGIScreenGather
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_GBufferNormal"), Shader.GetGlobalTexture("_GBuffer2"));
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_SceneDepthTexture"), Shader.GetGlobalTexture("_CameraDepthTexture"));
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWNormalDepthTexture"), m_NormalDepthTexture);
+        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWMiniDepthTexture"), m_MiniDepthTexture);
 
         cmd.DispatchCompute(m_ScreenGatherCS, kernel, Mathf.CeilToInt((float)m_ScreenGatherRTSize.x / 8), Mathf.CeilToInt((float)m_ScreenGatherRTSize.y / 8), 1);
 
@@ -890,6 +903,7 @@ public class MiraiGIScreenGather
         cmd.SetComputeIntParam(m_ScreenGatherCS, Shader.PropertyToID("_FrameNumber"), m_FrameNumber);
         cmd.SetComputeVectorParam(m_ScreenGatherCS, Shader.PropertyToID("_ScreenGatherRTSize"), (Vector2)m_ScreenGatherRTSize);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_NormalDepthTexture"), m_NormalDepthTexture);
+        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_MiniDepthTexture"), m_MiniDepthTexture);
         if (reservoirSource == ReservoirSource.RS_Spatial)
         {
             cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_IrradianceFallbackTexture"), m_TemporalReservoirIrradiance);
@@ -913,10 +927,6 @@ public class MiraiGIScreenGather
             cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWReservoirIrradiance"), m_TemporalReservoirIrradiance);
         }
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWIndirectShadowTexture"), m_IndirectShadowTexture);
-
-        Vector2 HZBUVFactor = new Vector2(0.5f, 0.5f);
-        cmd.SetComputeVectorParam(m_ScreenGatherCS, Shader.PropertyToID("_HZBUvFactorAndInvFactor"), new Vector4(HZBUVFactor.x, HZBUVFactor.y, 1.0f / HZBUVFactor.x, 1.0f / HZBUVFactor.y));
-        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_HZB"), m_HiZBuffer);
 
         cmd.DispatchCompute(m_ScreenGatherCS, kernel, Mathf.CeilToInt((float)m_ScreenGatherRTSize.x / 8), Mathf.CeilToInt((float)m_ScreenGatherRTSize.y / 8), 1);
 

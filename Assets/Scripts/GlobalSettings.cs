@@ -67,6 +67,8 @@ public class GlobalSettings : ScriptableObject
     public int spatialSecondaryReuseSampleCount = 4;
     public int spatialSecondaryReuse = 0;
     public int indirectShadowEnable = 1;
+    public float indirectShadowSharpness = 1.0f;
+    public float indirectShadowIntensity = 1.0f;
     public float spatialReuseSearchRange = 0.5f;
 
     public float diffuseTemporalFilterWeight = 0.95f;

@@ -42,12 +42,13 @@ MonoBehaviour:
   irradianceProbeMinCascadeLevel: 0
   irradianceProbeSampleCount: 1
   irradianceProbeTemporalWeight: 0.75
-  visualizeScreenGather: 2
+  visualizeScreenGather: 3
   screenGatherDownsampleFactor: 2
   useReservoirSpatialReuse: 1
   spatialReuseSampleCount: 8
   spatialSecondaryReuseSampleCount: 4
   spatialSecondaryReuse: 0
+  indirectShadowEnable: 1
   spatialReuseSearchRange: 0.5
   diffuseTemporalFilterWeight: 0.95
   diffuseTemporalFilterHistoryColorBoundScale: 0.1

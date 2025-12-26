@@ -181,6 +181,7 @@ uint2 _SceneTextureRTSize;
 
 Texture2D<float> _SceneDepthTexture;
 RWTexture2D<float4> _RWNormalDepthTexture;
+RWTexture2D<float> _RWMiniDepthTexture;
 
 [numthreads(8, 8, 1)]
 void NormalDepthDownsample(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
@@ -214,6 +215,8 @@ void NormalDepthDownsample(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     avgColor.rgb /= avgColor.w;
 
     _RWNormalDepthTexture[threadId.xy] = float4(avgColor.rgb, maxDepth);
+    _RWMiniDepthTexture[threadId.xy] = maxDepth;
+
 }
 
 // -------------------------------------------------------------------------------- //
@@ -467,7 +470,7 @@ bool IsUVOutSideScreen(float2 uv)
     // so max uv boundary decided by ScreenPositionScaleBias, not const 1.0
     //float2 ViewportUV = BufferUVToViewportUV(uv);
     float2 ViewportUV = uv;
-    return any(ViewportUV <= -0.01) || any(ViewportUV > 1.01);
+    return any(ViewportUV <= -0.001) || any(ViewportUV > 1.001);
 }
 
 [numthreads(8, 8, 1)]
@@ -662,9 +665,74 @@ void ReservoirSpatialReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
 #define INDIRECT_SHADOW_ENABLE 0
 #endif
 
+Texture2D _MiniDepthTexture;
 Texture2D _IrradianceFallbackTexture;
 RWTexture2D<float4> _RWReservoirIrradiance;
 RWTexture2D<float4> _RWIndirectShadowTexture;
+
+// http://blog.hakugyokurou.net/?p=1630
+float Vignette(float2 uv)
+{
+    uv = (uv * 2 - 1) * 1.5;
+    uv = uv * 0.5 + 0.5;
+    float dist = length(uv - 0.5);
+    dist = clamp(dist * 1.7 - 0.65, 0.0, 1.0);
+    dist = smoothstep(0.0, 1.0, dist);
+    return (1.0 - dist);
+}
+
+// same as contact shadow in DeferredLightingCommon.ush
+float4 SSRayCastShortRange(in PixelContext pixelCtx, float2 uv, float3 rayDir, float maxDistance, int stepCount)
+{
+    float stepOffset = pixelCtx.randomVector.z;
+    maxDistance = min(maxDistance, pixelCtx.sceneDepth);
+
+    float3 rayOriginTranslatedWorld = pixelCtx.worldPosition - _CameraPosition;
+    float4 rayStartClip = mul(_TranslatedWorldToClip, float4(rayOriginTranslatedWorld, 1));
+    float4 rayDirClip = mul(_TranslatedWorldToClip, float4(rayDir * maxDistance, 0));
+    float4 rayEndClip = rayStartClip + rayDirClip;
+
+    float3 rayStartScreen = rayStartClip.xyz / rayStartClip.w;
+    float3 rayEndScreen = rayEndClip.xyz / rayEndClip.w;
+    float3 rayStepScreen = rayEndScreen - rayStartScreen;
+
+    // make ray more accurate when camera move far away from pixel
+    float magicFactor = 0.25;
+    magicFactor = lerp(1, magicFactor, Vignette(uv)); // kill SSR artifact near screen edge
+    rayStepScreen *= GetStepScreenFactorToClipAtScreenEdge(rayStartScreen.xy, rayStepScreen.xy) * magicFactor;
+
+    float3 rayStartUVz = float3(rayStartScreen.xy * _ScreenPositionScaleBias.xy + _ScreenPositionScaleBias.wz, rayStartScreen.z);
+    float3 rayStepUVz = float3(rayStepScreen.xy * _ScreenPositionScaleBias.xy, rayStepScreen.z);
+
+    float4 rayDepthClip = rayStartClip + mul(float4(0, 0, maxDistance, 0), _ProjMat);
+    float3 rayDepthScreen = rayDepthClip.xyz / rayDepthClip.w;
+
+    const float step = 1.0 / stepCount;
+
+	// *2 to get less moire pattern in extreme cases, larger values make object appear not grounded in reflections
+    const float compareTolerance = abs(rayDepthScreen.z - rayStartScreen.z) * step * 2;
+
+    float sampleTime = stepOffset * step + step;
+    float firstHitTime = -1.0;
+
+    [unroll]
+    for (int i = 0; i < stepCount; i++)
+    {
+        float3 sampleUVz = rayStartUVz + rayStepUVz * sampleTime;
+		// float sampleDepth = _SceneDepthTexture.SampleLevel(sampler_PointClamp, sampleUVz.xy, 0 ).r;
+        float sampleDepth = _MiniDepthTexture.SampleLevel(sampler_PointClamp, sampleUVz.xy, 0).r; // half res depth tex
+
+        float depthDiff = sampleUVz.z - sampleDepth;
+        bool hit = abs(depthDiff + compareTolerance) < compareTolerance;
+
+        firstHitTime = (hit && firstHitTime < 0.0) ? sampleTime : firstHitTime;
+        sampleTime += step;
+    }
+
+    float3 outHitUVz = rayStartUVz + rayStepUVz * firstHitTime;
+    bool isHit = (firstHitTime > 0) && all(0 < outHitUVz.xy) && all(outHitUVz.xy < 1);
+    return float4(outHitUVz, isHit);
+}
 
 [numthreads(8, 8, 1)]
 void ReservoirEvaluateIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
@@ -692,25 +760,13 @@ void ReservoirEvaluateIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 gro
     
     // 3. test visibility for spatial reservoir sample
 #if INDIRECT_SHADOW_ENABLE
-    uint2 randomSeed = Rand3DPCG16(uint3(uv * 6567, _FrameNumber + 77)).xy;
-    float2 E = Hammersley16(0, 1, randomSeed);
-    float3 rayOriginTranslatedWorld = pixelCtx.worldPosition - _CameraPosition;
-
-    float3 hitUVz = float3(0, 0, 0);
-    float hitLevel = 0;
-    bool isHit = RayCast(
-        _HZB, sampler_PointClamp,
-        rayOriginTranslatedWorld, rayDir,
-        0.05, // roughness 
-        pixelCtx.sceneDepth,
-        32, // NumSteps
-        E.x, // SSRStepOffset
-        _HZBUvFactorAndInvFactor, 
-        false, // debug print
-        _TranslatedWorldToClip, _ProjMat,
-        _ScreenPositionScaleBias,
-        hitUVz, hitLevel
+    float4 SSRHit = SSRayCastShortRange(
+        pixelCtx, uv, rayDir, 
+        200.0, // max ray distance
+        32 // num steps
     );
+    float3 hitUVz = SSRHit.xyz;
+    bool isHit = SSRHit.w > 0;
 
     // if spatial reservoir's sample are invisible for current pixel, we fallback to temporal reservoir
     float3 testRayEndPosition = ReconstructWorldPositionFromDepth(hitUVz.xy, hitUVz.z);
@@ -1022,6 +1078,8 @@ void DiffuseSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThrea
 #pragma kernel DiffuseComposite
 
 float _AOIntensity;
+float _IndirectShadowSharpness;
+float _IndirectShadowIntensity;
 Texture2D<float4> _GBufferBaseColor;
 RWTexture2D<float4> _RWDiffuseCompositeTexture;
 
@@ -1049,7 +1107,7 @@ void DiffuseComposite(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
         float2 uvOffset = Hammersley16(i, sampleCount, randomSeed) * 2 - 1;
         float2 neighborUV = uv + uvOffset * screenGatherTexelSize * searchRange;
 
-        float shadow = _IndirectShadowTexture.SampleLevel(sampler_PointClamp, uv, 0).r;
+        float shadow = _IndirectShadowTexture.SampleLevel(sampler_PointClamp, neighborUV, 0).r;
         float4 color = _DiffuseIndirectTexture.SampleLevel(sampler_PointClamp, neighborUV, 0);
         float4 normalDepth = _NormalDepthTexture.SampleLevel(sampler_PointClamp, neighborUV, 0);
         float3 neighborNormal = normalDepth.xyz * 2 - 1;
@@ -1071,15 +1129,20 @@ void DiffuseComposite(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     float3 diffuseIndirect = filterColor.rgb;
     diffuseIndirect *= _GBufferBaseColor.SampleLevel(sampler_PointClamp, uv, 0) * (1.0 - metallic); // @TODO: consider shading models
 
-    // apply AO and indirect shadow, not physically based here, just a trick
-    float AO = filterColor.a;
-    AO = lerp(1, AO, _AOIntensity);
-    AO = min(AO, indirectShadow);
-    diffuseIndirect *= AO;
+    // apply SSAO (not physically based, just a trick)
+    float SSAO = filterColor.a;
+    float occlusion = lerp(1, SSAO, _AOIntensity);
 
+    // apply indirect shadow
+    indirectShadow = saturate(pow(indirectShadow, _IndirectShadowSharpness));
+    indirectShadow = lerp(1, indirectShadow, _IndirectShadowIntensity);
+    occlusion = min(occlusion, indirectShadow);
+
+    diffuseIndirect *= occlusion;
     _RWDiffuseCompositeTexture[threadId.xy] = float4(ClampNaNs(diffuseIndirect), 1);
     // _RWDiffuseCompositeTexture[threadId.xy] = _DiffuseIndirectTexture.SampleLevel(sampler_linearClamp, uv, 0).wwww;   // debug ssao
     // _RWDiffuseCompositeTexture[threadId.xy] = IndirectShadow;   // debug indirect shadow
+    // _RWDiffuseCompositeTexture[threadId.xy] = float4(Vignette(uv), 1);
 }
 
 // -------------------------------------------------------------------------------- //
