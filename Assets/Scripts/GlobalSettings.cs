@@ -66,7 +66,8 @@ public class GlobalSettings : ScriptableObject
     public int spatialReuseSampleCount = 8;
     public int spatialSecondaryReuseSampleCount = 4;
     public int spatialSecondaryReuse = 0;
-    public float spatialReuseSearchRange = 0.2f;
+    public int indirectShadowEnable = 1;
+    public float spatialReuseSearchRange = 0.5f;
 
     public float diffuseTemporalFilterWeight = 0.95f;
     public float diffuseTemporalFilterHistoryColorBoundScale = 0.1f;

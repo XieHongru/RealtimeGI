@@ -658,7 +658,13 @@ void ReservoirSpatialReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
 // -------------------------------------------------------------------------------- //
 #pragma kernel ReservoirEvaluateIrradiance
 
-RWTexture2D<float4> _RWDiffuseResolveOutputTexture;
+#ifndef INDIRECT_SHADOW_ENABLE
+#define INDIRECT_SHADOW_ENABLE 0
+#endif
+
+Texture2D _IrradianceFallbackTexture;
+RWTexture2D<float4> _RWReservoirIrradiance;
+RWTexture2D<float4> _RWIndirectShadowTexture;
 
 [numthreads(8, 8, 1)]
 void ReservoirEvaluateIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
@@ -672,7 +678,7 @@ void ReservoirEvaluateIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 gro
     
     if (any(threadId.xy >= _ScreenGatherRTSize) || pixelCtx.rawDepth <= 0)
     {
-        _RWDiffuseResolveOutputTexture[pixelCoord] = float4(0, 0, 0, 0);
+        _RWReservoirIrradiance[pixelCoord] = float4(0, 0, 0, 0);
         return;
     }
 
@@ -682,7 +688,45 @@ void ReservoirEvaluateIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 gro
     float cosTheta = max(dot(rayDir, pixelCtx.worldNormal), 0.0); // clamp to prevent black hole pixel, see EvaluateTargetPDF()
 
     float3 irradiance = radiance * cosTheta / PI;
-    _RWDiffuseResolveOutputTexture[pixelCoord] = float4(irradiance, 1);
+    _RWReservoirIrradiance[pixelCoord] = float4(irradiance, 1);
+    
+    // 3. test visibility for spatial reservoir sample
+#if INDIRECT_SHADOW_ENABLE
+    uint2 randomSeed = Rand3DPCG16(uint3(uv * 6567, _FrameNumber + 77)).xy;
+    float2 E = Hammersley16(0, 1, randomSeed);
+    float3 rayOriginTranslatedWorld = pixelCtx.worldPosition - _CameraPosition;
+
+    float3 hitUVz = float3(0, 0, 0);
+    float hitLevel = 0;
+    bool isHit = RayCast(
+        _HZB, sampler_PointClamp,
+        rayOriginTranslatedWorld, rayDir,
+        0.05, // roughness 
+        pixelCtx.sceneDepth,
+        32, // NumSteps
+        E.x, // SSRStepOffset
+        _HZBUvFactorAndInvFactor, 
+        false, // debug print
+        _TranslatedWorldToClip, _ProjMat,
+        _ScreenPositionScaleBias,
+        hitUVz, hitLevel
+    );
+
+    // if spatial reservoir's sample are invisible for current pixel, we fallback to temporal reservoir
+    float3 testRayEndPosition = ReconstructWorldPositionFromDepth(hitUVz.xy, hitUVz.z);
+    float testRayDistance = length(testRayEndPosition - pixelCtx.worldPosition);
+    float reservoirRayDistance = length(reservoir.currentSample.rayEnd - pixelCtx.worldPosition);
+    float reservoirConfidence = isHit ? saturate(testRayDistance / reservoirRayDistance) : 1;
+
+    // lerp irradiance based on confidence
+    float3 irradianceFallback = _IrradianceFallbackTexture.SampleLevel(sampler_linearClamp, uv, 0).rgb;
+    _RWReservoirIrradiance[pixelCoord] = float4(lerp(irradianceFallback, irradiance, reservoirConfidence), 1);
+
+    // output confidence as indirect shadow
+    _RWIndirectShadowTexture[pixelCoord] = reservoirConfidence;
+#else
+    _RWIndirectShadowTexture[pixelCoord] = 1;
+#endif  // INDIRECT_SHADOW_ENABLE
 }
 
 // ---------------------------------------- (^^_) ---------------------------------------- //
@@ -690,6 +734,8 @@ void ReservoirEvaluateIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 gro
 
 float _AOWorldRange;
 float _AOSharpness;
+
+RWTexture2D<float4> _RWDiffuseResolveOutputTexture;
 
 float3 TransformPositionWorldToView(float3 worldPosition)
 {
@@ -782,7 +828,10 @@ float _HistoryColorBoundScale;
 
 Texture2D<float4> _DiffuseIndirectTexture;
 Texture2D<float4> _DiffuseIndirectHistory;
+Texture2D<float4> _IndirectShadowTexture;
+Texture2D<float4> _IndirectShadowHistory;
 RWTexture2D<float4> _RWDiffuseTemporalFilterOutput;
+RWTexture2D<float4> _RWIndirectShadowTemporalFilterOutput;
 
 float3 ClampHistory(in float4 colorSamples[9], float3 currentColor, float3 historyColor, float colorBoundScale)
 {
@@ -836,10 +885,12 @@ void DiffuseTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     }
 
     float4 colorSamples[9];
+    float4 shadowSamples[9];
     for (int i = 0; i < 9; i++)
     {
         float2 neighborUV = uv + offsets3x3[i] * screenGatherTexelSize;
         colorSamples[i] = _DiffuseIndirectTexture.SampleLevel(sampler_PointClamp, neighborUV, 0);
+        shadowSamples[i] = _IndirectShadowTexture.SampleLevel(sampler_PointClamp, neighborUV, 0).r;
     }
     float4 currentColor = colorSamples[0];
 
@@ -854,9 +905,13 @@ void DiffuseTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     float historySceneDepth = ConvertFromDeviceZ(historyNormalDepth.w);
 
     float historyWeight = _TemporalFilterWeight;
+    float AOHistoryWeight = 0.8;
+    float shadowHistoryWeight = 0.9;
     if (IsUVOutSideScreen(reprojectUV) || dot(historyNormal, pixelCtx.worldNormal) < 0.5 || abs(pixelCtx.sceneDepth - historySceneDepth) > 0.5)
     {
         historyWeight = 0;
+        AOHistoryWeight = 0;
+        shadowHistoryWeight = 0;
     }
     
     // 4. clamp history
@@ -864,15 +919,23 @@ void DiffuseTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     float4 outColor = float4(0, 0, 0, 0);
     outColor.rgb = lerp(currentColor.rgb, historyColor.rgb, historyWeight);
     
-    // filter guidance ssao
+    // 5. output filter guidance ssao
     float AOSum = 0;
     for (int i = 0; i < 9; i++)
     {
         AOSum += colorSamples[i].a;
     }
-    outColor.a = lerp(AOSum / 9.0, historyColor.a, 0.8);
- 
+    outColor.a = lerp(AOSum / 9.0, historyColor.a, AOHistoryWeight);
     _RWDiffuseTemporalFilterOutput[pixelCoord] = outColor;
+    
+    // 6. output indirect shadow
+    float shadowHistory = _IndirectShadowHistory.SampleLevel(sampler_linearClamp, reprojectUV, 0).r;
+    float shadowSum = 0;
+    for (int i = 0; i < 9; i++)
+    {
+        shadowSum += shadowSamples[i];
+    }
+    _RWIndirectShadowTemporalFilterOutput[pixelCoord] = lerp(shadowSum / 9.0, shadowHistory, shadowHistoryWeight);
 }
 
 // -------------------------------------------------------------------------------- //
@@ -885,6 +948,9 @@ float _FilterRadius;
 float _SSAOGuidanceWeight;
 
 RWTexture2D<float4> _RWSpatialFilterOutput;
+#if INDIRECT_SHADOW_ENABLE
+RWTexture2D<float4> _RWShadowOutput;
+#endif
 
 [numthreads(8, 8, 1)]
 void DiffuseSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
@@ -907,6 +973,10 @@ void DiffuseSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThrea
     float guidanceSSAO = centerColor.w;
     float weightSum = gaussianWeights3x3[0];
     float4 colorSum = centerColor * gaussianWeights3x3[0];
+    
+#if INDIRECT_SHADOW_ENABLE
+    float shadowSum = _IndirectShadowTexture.SampleLevel(sampler_linearClamp, uv, 0).r * gaussianWeights3x3[0];
+#endif
     
     for (int i = 1; i < 9; i++)
     {
@@ -932,11 +1002,20 @@ void DiffuseSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThrea
 
         colorSum += neighborColor * weight;
         weightSum += weight;
+        
+#if INDIRECT_SHADOW_ENABLE
+        float neighborShadow = _IndirectShadowTexture.SampleLevel(sampler_linearClamp, neighborUV, 0).r;
+        shadowSum += neighborShadow * weight;
+#endif
     }
     
     float3 color = (weightSum > 0) ? (colorSum.rgb / weightSum) : 0;
     _RWSpatialFilterOutput[pixelCoord] = float4(color, guidanceSSAO);
-    // _RWSpatialFilterOutput[pixelCoord] = (weightSum > 0) ? (colorSum / weightSum) : 0;
+    // _RWSpatialFilterOutput1[pixelCoord] = (weightSum > 0) ? (colorSum / weightSum) : 0;
+    
+#if INDIRECT_SHADOW_ENABLE
+    _RWShadowOutput[pixelCoord] = (weightSum > 0) ? (shadowSum / weightSum) : 1;
+#endif
 }
 
 // -------------------------------------------------------------------------------- //
@@ -960,8 +1039,9 @@ void DiffuseComposite(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     
     float3 worldNormal = _GBufferNormal.SampleLevel(sampler_linearClamp, uv, 0).rgb;
     
-    float weightSum = 0;
+    float shadowSum = 0;
     float4 colorSum = 0;
+    float weightSum = 0;
     const int sampleCount = 4;
     const float searchRange = 2.0;
     for (int i = 0; i < sampleCount; i++)
@@ -969,6 +1049,7 @@ void DiffuseComposite(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
         float2 uvOffset = Hammersley16(i, sampleCount, randomSeed) * 2 - 1;
         float2 neighborUV = uv + uvOffset * screenGatherTexelSize * searchRange;
 
+        float shadow = _IndirectShadowTexture.SampleLevel(sampler_PointClamp, uv, 0).r;
         float4 color = _DiffuseIndirectTexture.SampleLevel(sampler_PointClamp, neighborUV, 0);
         float4 normalDepth = _NormalDepthTexture.SampleLevel(sampler_PointClamp, neighborUV, 0);
         float3 neighborNormal = normalDepth.xyz * 2 - 1;
@@ -979,21 +1060,26 @@ void DiffuseComposite(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
         weight *= saturate(dot(neighborNormal, worldNormal));
 
         colorSum += color * weight;
+        shadowSum += shadow * weight;
         weightSum += weight;
     }
     float4 filterColor = colorSum / weightSum;
+    float indirectShadow = shadowSum / weightSum;
 
     // apply diffuse lighting
     float metallic = 0;
     float3 diffuseIndirect = filterColor.rgb;
     diffuseIndirect *= _GBufferBaseColor.SampleLevel(sampler_PointClamp, uv, 0) * (1.0 - metallic); // @TODO: consider shading models
 
-    // apply a little AO, not physically based here, just a trick
+    // apply AO and indirect shadow, not physically based here, just a trick
     float AO = filterColor.a;
-    diffuseIndirect *= lerp(1, AO, _AOIntensity);
+    AO = lerp(1, AO, _AOIntensity);
+    AO = min(AO, indirectShadow);
+    diffuseIndirect *= AO;
 
     _RWDiffuseCompositeTexture[threadId.xy] = float4(ClampNaNs(diffuseIndirect), 1);
     // _RWDiffuseCompositeTexture[threadId.xy] = _DiffuseIndirectTexture.SampleLevel(sampler_linearClamp, uv, 0).wwww;   // debug ssao
+    // _RWDiffuseCompositeTexture[threadId.xy] = IndirectShadow;   // debug indirect shadow
 }
 
 // -------------------------------------------------------------------------------- //

@@ -50,12 +50,20 @@ public class MiraiGIScreenGather
     ComputeBuffer m_VoxelTraceIndirectArgs;
 
     // for diffuse
-    RenderTexture m_DiffuseResolveOutputTexture;
+    RenderTexture m_TemporalReservoirIrradiance;
+    RenderTexture m_SpatialReservoirIrradiance;
+    RenderTexture m_DiffuseResolveOutputTexture;    // a pointer to TemporalReservoirIrradiance or SpatialReservoirIrradiance
     RenderTexture m_DiffuseTemporalFilterOutput;
     RenderTexture m_DiffuseSpatialFilterOutput;
     RenderTexture m_DiffuseSpatialFilterOutputSwap;
     RenderTexture m_DiffuseIndirectHistory;
     RenderTexture m_DiffuseCompositeTexture;
+
+    RenderTexture m_IndirectShadowTexture;
+    RenderTexture m_IndirectShadowTemporalFilterOutput;
+    RenderTexture m_IndirectShadowSpatialFilterOutput;
+    RenderTexture m_IndirectShadowSpatialFilterOutputSwap;
+    RenderTexture m_IndirectShadowHistory;
 
     // for specular
     RenderTexture m_SpecularResolveOutputTexture;
@@ -121,12 +129,19 @@ public class MiraiGIScreenGather
         m_VoxelTraceIndirectArgs?.Release();
 
         // for diffuse
-        m_DiffuseResolveOutputTexture?.Release();
+        m_TemporalReservoirIrradiance?.Release();
+        m_SpatialReservoirIrradiance?.Release();
         m_DiffuseTemporalFilterOutput?.Release();
         m_DiffuseSpatialFilterOutput?.Release();
         m_DiffuseSpatialFilterOutputSwap?.Release();
         m_DiffuseIndirectHistory?.Release();
         m_DiffuseCompositeTexture?.Release();
+
+        m_IndirectShadowTexture?.Release();
+        m_IndirectShadowTemporalFilterOutput?.Release();
+        m_IndirectShadowSpatialFilterOutput?.Release();
+        m_IndirectShadowSpatialFilterOutputSwap?.Release();
+        m_IndirectShadowHistory?.Release();
 
         // for specular
         m_SpecularResolveOutputTexture?.Release();
@@ -160,12 +175,20 @@ public class MiraiGIScreenGather
         m_VoxelTraceIndirectArgs = null;
 
         // for diffuse
+        m_TemporalReservoirIrradiance = null;
+        m_SpatialReservoirIrradiance = null;
         m_DiffuseResolveOutputTexture = null;
         m_DiffuseTemporalFilterOutput = null;
         m_DiffuseSpatialFilterOutput = null;
         m_DiffuseSpatialFilterOutputSwap = null;
         m_DiffuseIndirectHistory = null;
         m_DiffuseCompositeTexture = null;
+
+        m_IndirectShadowTexture = null;
+        m_IndirectShadowTemporalFilterOutput = null;
+        m_IndirectShadowSpatialFilterOutput = null;
+        m_IndirectShadowSpatialFilterOutputSwap = null;
+        m_IndirectShadowHistory = null;
 
         // for specular
         m_SpecularResolveOutputTexture = null;
@@ -189,12 +212,23 @@ public class MiraiGIScreenGather
             InitialSampleScreenTrace(ref renderingData, cmd, scene, TraceMode.TM_Diffuse);
             InitialSampleVoxelTrace(cmd, scene, TraceMode.TM_Diffuse);
             ReservoirTemporalReuse(cmd, scene);
-            ReservoirSpatialReuse(cmd, scene, ReservoirSource.RS_Temporal);
-            if (GlobalSettings.Instance.spatialSecondaryReuse > 0)
+            ReservoirEvaluateIrradiance(cmd, scene, ReservoirSource.RS_Temporal);
+            m_DiffuseResolveOutputTexture = m_TemporalReservoirIrradiance;
+            if (GlobalSettings.Instance.useReservoirSpatialReuse > 0)
             {
-                ReservoirSpatialReuse(cmd, scene, ReservoirSource.RS_Spatial);
+                // reuse from temporal reservoir to spatial reservoir
+                ReservoirSpatialReuse(cmd, scene, ReservoirSource.RS_Temporal);
+
+                // secondary reuse from ping pong reservoir buffer
+                if (GlobalSettings.Instance.spatialSecondaryReuse > 0)
+                {
+                    ReservoirSpatialReuse(cmd, scene, ReservoirSource.RS_Spatial);
+                }
+
+                // resolve
+                ReservoirEvaluateIrradiance(cmd, scene, ReservoirSource.RS_Spatial);
+                m_DiffuseResolveOutputTexture = m_SpatialReservoirIrradiance;
             }
-            ReservoirEvaluateIrradiance(cmd, scene);
             RenderFilterGuidanceSSAO(cmd, scene);
             DiffuseTemporalFilter(cmd, scene);
             DiffuseSpatialFilter(cmd, scene);
@@ -230,6 +264,7 @@ public class MiraiGIScreenGather
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_GBufferBaseColor"), Shader.GetGlobalTexture("_GBuffer0"));
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_GBufferNormal"), Shader.GetGlobalTexture("_GBuffer2"));
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_DiffuseIndirectTexture"), m_DiffuseSpatialFilterOutput);
+        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_IndirectShadowTexture"), m_IndirectShadowSpatialFilterOutput);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWDiffuseCompositeTexture"), m_DiffuseCompositeTexture);
 
         cmd.DispatchCompute(m_ScreenGatherCS, kernel, Mathf.CeilToInt((float)m_SceneTextureRTSize.x / 8), Mathf.CeilToInt((float)m_SceneTextureRTSize.y / 8), 1);
@@ -300,6 +335,10 @@ public class MiraiGIScreenGather
         else if (visualizeMode == 6)
         {
             cmd.Blit(m_SpecularSpatialFilterOutput, clipmap.GetVisualizeColorTarget());
+        }
+        else if (visualizeMode == 7)
+        {
+            cmd.Blit(m_IndirectShadowSpatialFilterOutput, clipmap.GetVisualizeColorTarget());
         }
 
         cmd.EndSample("Visualize Screen Gather");
@@ -383,12 +422,26 @@ public class MiraiGIScreenGather
 
         // diffuse
         {
-            if (m_DiffuseResolveOutputTexture == null)
+            if (m_TemporalReservoirIrradiance == null)
             {
-                m_DiffuseResolveOutputTexture = new RenderTexture(m_ScreenGatherRTSize.x, m_ScreenGatherRTSize.y, 0, RenderTextureFormat.ARGBFloat);
-                m_DiffuseResolveOutputTexture.enableRandomWrite = true;
-                m_DiffuseResolveOutputTexture.Create();
+                m_TemporalReservoirIrradiance = new RenderTexture(m_ScreenGatherRTSize.x, m_ScreenGatherRTSize.y, 0, RenderTextureFormat.ARGBFloat);
+                m_TemporalReservoirIrradiance.enableRandomWrite = true;
+                m_TemporalReservoirIrradiance.Create();
             }
+
+            if (m_SpatialReservoirIrradiance == null)
+            {
+                m_SpatialReservoirIrradiance = new RenderTexture(m_ScreenGatherRTSize.x, m_ScreenGatherRTSize.y, 0, RenderTextureFormat.ARGBFloat);
+                m_SpatialReservoirIrradiance.enableRandomWrite = true;
+                m_SpatialReservoirIrradiance.Create();
+            }
+
+            //if (m_DiffuseResolveOutputTexture == null)
+            //{
+            //    m_DiffuseResolveOutputTexture = new RenderTexture(m_ScreenGatherRTSize.x, m_ScreenGatherRTSize.y, 0, RenderTextureFormat.ARGBFloat);
+            //    m_DiffuseResolveOutputTexture.enableRandomWrite = true;
+            //    m_DiffuseResolveOutputTexture.Create();
+            //}
 
             if (m_DiffuseTemporalFilterOutput == null)
             {
@@ -423,6 +476,41 @@ public class MiraiGIScreenGather
                 m_DiffuseCompositeTexture = new RenderTexture(m_SceneTextureRTSize.x, m_SceneTextureRTSize.y, 0, RenderTextureFormat.ARGBFloat);
                 m_DiffuseCompositeTexture.enableRandomWrite = true;
                 m_DiffuseCompositeTexture.Create();
+            }
+
+            if (m_IndirectShadowTexture == null)
+            {
+                m_IndirectShadowTexture = new RenderTexture(m_SceneTextureRTSize.x, m_SceneTextureRTSize.y, 0, RenderTextureFormat.R8);
+                m_IndirectShadowTexture.enableRandomWrite = true;
+                m_IndirectShadowTexture.Create();
+            }
+
+            if (m_IndirectShadowTemporalFilterOutput == null)
+            {
+                m_IndirectShadowTemporalFilterOutput = new RenderTexture(m_SceneTextureRTSize.x, m_SceneTextureRTSize.y, 0, RenderTextureFormat.R8);
+                m_IndirectShadowTemporalFilterOutput.enableRandomWrite = true;
+                m_IndirectShadowTemporalFilterOutput.Create();
+            }
+
+            if (m_IndirectShadowSpatialFilterOutput == null)
+            {
+                m_IndirectShadowSpatialFilterOutput = new RenderTexture(m_SceneTextureRTSize.x, m_SceneTextureRTSize.y, 0, RenderTextureFormat.R8);
+                m_IndirectShadowSpatialFilterOutput.enableRandomWrite = true;
+                m_IndirectShadowSpatialFilterOutput.Create();
+            }
+
+            if (m_IndirectShadowSpatialFilterOutputSwap == null)
+            {
+                m_IndirectShadowSpatialFilterOutputSwap = new RenderTexture(m_SceneTextureRTSize.x, m_SceneTextureRTSize.y, 0, RenderTextureFormat.R8);
+                m_IndirectShadowSpatialFilterOutputSwap.enableRandomWrite = true;
+                m_IndirectShadowSpatialFilterOutputSwap.Create();
+            }
+
+            if (m_IndirectShadowHistory == null)
+            {
+                m_IndirectShadowHistory = new RenderTexture(m_SceneTextureRTSize.x, m_SceneTextureRTSize.y, 0, RenderTextureFormat.R8);
+                m_IndirectShadowHistory.enableRandomWrite = true;
+                m_IndirectShadowHistory.Create();
             }
         }
 
@@ -716,11 +804,6 @@ public class MiraiGIScreenGather
     {
         int curFrame = (m_FrameNumber + 0) % 2;
         int prevFrame = (m_FrameNumber + 1) % 2;
-        bool useSpatialReuse = GlobalSettings.Instance.useReservoirSpatialReuse > 0;
-        if (!useSpatialReuse)
-        {
-            return;
-        }
 
         cmd.BeginSample("Reservoir Spatial Reuse");
 
@@ -778,13 +861,19 @@ public class MiraiGIScreenGather
         cmd.EndSample("Reservoir Spatial Reuse");
     }
 
-    void ReservoirEvaluateIrradiance(CommandBuffer cmd, MiraiGIGPUScene scene)
+    void ReservoirEvaluateIrradiance(CommandBuffer cmd, MiraiGIGPUScene scene, ReservoirSource reservoirSource)
     {
         cmd.BeginSample("Reservoir Evaluate Irradiance");
 
-        int curFrame = (m_FrameNumber + 0) % 2;
-        int prevFrame = (m_FrameNumber + 1) % 2;
-        bool useSpatialReuse = GlobalSettings.Instance.useReservoirSpatialReuse > 0;
+        bool indirectShadowEnable = (reservoirSource == ReservoirSource.RS_Spatial) && (GlobalSettings.Instance.indirectShadowEnable > 0);
+        if (indirectShadowEnable)
+        {
+            m_ScreenGatherCS.EnableKeyword("INDIRECT_SHADOW_ENABLE");
+        }
+        else
+        {
+            m_ScreenGatherCS.DisableKeyword("INDIRECT_SHADOW_ENABLE");
+        }
 
         int kernel = m_ScreenGatherCS.FindKernel("ReservoirEvaluateIrradiance");
 
@@ -801,22 +890,33 @@ public class MiraiGIScreenGather
         cmd.SetComputeIntParam(m_ScreenGatherCS, Shader.PropertyToID("_FrameNumber"), m_FrameNumber);
         cmd.SetComputeVectorParam(m_ScreenGatherCS, Shader.PropertyToID("_ScreenGatherRTSize"), (Vector2)m_ScreenGatherRTSize);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_NormalDepthTexture"), m_NormalDepthTexture);
-        if (useSpatialReuse)
+        if (reservoirSource == ReservoirSource.RS_Spatial)
         {
-            int reservoirSource = GlobalSettings.Instance.spatialSecondaryReuse > 0 ? 1 : 0;
-            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_ReservoirDataA"), m_SpatialReservoirDataA[reservoirSource]);
-            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_ReservoirDataB"), m_SpatialReservoirDataB[reservoirSource]);
-            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_ReservoirDataC"), m_SpatialReservoirDataC[reservoirSource]);
-            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_ReservoirDataD"), m_SpatialReservoirDataD[reservoirSource]);
+            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_IrradianceFallbackTexture"), m_TemporalReservoirIrradiance);
+
+            int spatialReservoirSource = GlobalSettings.Instance.spatialSecondaryReuse > 0 ? 1 : 0;
+            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_ReservoirDataA"), m_SpatialReservoirDataA[spatialReservoirSource]);
+            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_ReservoirDataB"), m_SpatialReservoirDataB[spatialReservoirSource]);
+            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_ReservoirDataC"), m_SpatialReservoirDataC[spatialReservoirSource]);
+            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_ReservoirDataD"), m_SpatialReservoirDataD[spatialReservoirSource]);
+
+            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWReservoirIrradiance"), m_SpatialReservoirIrradiance);
         }
         else
         {
-            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_ReservoirDataA"), m_TemporalReservoirDataA[curFrame]);
-            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_ReservoirDataB"), m_TemporalReservoirDataB[curFrame]);
-            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_ReservoirDataC"), m_TemporalReservoirDataC[curFrame]);
-            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_ReservoirDataD"), m_TemporalReservoirDataD[curFrame]);
+            int temporalReservoirCurFrame = (m_FrameNumber + 0) % 2;
+            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_ReservoirDataA"), m_TemporalReservoirDataA[temporalReservoirCurFrame]);
+            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_ReservoirDataB"), m_TemporalReservoirDataB[temporalReservoirCurFrame]);
+            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_ReservoirDataC"), m_TemporalReservoirDataC[temporalReservoirCurFrame]);
+            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_ReservoirDataD"), m_TemporalReservoirDataD[temporalReservoirCurFrame]);
+
+            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWReservoirIrradiance"), m_TemporalReservoirIrradiance);
         }
-        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWDiffuseResolveOutputTexture"), m_DiffuseResolveOutputTexture);
+        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWIndirectShadowTexture"), m_IndirectShadowTexture);
+
+        Vector2 HZBUVFactor = new Vector2(0.5f, 0.5f);
+        cmd.SetComputeVectorParam(m_ScreenGatherCS, Shader.PropertyToID("_HZBUvFactorAndInvFactor"), new Vector4(HZBUVFactor.x, HZBUVFactor.y, 1.0f / HZBUVFactor.x, 1.0f / HZBUVFactor.y));
+        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_HZB"), m_HiZBuffer);
 
         cmd.DispatchCompute(m_ScreenGatherCS, kernel, Mathf.CeilToInt((float)m_ScreenGatherRTSize.x / 8), Mathf.CeilToInt((float)m_ScreenGatherRTSize.y / 8), 1);
 
@@ -878,15 +978,19 @@ public class MiraiGIScreenGather
         cmd.SetComputeVectorParam(m_ScreenGatherCS, Shader.PropertyToID("_ScreenGatherRTSize"), (Vector2)m_ScreenGatherRTSize);
         cmd.SetComputeFloatParam(m_ScreenGatherCS, Shader.PropertyToID("_TemporalFilterWeight"), GlobalSettings.Instance.diffuseTemporalFilterWeight);
         cmd.SetComputeFloatParam(m_ScreenGatherCS, Shader.PropertyToID("_HistoryColorBoundScale"), GlobalSettings.Instance.diffuseTemporalFilterHistoryColorBoundScale);
-        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_DiffuseIndirectTexture"), m_DiffuseResolveOutputTexture);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_NormalDepthTexture"), m_NormalDepthTexture);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_NormalDepthHistory"), m_NormalDepthHistory);
+        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_DiffuseIndirectTexture"), m_DiffuseResolveOutputTexture);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_DiffuseIndirectHistory"), m_DiffuseIndirectHistory);
+        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_IndirectShadowTexture"), m_IndirectShadowTexture);
+        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_IndirectShadowHistory"), m_IndirectShadowHistory);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWDiffuseTemporalFilterOutput"), m_DiffuseTemporalFilterOutput);
+        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWIndirectShadowTemporalFilterOutput"), m_IndirectShadowTemporalFilterOutput);
 
         cmd.DispatchCompute(m_ScreenGatherCS, kernel, Mathf.CeilToInt((float)m_ScreenGatherRTSize.x / 8), Mathf.CeilToInt((float)m_ScreenGatherRTSize.y / 8), 1);
 
         cmd.Blit(m_DiffuseTemporalFilterOutput, m_DiffuseIndirectHistory);
+        cmd.Blit(m_IndirectShadowTemporalFilterOutput, m_IndirectShadowHistory);
 
         cmd.EndSample("Diffuse Temporal Filter");
     }
@@ -899,20 +1003,42 @@ public class MiraiGIScreenGather
         int prevFrame = (m_FrameNumber + 1) % 2;
 
         int iterrationCount = Mathf.Clamp(GlobalSettings.Instance.diffuseSpatialFilterIterationCount, 1, 10);
-        SpatialFilter(m_DiffuseTemporalFilterOutput, m_DiffuseSpatialFilterOutput, 1, cmd);
+        SpatialFilter(cmd, m_DiffuseTemporalFilterOutput, m_DiffuseSpatialFilterOutput, 1,
+                            m_IndirectShadowTemporalFilterOutput, m_IndirectShadowSpatialFilterOutput, true);
         for (int i = 1; i < iterrationCount; i++)
         {
-            SpatialFilter(m_DiffuseSpatialFilterOutput, m_DiffuseSpatialFilterOutputSwap, (1 << i), cmd);
+            bool filterIndirectShadow = i < 2;
+
+            SpatialFilter(cmd, m_DiffuseSpatialFilterOutput, m_DiffuseSpatialFilterOutputSwap, (1 << i),
+                                m_IndirectShadowSpatialFilterOutput, m_IndirectShadowSpatialFilterOutputSwap, filterIndirectShadow);
+
             RenderTexture temp = m_DiffuseSpatialFilterOutput;
             m_DiffuseSpatialFilterOutput = m_DiffuseSpatialFilterOutputSwap;
             m_DiffuseSpatialFilterOutputSwap = temp;
+
+            if (filterIndirectShadow)
+            {
+                RenderTexture tempShadow = m_IndirectShadowSpatialFilterOutput;
+                m_IndirectShadowSpatialFilterOutput = m_IndirectShadowSpatialFilterOutputSwap;
+                m_IndirectShadowSpatialFilterOutputSwap = tempShadow;
+            }
         }
 
         cmd.EndSample("Diffuse Spatial Filter");
     }
 
-    void SpatialFilter(RenderTexture input, RenderTexture output, int filterRadius, CommandBuffer cmd)
+    void SpatialFilter(CommandBuffer cmd, RenderTexture inputTex, RenderTexture outputTex, int filterRadius,
+                        RenderTexture inputShadowTex, RenderTexture outputShadowTex, bool filterIndirectShadow)
     {
+        if (filterIndirectShadow)
+        {
+            m_ScreenGatherCS.EnableKeyword("INDIRECT_SHADOW_ENABLE");
+        }
+        else
+        {
+            m_ScreenGatherCS.DisableKeyword("INDIRECT_SHADOW_ENABLE");
+        }
+
         int kernel = m_ScreenGatherCS.FindKernel("DiffuseSpatialFilter");
 
         cmd.SetComputeVectorParam(m_ScreenGatherCS, Shader.PropertyToID("_CameraPosition"), Camera.main.transform.position);
@@ -926,14 +1052,19 @@ public class MiraiGIScreenGather
         cmd.SetComputeMatrixParam(m_ScreenGatherCS, Shader.PropertyToID("_InvViewMat"), Camera.main.cameraToWorldMatrix);
 
         cmd.SetComputeIntParam(m_ScreenGatherCS, Shader.PropertyToID("_FrameNumber"), m_FrameNumber);
-        cmd.SetComputeVectorParam(m_ScreenGatherCS, Shader.PropertyToID("_RTSize"), new Vector2(input.descriptor.width, input.descriptor.height));
+        cmd.SetComputeVectorParam(m_ScreenGatherCS, Shader.PropertyToID("_RTSize"), new Vector2(inputTex.descriptor.width, inputTex.descriptor.height));
         cmd.SetComputeFloatParam(m_ScreenGatherCS, Shader.PropertyToID("_FilterRadius"), filterRadius);
         cmd.SetComputeFloatParam(m_ScreenGatherCS, Shader.PropertyToID("_SSAOGuidanceWeight"), GlobalSettings.Instance.filterGuidanceSSAOWeight);
-        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_DiffuseIndirectTexture"), input);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_NormalDepthTexture"), m_NormalDepthTexture);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_NormalDepthHistory"), m_NormalDepthHistory);
-        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_DiffuseIndirectHistory"), m_DiffuseIndirectHistory);
-        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWSpatialFilterOutput"), output);
+        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_DiffuseIndirectTexture"), inputTex);
+        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWSpatialFilterOutput"), outputTex);
+
+        if (filterIndirectShadow)
+        {
+            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_IndirectShadowTexture"), inputShadowTex);
+            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWShadowOutput"), outputShadowTex);
+        }
 
         cmd.DispatchCompute(m_ScreenGatherCS, kernel, Mathf.CeilToInt((float)m_ScreenGatherRTSize.x / 8), Mathf.CeilToInt((float)m_ScreenGatherRTSize.y / 8), 1);
     }
