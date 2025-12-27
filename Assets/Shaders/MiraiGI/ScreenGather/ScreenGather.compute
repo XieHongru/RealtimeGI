@@ -26,6 +26,7 @@ Texture2D<float4> _NormalDepthTexture;
 Texture2D<float4> _NormalDepthHistory;
 
 Texture2D<float4> _GBufferNormal;
+Texture2D _MotionVectors;
 
 float4 _ScreenPositionScaleBias;
 float4x4 _ClipToPrevClip;
@@ -123,6 +124,11 @@ float2 ReprojectPixel(float3 uvz)
     float4 thisClip = float4(thisScreen, uvz.z, 1);
     float4 prevClip = mul(_ClipToPrevClip, thisClip);
     float2 prevScreen = prevClip.xy / prevClip.w;
+
+    // @TODO: motion vectors
+    //float4 encodedVelocity = _MotionVectors.SampleLevel(sampler_linearClamp, uvz.xy, 0);
+    //prevScreen = thisClip.xy - encodedVelocity.xy;
+
     float2 prevUV = prevScreen.xy * _ScreenPositionScaleBias.xy + _ScreenPositionScaleBias.wz;
     return prevUV;
 }
