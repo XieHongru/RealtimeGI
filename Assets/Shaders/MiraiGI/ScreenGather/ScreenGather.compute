@@ -9,7 +9,7 @@
 #define TRACE_SPECULAR_RAY 0
 #endif
 
-#define SPECULAR_USE_CLAMPED_BRDF 1
+#define SPECULAR_USE_CLAMPED_BRDF 0
 #define SPECULAR_BRDF_BIAS (0.6f)
 
 #define FORCE_VOXEL_TRACE 1
@@ -1232,16 +1232,18 @@ void SpecularResolve(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId :
     float3 worldPosition = ReconstructWorldPositionFromDepth(uv, _SceneDepthTexture.SampleLevel(sampler_PointClamp, uv, 0));
 
     // 2. query and resolve neighbor pixels
-    const int resolveSampleCount = 4;
+    const int neighborSampleCount = 4;
+    const int resolveSampleCount = neighborSampleCount + 1;
     float3 radianceSum = 0;
     float3 weightSum = 0;
     float rayDistanceSum = 0;
+    
     for (int i = 0; i < resolveSampleCount; i++)
     {
-        // 2.1. randomly pick a neighbor pixel in half resolution ray buffer
-        float2 E = Hammersley16(i, resolveSampleCount, randomSeed);
-        // float2 UVOffset = UniformSampleDisk(E);
+        float2 E = Hammersley16(i, neighborSampleCount, randomSeed);
         float2 uvOffset = E * 2 - 1;
+        uvOffset = (i <= neighborSampleCount) ? uvOffset : 0;
+        
         float2 neighborUV = uv + uvOffset * screenGatherTexelSize * _SpecularResolveSearchRange;
         PixelContext neighborPixelCtx = ResolvePixelContext(neighborUV);
 
@@ -1271,6 +1273,13 @@ void SpecularResolve(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId :
     resolveRadiance = resolveRadiance / (1.0 - Luma(resolveRadiance));
 #endif
     
+    // if fail to resolve any pixel, we fallback to initial ray sample
+    if (all(weightSum == 0))
+    {
+        resolveRadiance = _InitialSampleRadiance.SampleLevel(sampler_PointClamp, uv, 0).rgb;
+        rayAverageDistance = _InitialSampleHitInfo.SampleLevel(sampler_PointClamp, uv, 0).w;
+    }
+    
     // 3. evaluate full specular integral
 #if !APPLY_BRDF_AFTER_TAA
     float3 V = normalize(_CameraPosition - worldPosition);
@@ -1292,7 +1301,7 @@ Texture2D<float4> _SpecularIndirectHistory;
 
 RWTexture2D<float4> _RWSpecularTemporalFilterOutput;
 
-float4 SpecularIndirectFetchHistory(float3 worldPosition, float2 currentUV)
+float4 SpecularIndirectFetchHistory(float3 worldPosition, float2 currentUV, bool checkGeometrySimilarity)
 {
     // reproject pixel
     float3 currentFrameUVz = WorldToScreen(worldPosition);
@@ -1301,21 +1310,30 @@ float4 SpecularIndirectFetchHistory(float3 worldPosition, float2 currentUV)
     // fetch history
     float3 historyColor = _SpecularIndirectHistory.SampleLevel(sampler_linearClamp, reprojectUV, 0).rgb;
     historyColor = ClampNaNs(historyColor);
+    
+    float historyWeight = _TemporalFilterWeight;
+    if (IsUVOutSideScreen(reprojectUV))
+    {
+        historyWeight = 0;
+    }
 
     // reject history if geometry change
     // note: both current and history are sample from half resolution buffer
-    float4 historyNormalDepth = _NormalDepthHistory.SampleLevel(sampler_PointClamp, reprojectUV, 0);
-    float3 historyNormal = historyNormalDepth.xyz * 2 - 1;
-    float historySceneDepth = ConvertFromDeviceZ(historyNormalDepth.w);
-
-    float4 currentNormalDepth = _NormalDepthTexture.SampleLevel(sampler_PointClamp, currentUV, 0);
-    float3 currentNormal = currentNormalDepth.xyz * 2 - 1;
-    float currentSceneDepth = ConvertFromDeviceZ(currentNormalDepth.w);
-
-    float historyWeight = _TemporalFilterWeight;
-    if (IsUVOutSideScreen(reprojectUV) || dot(historyNormal, currentNormal) < 0.5 || abs(historySceneDepth - currentSceneDepth) > 1)
+    if (checkGeometrySimilarity)
     {
-        historyWeight = 0;
+        float4 historyNormalDepth = _NormalDepthHistory.SampleLevel(sampler_PointClamp, reprojectUV, 0);
+        float3 historyNormal = historyNormalDepth.xyz * 2 - 1;
+        float historySceneDepth = ConvertFromDeviceZ(historyNormalDepth.w);
+
+        float4 currentNormalDepth = _NormalDepthTexture.SampleLevel(sampler_PointClamp, currentUV, 0);
+        float3 currentNormal = currentNormalDepth.xyz * 2 - 1;
+        float currentSceneDepth = ConvertFromDeviceZ(currentNormalDepth.w);
+
+        float historyWeight = _TemporalFilterWeight;
+        if (dot(historyNormal, currentNormal) < 0.5 || abs(historySceneDepth - currentSceneDepth) > 0.5)
+        {
+            historyWeight = 0;
+        }
     }
 
     return float4(historyColor, historyWeight);
@@ -1346,29 +1364,34 @@ void SpecularTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThr
     }
 
     // 2. sample current frame color
+    float colorSum = 0;
     float4 colorSamples[9];
     for (int i = 0; i < 9; i++)
     {
         float2 neighborUV = uv + offsets3x3[i] * sceneTextureTexelSize;
         colorSamples[i] = ClampNaNs(_SpecularIndirectTexture.SampleLevel(sampler_PointClamp, neighborUV, 0));
+        colorSum += colorSamples[i].rgb;
     }
+    float3 currentColorAverage = colorSum / 9.0;
     float3 currentColor = colorSamples[0].rgb;
     float currentRayDistance = colorSamples[0].w;
 
     // 3. reproject pixel using surface position
-    float4 surfaceReprojectResult = SpecularIndirectFetchHistory(worldPosition, uv);
-    surfaceReprojectResult.rgb = ClampHistory(colorSamples, currentColor, surfaceReprojectResult.rgb, _HistoryColorBoundScale);
+    float4 surfaceReprojectResult = SpecularIndirectFetchHistory(worldPosition, uv, true);
 
     // 4. reproject pixel using ray distance parallex
     float3 viewDirection = normalize(worldPosition - _CameraPosition);
     float3 mirroredHitPoint = worldPosition + viewDirection * currentRayDistance;
-    float4 parallexReprojectResult = SpecularIndirectFetchHistory(mirroredHitPoint, uv);
-    parallexReprojectResult.rgb = ClampHistory(colorSamples, currentColor, parallexReprojectResult.rgb, _HistoryColorBoundScale);
+    float4 parallexReprojectResult = SpecularIndirectFetchHistory(mirroredHitPoint, uv, false);
     
-    // 5. mix two reprojection methods based on pixel roughness
-    float3 filteredColorWithSurfaceReproject = lerp(currentColor, surfaceReprojectResult.rgb, surfaceReprojectResult.a);
-    float3 filteredColorWithParallexReproject = lerp(currentColor, parallexReprojectResult.rgb, parallexReprojectResult.a);
-    float3 filteredColor = lerp(filteredColorWithParallexReproject, filteredColorWithSurfaceReproject, linearRoughness);
+    // 5. mix two reprojection methods based on luminance diff
+    float lumaDiffWithSurfaceReproject = abs(Luma(surfaceReprojectResult.rgb) - Luma(currentColorAverage));
+    float lumaDiffWithParallexReproject = abs(Luma(parallexReprojectResult.rgb) - Luma(currentColorAverage));
+    float4 historyColor = (lumaDiffWithSurfaceReproject < lumaDiffWithParallexReproject)
+                        ? surfaceReprojectResult : parallexReprojectResult;
+
+    historyColor.rgb = ClampHistory(colorSamples, currentColor, historyColor.rgb, _HistoryColorBoundScale);
+    float3 filteredColor = lerp(currentColor, historyColor.rgb, historyColor.a);
 
     _RWSpecularTemporalFilterOutput[pixelCoord] = float4(filteredColor, 1);
 }
@@ -1402,17 +1425,19 @@ void SpecularSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     }
 
     // 2. filter current frame output
-    int sampleCount = 8;
+    const int neighborSampleCount = 8;
+    const int sampleCount = neighborSampleCount + 1;
     float weightSum = 0;
     float4 colorSum = 0;
-    float searchRange = texelSize * _FilterRadius * lerp(1e-3, 4, GBufferNormalRoughness.w);
+    float searchRange = texelSize * _FilterRadius * lerp(1e-3, 8, GBufferNormalRoughness.w);
 
     for (int i = 0; i < sampleCount; i++)
     {
         float2 E = Hammersley16(i, sampleCount, randomSeed);
         float2 uvOffset = UniformSampleDisk(E); // [-1 ~ 1]
+        uvOffset = (i < neighborSampleCount) ? uvOffset : 0;
+        
         float2 neighborUV = uv + uvOffset * searchRange;
-
         if (IsUVOutSideScreen(neighborUV))
         {
             continue;
@@ -1422,7 +1447,7 @@ void SpecularSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
         neighborColor = ClampNaNs(neighborColor);
 
 #if RADIANCE_TONEMAPPING
-        neighborColor = neighborColor / (1.0 + Luma(neighborColor));
+        //neighborColor = neighborColor / (1.0 + Luma(neighborColor));
 #endif
 
         float neighborDepth = ConvertFromDeviceZ(_SceneDepthTexture.SampleLevel(sampler_PointClamp, neighborUV, 0));
@@ -1440,7 +1465,7 @@ void SpecularSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     float3 color = (weightSum > 0) ? (colorSum.rgb / weightSum) : 0;
 
 #if RADIANCE_TONEMAPPING
-    color = color / (1.0 - Luma(color));
+    //color = color / (1.0 - Luma(color));
 #endif
 
     _RWSpecularSpatialFilterOutput[pixelCoord] = float4(color, 1);

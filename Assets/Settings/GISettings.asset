@@ -60,7 +60,7 @@ MonoBehaviour:
   filterGuidanceSSAOSharpness: 2
   filterGuidanceSSAOWeight: 10
   specularTemporalFilterWeight: 0.96
-  specularTemporalFilterHistoryColorBoundScale: 0.8
+  specularTemporalFilterHistoryColorBoundScale: 0
   specularResolveSearchRange: 4
   specularFilterSearchRange: 4
   useDistanceField: 1

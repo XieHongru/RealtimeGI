@@ -81,7 +81,7 @@ public class GlobalSettings : ScriptableObject
     public float filterGuidanceSSAOWeight = 10.0f;
 
     public float specularTemporalFilterWeight = 0.96f;
-    public float specularTemporalFilterHistoryColorBoundScale = 0.8f;
+    public float specularTemporalFilterHistoryColorBoundScale = 0.0f;
     public float specularResolveSearchRange = 4.0f;
     public float specularFilterSearchRange = 4.0f;
 
