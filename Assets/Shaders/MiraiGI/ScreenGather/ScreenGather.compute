@@ -685,9 +685,8 @@ float Vignette(float2 uv)
 }
 
 // same as contact shadow in DeferredLightingCommon.ush
-float4 SSRayCastShortRange(in PixelContext pixelCtx, float2 uv, float3 rayDir, float maxDistance, int stepCount)
+float4 SSRayCastShortRange(in PixelContext pixelCtx, float2 uv, float3 rayDir, float maxDistance, int stepCount, float stepOffset)
 {
-    float stepOffset = pixelCtx.randomVector.z;
     maxDistance = min(maxDistance, pixelCtx.sceneDepth);
 
     float3 rayOriginTranslatedWorld = pixelCtx.worldPosition - _CameraPosition;
@@ -700,9 +699,9 @@ float4 SSRayCastShortRange(in PixelContext pixelCtx, float2 uv, float3 rayDir, f
     float3 rayStepScreen = rayEndScreen - rayStartScreen;
 
     // make ray more accurate when camera move far away from pixel
-    float magicFactor = 0.25;
-    magicFactor = lerp(1, magicFactor, Vignette(uv)); // kill SSR artifact near screen edge
-    rayStepScreen *= GetStepScreenFactorToClipAtScreenEdge(rayStartScreen.xy, rayStepScreen.xy) * magicFactor;
+    float clipToScreenFactor = GetStepScreenFactorToClipAtScreenEdge(rayStartScreen.xy, rayStepScreen.xy);
+    float rayExtendThreshold = max(0, (pixelCtx.sceneDepth - 10.0) / 5.0); // prevent self intersection when camera far from pixel
+    rayStepScreen *= min(clipToScreenFactor, 1.0 + rayExtendThreshold);
 
     float3 rayStartUVz = float3(rayStartScreen.xy * _ScreenPositionScaleBias.xy + _ScreenPositionScaleBias.wz, rayStartScreen.z);
     float3 rayStepUVz = float3(rayStepScreen.xy * _ScreenPositionScaleBias.xy, rayStepScreen.z);
@@ -765,8 +764,9 @@ void ReservoirEvaluateIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 gro
 #if INDIRECT_SHADOW_ENABLE
     float4 SSRHit = SSRayCastShortRange(
         pixelCtx, uv, rayDir, 
-        200.0, // max ray distance
+        1.0, // max ray distance
         32 // num steps
+        pixelCtx.randomVector.z // SetpOffset
     );
     float3 hitUVz = SSRHit.xyz;
     bool isHit = SSRHit.w > 0;
@@ -791,6 +791,9 @@ void ReservoirEvaluateIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 gro
 // ---------------------------------------- (^^_) ---------------------------------------- //
 #pragma kernel FilterGuidanceSSAO
 
+// use SSRT for validation
+#define USE_HBAO 1
+
 float _AOWorldRange;
 float _AOSharpness;
 
@@ -813,6 +816,7 @@ void FilterGuidanceSSAO(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadI
     }
     
     uint2 randomSeed = Rand3DPCG16(uint3(uv * 3333, _FrameNumber + 444)).xy;
+    uint2 randomSeed2 = Rand3DPCG16(uint3(uv * 3030, _FrameNumber + 123)).xy;
     PixelContext pixelCtx = ResolvePixelContext(uv);
     float3 viewDirection = normalize(_CameraPosition - pixelCtx.worldPosition);
     float3 viewSpacePosition = mul(_ViewMat, float4(pixelCtx.worldPosition, 1));
@@ -823,6 +827,7 @@ void FilterGuidanceSSAO(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadI
     float distanceDDXY = max(max(DDXY.x, DDXY.y), DDXY.z);
     float uvSearchRange = saturate((_AOWorldRange / distanceDDXY) * screenGatherTexelSize);
 
+#if USE_HBAO
     const int directionCount = 4;
     const int stepCount = 4;
     float uvSearchStep = uvSearchRange / float(stepCount);
@@ -869,6 +874,36 @@ void FilterGuidanceSSAO(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadI
     finalOcclusion = saturate(1 - finalOcclusion);
     finalOcclusion = pow(finalOcclusion, _AOSharpness);
     
+#else   // !USE_HBAO
+    const int sampleCount = 4;
+    const int stepCount = 8;
+    float3 hitUVz = float3(0, 0, 0);
+    float hitLevel = 0;
+    float AOSum = 0;
+    float3 rayOriginTranslatedWorld = pixelCtx.worldPosition - _CameraPosition;
+    for(int i = 0; i < sampleCount; i++)
+    {
+        float2 E = Hammersley16(i, sampleCount, randomSeed);
+        float2 E2 = Hammersley16(i, sampleCount, randomSeed2);
+        float4 rayDirectionAndPDF = SetupDiffuseRay(pixelCtx.worldNormal, E);
+
+        float4 SSRHit = SSRayCastShortRange(
+            pixelCtx, uv, rayDirectionAndPDF.xyz, 
+            _AOWorldRange, // max ray distance
+            sampleCount, // num steps
+            E2.x // StepOffset
+        );
+        bool isHit = SSRHit.w;
+
+        float NdotL = saturate(dot(pixelCtx.worldNormal, rayDirectionAndPDF.xyz));
+        float occlusion = isHit ? 0 : NdotL;
+        AOSum += occlusion / rayDirectionAndPDF.w;
+    }
+
+    float finalOcclusion = AOSum / float(sampleCount);
+
+#endif  // #if USE_HBAO
+
     _RWDiffuseResolveOutputTexture[pixelCoord] = float4(finalOcclusion.xxxx);
 }
 

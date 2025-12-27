@@ -61,7 +61,8 @@ float EvaluateTargetPDF(in ReservoirSample sample, float3 evaluatePointPosition,
     cosineWeight = max(dot(rayDirection, evaluatePointNormal), 0.1); // clamp to prevent firefly
 #endif
 
-    return dot(sample.radiance, (0.33).xxx) * cosineWeight;
+    float targetPDF = dot(sample.radiance, (0.33).xxx) * cosineWeight;
+    return max(targetPDF, 1e-3);
 }
 
 #define LengthSquare(x) (dot(x, x))
