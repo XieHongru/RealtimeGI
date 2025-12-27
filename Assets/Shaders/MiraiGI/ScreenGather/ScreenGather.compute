@@ -796,16 +796,9 @@ float _AOSharpness;
 
 RWTexture2D<float4> _RWDiffuseResolveOutputTexture;
 
-float3 TransformPositionWorldToView(float3 worldPosition)
-{
-    float3 translatedWorldPosition = worldPosition - _CameraPosition;
-    float3 viewSpacePosition = mul(_TranslatedWorldToView, float4(translatedWorldPosition, 1));
-    return viewSpacePosition;
-}
-
 float3 TransformDirectionWorldToView(float3 worldNormal)
 {
-    return normalize(mul((half3x3) _TranslatedWorldToView, worldNormal));
+    return normalize(mul((float3x3) _TranslatedWorldToView, worldNormal));
 }
 
 [numthreads(8, 8, 1)]
@@ -822,13 +815,13 @@ void FilterGuidanceSSAO(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadI
     uint2 randomSeed = Rand3DPCG16(uint3(uv * 333, _FrameNumber + 444)).xy;
     PixelContext pixelCtx = ResolvePixelContext(uv);
     float3 viewDirection = normalize(_CameraPosition - pixelCtx.worldPosition);
-    float3 viewSpacePosition = TransformPositionWorldToView(pixelCtx.worldPosition);
+    float3 viewSpacePosition = mul(_ViewMat, float4(pixelCtx.worldPosition, 1));
     float3 viewSpaceNormal = TransformDirectionWorldToView(pixelCtx.worldNormal);
 
     float3 worldPositionDDXY = ReconstructWorldPositionFromDepth(uv + screenGatherTexelSize, pixelCtx.rawDepth);
     float3 DDXY = length(pixelCtx.worldPosition - worldPositionDDXY);
     float distanceDDXY = max(max(DDXY.x, DDXY.y), DDXY.z);
-    float uvSearchRange = clamp((_AOWorldRange / distanceDDXY) * screenGatherTexelSize, 0.005, 0.5);
+    float uvSearchRange = saturate((_AOWorldRange / distanceDDXY) * screenGatherTexelSize);
 
     const int directionCount = 4;
     const int stepCount = 4;
@@ -1112,7 +1105,7 @@ void DiffuseComposite(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
         float neighborDepth = ConvertFromDeviceZ(normalDepth.a);
 
         float weight = 1.0;
-        weight *= exp(-abs(neighborDepth - ConvertFromDeviceZ(_SceneDepthTexture.SampleLevel(sampler_PointClamp, uv, 0))));
+        weight *= exp(-abs(neighborDepth - ConvertFromDeviceZ(_SceneDepthTexture.SampleLevel(sampler_PointClamp, uv, 0))) * 0.01);
         weight *= saturate(dot(neighborNormal, worldNormal));
 
         colorSum += color * weight;
@@ -1138,7 +1131,7 @@ void DiffuseComposite(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
 
     diffuseIndirect *= occlusion;
     _RWDiffuseCompositeTexture[threadId.xy] = float4(ClampNaNs(diffuseIndirect), 1);
-    // _RWDiffuseCompositeTexture[threadId.xy] = _DiffuseIndirectTexture.SampleLevel(sampler_linearClamp, uv, 0).wwww;   // debug ssao
+    // _RWDiffuseCompositeTexture[threadId.xy] = _DiffuseIndirectTexture.SampleLevel(sampler_linearClamp, uv, 0).wwww * 0.33;   // debug ssao
     // _RWDiffuseCompositeTexture[threadId.xy] = IndirectShadow;   // debug indirect shadow
     // _RWDiffuseCompositeTexture[threadId.xy] = float4(Vignette(uv), 1);
 }
