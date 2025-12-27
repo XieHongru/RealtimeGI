@@ -72,8 +72,8 @@ float3 WorldToScreen(float3 worldPosition)
 
 float4 SetupPixelRandom(float2 uv)
 {
-    uint2 randomSeed1 = Rand3DPCG16(uint3(uv * 1919.114, _FrameNumber)).xy;
-    uint2 randomSeed2 = Rand3DPCG16(uint3(uv * 810.514, _FrameNumber)).xy;
+    uint2 randomSeed1 = Rand3DPCG16(uint3(uv * 3919.114, _FrameNumber)).xy;
+    uint2 randomSeed2 = Rand3DPCG16(uint3(uv * 3810.514, _FrameNumber)).xy;
     float2 E1 = Hammersley16(0, 1, randomSeed1);
     float2 E2 = Hammersley16(0, 1, randomSeed2);
 
@@ -574,7 +574,7 @@ void ReservoirSpatialReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     const int2 pixelCoord = threadId.xy;
     const float2 uv = (float2(pixelCoord) + 0.5) * screenGatherTexelSize;
     uint2 randomSeed1 = Rand3DPCG16(uint3(uv * 11451.514, _FrameNumber + 1919)).xy;
-    uint2 randomSeed2 = Rand3DPCG16(uint3(uv * 1234.567, _FrameNumber + 89)).xy;
+    uint2 randomSeed2 = Rand3DPCG16(uint3(uv * 3234.567, _FrameNumber + 89)).xy;
     
     PixelContext pixelCtx = ResolvePixelContext(uv);
     Reservoir reservoir = FetchReservoir(uv);
@@ -812,7 +812,7 @@ void FilterGuidanceSSAO(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadI
         return;
     }
     
-    uint2 randomSeed = Rand3DPCG16(uint3(uv * 333, _FrameNumber + 444)).xy;
+    uint2 randomSeed = Rand3DPCG16(uint3(uv * 3333, _FrameNumber + 444)).xy;
     PixelContext pixelCtx = ResolvePixelContext(uv);
     float3 viewDirection = normalize(_CameraPosition - pixelCtx.worldPosition);
     float3 viewSpacePosition = mul(_ViewMat, float4(pixelCtx.worldPosition, 1));
@@ -1355,7 +1355,7 @@ void SpecularSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
         return;
     }
     
-    uint2 randomSeed = Rand3DPCG16(uint3(uv * 256, _FrameNumber + 1024)).xy;
+    uint2 randomSeed = Rand3DPCG16(uint3(uv * 3256, _FrameNumber + 1024)).xy;
     float rawDepth = _SceneDepthTexture.SampleLevel(sampler_PointClamp, uv, 0);
     float sceneDepth = ConvertFromDeviceZ(rawDepth);
     float4 GBufferNormalRoughness = _GBufferNormal.SampleLevel(sampler_PointClamp, uv, 0);
