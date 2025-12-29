@@ -965,6 +965,7 @@ public class MiraiGIScreenGather
         cmd.SetComputeFloatParam(m_ScreenGatherCS, Shader.PropertyToID("_AOWorldRange"), GlobalSettings.Instance.filterGuidanceSSAORange);
         cmd.SetComputeFloatParam(m_ScreenGatherCS, Shader.PropertyToID("_AOSharpness"), GlobalSettings.Instance.filterGuidanceSSAOSharpness);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_NormalDepthTexture"), m_NormalDepthTexture);
+        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_MiniDepthTexture"), m_MiniDepthTexture);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWDiffuseResolveOutputTexture"), m_DiffuseResolveOutputTexture);
 
         cmd.DispatchCompute(m_ScreenGatherCS, kernel, Mathf.CeilToInt((float)m_ScreenGatherRTSize.x / 8), Mathf.CeilToInt((float)m_ScreenGatherRTSize.y / 8), 1);
@@ -1023,9 +1024,9 @@ public class MiraiGIScreenGather
                             m_IndirectShadowTemporalFilterOutput, m_IndirectShadowSpatialFilterOutput, true);
         for (int i = 1; i < iterrationCount; i++)
         {
-            bool filterIndirectShadow = i < 2;
+            bool filterIndirectShadow = i < GlobalSettings.Instance.indirectShadowSpatialFilterIterationCount;
 
-            SpatialFilter(cmd, m_DiffuseSpatialFilterOutput, m_DiffuseSpatialFilterOutputSwap, i * 2 + 1,
+            SpatialFilter(cmd, m_DiffuseSpatialFilterOutput, m_DiffuseSpatialFilterOutputSwap, (1 << i),
                                 m_IndirectShadowSpatialFilterOutput, m_IndirectShadowSpatialFilterOutputSwap, filterIndirectShadow);
 
             RenderTexture temp = m_DiffuseSpatialFilterOutput;

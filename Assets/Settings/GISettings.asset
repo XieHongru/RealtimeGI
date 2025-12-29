@@ -42,7 +42,7 @@ MonoBehaviour:
   irradianceProbeMinCascadeLevel: 0
   irradianceProbeSampleCount: 1
   irradianceProbeTemporalWeight: 0.75
-  visualizeScreenGather: 3
+  visualizeScreenGather: 0
   screenGatherDownsampleFactor: 2
   useReservoirSpatialReuse: 1
   spatialReuseSampleCount: 8
@@ -51,13 +51,14 @@ MonoBehaviour:
   indirectShadowEnable: 1
   indirectShadowSharpness: 1
   indirectShadowIntensity: 1
+  indirectShadowSpatialFilterIterationCount: 3
   spatialReuseSearchRange: 0.5
   diffuseTemporalFilterWeight: 0.95
   diffuseTemporalFilterHistoryColorBoundScale: 0.1
-  diffuseSpatialFilterIterationCount: 6
+  diffuseSpatialFilterIterationCount: 5
   filterGuidanceSSAORange: 1
-  filterGuidanceSSAOIntensity: 1
-  filterGuidanceSSAOSharpness: 2
+  filterGuidanceSSAOIntensity: 0.5
+  filterGuidanceSSAOSharpness: 1
   filterGuidanceSSAOWeight: 10
   specularTemporalFilterWeight: 0.96
   specularTemporalFilterHistoryColorBoundScale: 0

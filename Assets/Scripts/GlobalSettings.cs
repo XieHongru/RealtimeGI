@@ -69,15 +69,16 @@ public class GlobalSettings : ScriptableObject
     public int indirectShadowEnable = 1;
     public float indirectShadowSharpness = 1.0f;
     public float indirectShadowIntensity = 1.0f;
+    public int indirectShadowSpatialFilterIterationCount = 3;
     public float spatialReuseSearchRange = 0.5f;
 
     public float diffuseTemporalFilterWeight = 0.95f;
     public float diffuseTemporalFilterHistoryColorBoundScale = 0.1f;
-    public int diffuseSpatialFilterIterationCount = 6;
+    public int diffuseSpatialFilterIterationCount = 5;
 
     public float filterGuidanceSSAORange = 1.0f;
-    public float filterGuidanceSSAOIntensity = 1.0f;
-    public float filterGuidanceSSAOSharpness = 2.0f;
+    public float filterGuidanceSSAOIntensity = 0.5f;
+    public float filterGuidanceSSAOSharpness = 1.0f;
     public float filterGuidanceSSAOWeight = 10.0f;
 
     public float specularTemporalFilterWeight = 0.96f;
