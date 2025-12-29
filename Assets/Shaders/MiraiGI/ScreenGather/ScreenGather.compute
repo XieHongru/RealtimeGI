@@ -826,6 +826,7 @@ void FilterGuidanceSSAO(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadI
     float3 DDXY = length(pixelCtx.worldPosition - worldPositionDDXY);
     float distanceDDXY = max(max(DDXY.x, DDXY.y), DDXY.z);
     float uvSearchRange = saturate((_AOWorldRange / distanceDDXY) * screenGatherTexelSize);
+    float fallOffDistance = _AOWorldRange * lerp(1, 10, saturate(pixelCtx.sceneDepth / _AOWorldRange));
 
 #if USE_HBAO
     const int directionCount = 4;
@@ -860,7 +861,7 @@ void FilterGuidanceSSAO(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadI
             bestOcclusion = max(bestOcclusion, occlusion);
 
             // lerp occlusion based on distance
-            float fallOffWeight = saturate(1 - (distance * distance) / (_AOWorldRange * _AOWorldRange));
+            float fallOffWeight = saturate(1 - (distance * distance) / (fallOffDistance * fallOffDistance));
             float AO = delta * fallOffWeight;
 
             AOSum += AO;
