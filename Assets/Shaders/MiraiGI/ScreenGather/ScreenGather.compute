@@ -156,13 +156,6 @@ PixelContext ResolvePixelContext(float2 uv)
     pixelCtx.worldNormal = normalDepth.rgb * 2 - 1;
     pixelCtx.randomVector = SetupPixelRandom(uv);
 
-#if TRACE_SPECULAR_RAY
-    pixelCtx.roughness = max(_GBufferNormal.SampleLevel(sampler_PointClamp, uv, 0).w, 0.01);
-    pixelCtx.rayDirection = SetupSpecularRay(pixelCtx.worldPosition, pixelCtx.worldNormal, pixelCtx.randomVector.xy, pixelCtx.roughness);
-#else
-    pixelCtx.rayDirection = SetupDiffuseRay(pixelCtx.worldNormal, pixelCtx.randomVector.xy);
-#endif
-
     return pixelCtx;
 }
 
@@ -236,6 +229,7 @@ Texture2D _HZB;
 Texture2D<float4> _SceneColorHistory;
 RWTexture2D<float4> _RWInitialSampleRadiance;
 RWTexture2D<float4> _RWInitialSampleHitInfo;
+RWTexture2D<float4> _RWInitialSampleRayInfo;
 
 RWStructuredBuffer<int> _RWVoxelTraceRayCounter;
 RWStructuredBuffer<int2> _RWVoxelTraceRayCompactBuffer;
@@ -254,6 +248,13 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
     
     PixelContext pixelCtx = ResolvePixelContext(uv);
     const bool isValidPixel = all(threadId.xy < _ScreenGatherRTSize - 1) && pixelCtx.rawDepth > 0;
+    
+#if TRACE_SPECULAR_RAY
+    float roughness = max(_GBufferNormal.SampleLevel(sampler_linearClamp, uv, 0).w, 0.01);
+    float4 rayDirectionAndPDF = SetupSpecularRay(pixelCtx.worldPosition, pixelCtx.worldNormal, pixelCtx.randomVector.xy, roughness);
+#else
+    float4 rayDirectionAndPDF = SetupDiffuseRay(pixelCtx.worldNormal, pixelCtx.randomVector.xy);
+#endif
 
     // 2. trace screen ray
     const int numSteps = 32;
@@ -263,7 +264,7 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
 
     bool isHit = RayCast(
         _HZB, sampler_PointClamp,
-        rayOriginTranslatedWorld, pixelCtx.rayDirection,
+        rayOriginTranslatedWorld, rayDirectionAndPDF.xyz,
         0.05, // roughness 
         pixelCtx.sceneDepth,
         numSteps,
@@ -302,22 +303,15 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
         hitNormal = _NormalDepthHistory.SampleLevel(sampler_PointClamp, reprojectRayHitUV, 0).rgb * 2 - 1;
         
         // discard back face hit
-        if (dot(hitNormal, pixelCtx.rayDirection) > 0)
+        if (dot(hitNormal, rayDirectionAndPDF.xyz) > 0)
         {
             isHit = false;
         }
     }
 
-    if (isValidPixel)
-    {
-        _RWInitialSampleRadiance[pixelCoord] = float4(hitRadiance, isHit);
-        _RWInitialSampleHitInfo[pixelCoord] = float4(hitNormal * 0.5 + 0.5, rayDistance);
-    }
-    else
-    {
-        _RWInitialSampleRadiance[pixelCoord] = float4(0, 0, 0, 0);
-        _RWInitialSampleHitInfo[pixelCoord] = float4(0, 0, 0, 0);
-    }
+    _RWInitialSampleRadiance[pixelCoord] = isValidPixel ? float4(hitRadiance, isHit) : 0;
+    _RWInitialSampleHitInfo[pixelCoord] = isValidPixel ? float4(hitNormal * 0.5 + 0.5, rayDistance) : 0;
+    _RWInitialSampleRayInfo[pixelCoord] = isValidPixel ? float4(rayDirectionAndPDF.xyz * 0.5 + 0.5, rayDirectionAndPDF.w) : 0;
 
     gs_PixelValidMask[groupThreadIndex] = isValidPixel;
     gs_ScreenHitMask[groupThreadIndex] = isHit;
@@ -401,17 +395,18 @@ void InitialSampleVoxelTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupTh
     // we start from screen trace's ray end
     float3 voxelCellSize = GetVoxelCellSize(clipmapInfo, pixelCtx.worldPosition);
     float screenTraceRayDistance = clamp(_RWInitialSampleHitInfo[pixelCoord].w, voxelCellSize * 0.1, voxelCellSize * 3);
-    float3 rayStart = pixelCtx.worldPosition + pixelCtx.rayDirection * screenTraceRayDistance;
+    float4 rayDirectionAndPDF = _RWInitialSampleRayInfo[pixelCoord] * float4(2, 2, 2, 1) - float4(1, 1, 1, 0);
+    float3 rayStart = pixelCtx.worldPosition + rayDirectionAndPDF.xyz * screenTraceRayDistance;
     
     // prevent self intersection at graze angle
-    float NoL = saturate(dot(pixelCtx.worldNormal, pixelCtx.rayDirection));
+    float NoL = saturate(dot(pixelCtx.worldNormal, rayDirectionAndPDF.xyz));
     float3 normalOffset = pixelCtx.worldNormal * voxelCellSize * lerp(1, 0.05, NoL);
     rayStart += normalOffset;
 
     // 2. trace ray
     VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
     RTRequest.rayStart = rayStart;
-    RTRequest.rayDir = pixelCtx.rayDirection;
+    RTRequest.rayDir = rayDirectionAndPDF.xyz;
     RTRequest.minCascadeIndex = 0;
     RTRequest.maxCascadeIndex = clipmapInfo.cascadeCount - 1;
     RTRequest.maxStepNum = 114514;
@@ -437,7 +432,7 @@ void InitialSampleVoxelTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupTh
     {
         rayDistance = 191981000;
         hitRadiance = float3(1, 1, 1);
-        hitNormal = pixelCtx.rayDirection * -1;
+        hitNormal = rayDirectionAndPDF.xyz * -1;
     }
 
     _RWInitialSampleRadiance[pixelCoord] = float4(hitRadiance, hit.isHit);
@@ -449,6 +444,7 @@ void InitialSampleVoxelTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupTh
 
 Texture2D<float4> _InitialSampleRadiance;
 Texture2D<float4> _InitialSampleHitInfo;
+Texture2D<float4> _InitialSampleRayInfo;
 
 Texture2D<float4> _ReservoirDataA;
 Texture2D<float4> _ReservoirDataB;
@@ -503,7 +499,9 @@ void ReservoirTemporalReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThr
     newSample.rayStartNormal = pixelCtx.worldNormal;
 
     float4 hitInfo = _InitialSampleHitInfo.SampleLevel(sampler_PointClamp, uv, 0); // hit normal (xyz) and distance (w)
-    newSample.rayEnd = pixelCtx.worldPosition + pixelCtx.rayDirection.xyz * hitInfo.w;
+    float4 rayDirectionAndPDF = _InitialSampleRayInfo.SampleLevel(sampler_PointClamp, uv, 0) * float4(2, 2, 2, 1) - float4(1, 1, 1, 0);
+
+    newSample.rayEnd = pixelCtx.worldPosition + rayDirectionAndPDF.xyz * hitInfo.w;
     newSample.rayEndNormal = hitInfo.xyz * 2 - 1;
 
     // 3. reproject and search 3x3 to find match pixel
@@ -543,7 +541,7 @@ void ReservoirTemporalReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThr
 
     // 5. do temporal reuse
     float targetPDF = EvaluateTargetPDF(newSample, newSample.rayStart, newSample.rayStartNormal);
-    float sourcePDF = pixelCtx.rayDirection.w;
+    float sourcePDF = rayDirectionAndPDF.w;
     float selectionWeight = targetPDF / sourcePDF;
     
     UpdateReservoir(temporalReservoir, newSample, selectionWeight, pixelCtx.randomVector.w);
@@ -1220,10 +1218,10 @@ float3 EvaluateRatioEstimatorBRDF(float3 curPixelWorldPosition, in float4 normal
     float3 H = normalize(V + L);
     float3 N = normalRoughness.xyz;
 
-    float3 NoH = clamp(1e-3, dot(N, H), 1);
-    float3 NoV = clamp(1e-3, dot(N, V), 1);
-    float3 NoL = clamp(1e-3, dot(N, L), 1);
-    float3 VoH = clamp(1e-3, dot(V, H), 1);
+    float3 NoH = clamp(dot(N, H), 1e-3, 1);
+    float3 NoV = clamp(dot(N, V), 1e-3, 1);
+    float3 NoL = clamp(dot(N, L), 1e-3, 1);
+    float3 VoH = clamp(dot(V, H), 1e-3, 1);
 
     // calculate BRDF for reconnect ray
     float a2 = Pow4(normalRoughness.w);
@@ -1273,17 +1271,16 @@ void SpecularResolve(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId :
         uvOffset = (i <= neighborSampleCount) ? uvOffset : 0;
         
         float2 neighborUV = uv + uvOffset * screenGatherTexelSize * _SpecularResolveSearchRange;
-        PixelContext neighborPixelCtx = ResolvePixelContext(neighborUV);
+        float3 rayStartPosition, rayStartNormal;
+        GetPixelPositionAndNormal(neighborUV, rayStartPosition, rayStartNormal);
 
         float3 hitRadiance = _InitialSampleRadiance.SampleLevel(sampler_PointClamp, neighborUV, 0).rgb;
         float rayDistance = _InitialSampleHitInfo.SampleLevel(sampler_PointClamp, neighborUV, 0).w;
-        
-        float3 rayStartPosition = neighborPixelCtx.worldPosition;
-        float3 rayHitPosition = rayStartPosition + neighborPixelCtx.rayDirection.xyz * rayDistance;
-        float rayPDF = neighborPixelCtx.rayDirection.w;
+        float4 rayDirectionAndPDF = _InitialSampleRayInfo.SampleLevel(sampler_PointClamp, uv, 0) * float4(2, 2, 2, 1) - float4(1, 1, 1, 0);
+        float3 rayHitPosition = rayStartPosition + rayDirectionAndPDF.xyz * rayDistance;
 
         // 2.2. calculate local BRDF for reused ray and apply ratio estimator
-        float3 weight = EvaluateRatioEstimatorBRDF(worldPosition, GBufferNormalRoughness, GBufferSpecular, rayHitPosition, rayPDF);
+        float3 weight = EvaluateRatioEstimatorBRDF(worldPosition, GBufferNormalRoughness, GBufferSpecular, rayHitPosition, rayDirectionAndPDF.w);
         weight *= exp(length(rayStartPosition - worldPosition) * -0.01);
 
 #if RADIANCE_TONEMAPPING
