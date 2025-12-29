@@ -892,7 +892,7 @@ void FilterGuidanceSSAO(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadI
 
         // 5. calculate visibility for current slice
         float sliceVisibility = GTAOInnerIntegrate(maxHorizontalAngles, normalAngle);
-        visibility += length(projectedNormal) * sliceVisibility;
+        visibility += sliceVisibility;
         rotateAngle += PI / float(sliceCount);
     }
     
@@ -1162,49 +1162,41 @@ void DiffuseComposite(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     
     float3 worldNormal = _GBufferNormal.SampleLevel(sampler_linearClamp, uv, 0).rgb;
     
-    float4 colorSum = 0;
-    float weightSum = 0;
-    const int sampleCount = 4;
-    const float searchRange = 2.0;
-    for (int i = 0; i < sampleCount; i++)
+    // find closet pixel
+    float centerDepth = _MiniDepthTexture.SampleLevel(sampler_PointClamp, uv, 0).r;
+    float bestDepthDiff = 1;
+    float2 bestUV = uv;
+
+    for (int i = 0; i < 9; i++)
     {
-        float2 uvOffset = Hammersley16(i, sampleCount, randomSeed) * 2 - 1;
-        float2 neighborUV = uv + uvOffset * screenGatherTexelSize * searchRange;
-        
-        float4 color = _DiffuseIndirectTexture.SampleLevel(sampler_PointClamp, neighborUV, 0);
-        float4 normalDepth = _NormalDepthTexture.SampleLevel(sampler_PointClamp, neighborUV, 0);
-        float3 neighborNormal = normalDepth.xyz * 2 - 1;
-        float neighborDepth = ConvertFromDeviceZ(normalDepth.a);
+        float2 neighborUV = uv + offsets3x3[i] * screenGatherTexelSize;
+        float neighborDepth = _MiniDepthTexture.SampleLevel(sampler_PointClamp, uv, 0).r;
 
-        float weight = 1.0;
-        weight *= exp(-abs(neighborDepth - ConvertFromDeviceZ(_SceneDepthTexture.SampleLevel(sampler_PointClamp, uv, 0))) * 0.01);
-        weight *= saturate(dot(neighborNormal, worldNormal));
-
-        colorSum += color * weight;
-        weightSum += weight;
+        float depthDiff = abs(neighborDepth - centerDepth);
+        if (depthDiff < bestDepthDiff)
+        {
+            bestDepthDiff = depthDiff;
+            bestUV = neighborUV;
+        }
     }
-    float4 filterColor = colorSum / weightSum;
 
     // apply diffuse lighting
-    float metallic = 0;
-    float3 diffuseIndirect = filterColor.rgb;
-    diffuseIndirect *= _GBufferBaseColor.SampleLevel(sampler_PointClamp, uv, 0) * (1.0 - metallic); // @TODO: consider shading models
+    float4 diffuseIndirectAndAO = _DiffuseIndirectTexture.SampleLevel(sampler_PointClamp, bestUV, 0);
+    float3 diffuseIndirect = diffuseIndirectAndAO.rgb;
+    diffuseIndirect *= _GBufferBaseColor.SampleLevel(sampler_PointClamp, uv, 0); // @TODO: consider shading models
 
     // apply SSAO (not physically based, just a trick)
-    float SSAO = _DiffuseIndirectTexture.SampleLevel(sampler_linearClamp, uv, 0).a;
+    float SSAO = diffuseIndirectAndAO.a;
     float occlusion = lerp(1, SSAO, _AOIntensity);
 
     // apply indirect shadow
-    float indirectShadow = _IndirectShadowTexture.SampleLevel(sampler_linearClamp, uv, 0).r;
+    float indirectShadow = _IndirectShadowTexture.SampleLevel(sampler_PointClamp, bestUV, 0).r;
     indirectShadow = saturate(pow(indirectShadow, _IndirectShadowSharpness));
     indirectShadow = lerp(1, indirectShadow, _IndirectShadowIntensity);
     occlusion = min(occlusion, indirectShadow);
 
     diffuseIndirect *= occlusion;
     _RWDiffuseCompositeTexture[threadId.xy] = float4(ClampNaNs(diffuseIndirect), 1);
-    // _RWDiffuseCompositeTexture[threadId.xy] = _DiffuseIndirectTexture.SampleLevel(sampler_linearClamp, uv, 0).wwww * 0.33;   // debug ssao
-    // _RWDiffuseCompositeTexture[threadId.xy] = IndirectShadow;   // debug indirect shadow
-    // _RWDiffuseCompositeTexture[threadId.xy] = float4(Vignette(uv), 1);
 }
 
 // -------------------------------------------------------------------------------- //

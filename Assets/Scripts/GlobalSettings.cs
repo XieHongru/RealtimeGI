@@ -76,7 +76,7 @@ public class GlobalSettings : ScriptableObject
     public float diffuseTemporalFilterHistoryColorBoundScale = 0.1f;
     public int diffuseSpatialFilterIterationCount = 5;
 
-    public float filterGuidanceSSAORange = 1.0f;
+    public float filterGuidanceSSAORange = 2.0f;
     public float filterGuidanceSSAOIntensity = 0.5f;
     public float filterGuidanceSSAOSharpness = 1.0f;
     public float filterGuidanceSSAOWeight = 10.0f;

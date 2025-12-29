@@ -266,8 +266,10 @@ public class MiraiGIScreenGather
         cmd.SetComputeFloatParam(m_ScreenGatherCS, Shader.PropertyToID("_IndirectShadowSharpness"), GlobalSettings.Instance.indirectShadowSharpness);
         cmd.SetComputeFloatParam(m_ScreenGatherCS, Shader.PropertyToID("_IndirectShadowIntensity"), GlobalSettings.Instance.indirectShadowIntensity);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_NormalDepthTexture"), m_NormalDepthTexture);
+        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_MiniDepthTexture"), m_MiniDepthTexture);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_GBufferBaseColor"), Shader.GetGlobalTexture("_GBuffer0"));
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_GBufferNormal"), Shader.GetGlobalTexture("_GBuffer2"));
+        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_SceneDepthTexture"), Shader.GetGlobalTexture("_CameraDepthTexture"));
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_DiffuseIndirectTexture"), m_DiffuseSpatialFilterOutput);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_IndirectShadowTexture"), m_IndirectShadowSpatialFilterOutput);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWDiffuseCompositeTexture"), m_DiffuseCompositeTexture);
