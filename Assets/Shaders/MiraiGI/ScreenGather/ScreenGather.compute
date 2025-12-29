@@ -956,6 +956,11 @@ float3 ClampHistory(in float4 colorSamples[9], float3 currentColor, float3 histo
     return YCoCgToRGB(resultYCoCg);
 }
 
+float GetTemporalDepthThreshold(float historySceneDepth)
+{
+    return historySceneDepth * 0.1;
+}
+
 [numthreads(8, 8, 1)]
 void DiffuseTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
@@ -990,11 +995,12 @@ void DiffuseTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     float4 historyNormalDepth = _NormalDepthHistory.SampleLevel(sampler_PointClamp, reprojectUV, 0);
     float3 historyNormal = historyNormalDepth.xyz * 2 - 1;
     float historySceneDepth = ConvertFromDeviceZ(historyNormalDepth.w);
+    float depthThreshold = GetTemporalDepthThreshold(historySceneDepth);
 
     float historyWeight = _TemporalFilterWeight;
     float AOHistoryWeight = 0.8;
     float shadowHistoryWeight = 0.9;
-    if (IsUVOutSideScreen(reprojectUV) || dot(historyNormal, pixelCtx.worldNormal) < 0.5 || abs(pixelCtx.sceneDepth - historySceneDepth) > 0.5)
+    if (IsUVOutSideScreen(reprojectUV) || dot(historyNormal, pixelCtx.worldNormal) < 0.5 || abs(pixelCtx.sceneDepth - historySceneDepth) > depthThreshold)
     {
         historyWeight = 0;
         AOHistoryWeight = 0;
@@ -1324,13 +1330,14 @@ float4 SpecularIndirectFetchHistory(float3 worldPosition, float2 currentUV, bool
         float4 historyNormalDepth = _NormalDepthHistory.SampleLevel(sampler_PointClamp, reprojectUV, 0);
         float3 historyNormal = historyNormalDepth.xyz * 2 - 1;
         float historySceneDepth = ConvertFromDeviceZ(historyNormalDepth.w);
+        float depthThreshold = GetTemporalDepthThreshold(historySceneDepth);
 
         float4 currentNormalDepth = _NormalDepthTexture.SampleLevel(sampler_PointClamp, currentUV, 0);
         float3 currentNormal = currentNormalDepth.xyz * 2 - 1;
         float currentSceneDepth = ConvertFromDeviceZ(currentNormalDepth.w);
 
         float historyWeight = _TemporalFilterWeight;
-        if (dot(historyNormal, currentNormal) < 0.5 || abs(historySceneDepth - currentSceneDepth) > 0.5)
+        if (dot(historyNormal, currentNormal) < 0.5 || abs(historySceneDepth - currentSceneDepth) > depthThreshold)
         {
             historyWeight = 0;
         }
@@ -1417,6 +1424,7 @@ void SpecularSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     float rawDepth = _SceneDepthTexture.SampleLevel(sampler_PointClamp, uv, 0);
     float sceneDepth = ConvertFromDeviceZ(rawDepth);
     float4 GBufferNormalRoughness = _GBufferNormal.SampleLevel(sampler_PointClamp, uv, 0);
+    float depthTolerance = sceneDepth * 0.25;
 
     if (IsUVOutSideScreen(uv) || rawDepth <= 0)
     {
@@ -1455,7 +1463,7 @@ void SpecularSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
 
         // float Weight = 1.0;
         float weight = exp(-length(neighborUV - uv) / searchRange);
-        weight *= exp(-abs(neighborDepth - sceneDepth) * 0.01);
+        weight *= exp(-abs(neighborDepth - sceneDepth) / depthTolerance);
         weight *= saturate(dot(neighborNormal, GBufferNormalRoughness.xyz));
 
         colorSum += neighborColor * weight;
