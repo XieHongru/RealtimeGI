@@ -115,6 +115,8 @@ float GetMainLightShadow(in ClipmapInfo clipmapInfo, float3 worldPosition, float
     voxelClipPosition.xyz /= voxelClipPosition.w;
     bool isVoxelInFrustum = all(abs(voxelClipPosition.xy) < 1) && voxelClipPosition.z > 0; // voxel may behind camera frustum where csm is invalid
 
+    /*
+    // @TODO: fix light leaking caused by normal bias
     // 1. use whole scene shadow map
     if (isVoxelInFrustum)
     {
@@ -135,11 +137,12 @@ float GetMainLightShadow(in ClipmapInfo clipmapInfo, float3 worldPosition, float
     }
     // 2. trace shadow ray as fallback
     else
+    */
     {
         VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
-        RTRequest.rayStart = worldPosition + normalBias * 2;
+        RTRequest.rayStart = worldPosition + normalBias * 0.707;
         RTRequest.rayDir = _MainLightDirection;
-        RTRequest.minCascadeIndex = 0;
+        RTRequest.minCascadeIndex = _CascadeIndex;
         RTRequest.maxCascadeIndex = _CascadeCount - 1;
         RTRequest.maxStepNum = 1000;
         RTRequest.maxDistance = 100000;
@@ -193,7 +196,7 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
 
         // 3.1. evaluate direct lighting
         float mainLightShadow = GetMainLightShadow(clipmapInfo, voxelPosition, faceNormal, cascadeInfo.voxelSize);
-        radiance += saturate(dot(faceNormal, _MainLightDirection)) * _MainLightColor * mainLightShadow * baseColor / (3.1415926);
+        radiance += saturate(dot(faceNormal, _MainLightDirection)) * _MainLightColor * mainLightShadow * baseColor / (PI);
         // TODO: pre-exposure
         
         // 3.2. evaluate indirect lighting
