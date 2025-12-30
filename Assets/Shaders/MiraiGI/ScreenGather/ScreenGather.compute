@@ -310,8 +310,8 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
     }
 
     _RWInitialSampleRadiance[pixelCoord] = isValidPixel ? float4(hitRadiance, isHit) : 0;
-    _RWInitialSampleHitInfo[pixelCoord] = isValidPixel ? float4(hitNormal * 0.5 + 0.5, rayDistance) : 0;
-    _RWInitialSampleRayInfo[pixelCoord] = isValidPixel ? float4(rayDirectionAndPDF.xyz * 0.5 + 0.5, rayDirectionAndPDF.w) : 0;
+    _RWInitialSampleHitInfo[pixelCoord] = isValidPixel ? float4(hitNormal * 0.5 + 0.5, rayDistance) : float4(0, 0, 1, 1);
+    _RWInitialSampleRayInfo[pixelCoord] = isValidPixel ? float4(rayDirectionAndPDF.xyz * 0.5 + 0.5, rayDirectionAndPDF.w) : float4(0, 0, 1, 1);
 
     gs_PixelValidMask[groupThreadIndex] = isValidPixel;
     gs_ScreenHitMask[groupThreadIndex] = isHit;
@@ -934,7 +934,6 @@ void FilterGuidanceSSAO(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadI
 #pragma kernel DiffuseTemporalFilter
 
 float _TemporalFilterWeight;
-float _HistoryColorBoundScale;
 
 Texture2D<float4> _DiffuseIndirectTexture;
 Texture2D<float4> _DiffuseIndirectHistory;
@@ -943,7 +942,7 @@ Texture2D<float4> _IndirectShadowHistory;
 RWTexture2D<float4> _RWDiffuseTemporalFilterOutput;
 RWTexture2D<float4> _RWIndirectShadowTemporalFilterOutput;
 
-float3 ClampHistory(in float4 colorSamples[9], float3 currentColor, float3 historyColor, float colorBoundScale)
+float3 ClampHistoryYCoCg(in float4 colorSamples[9], float3 currentColor, float3 historyColor)
 {
     currentColor = RGBToYCoCg(currentColor);
     historyColor = RGBToYCoCg(historyColor);
@@ -957,11 +956,7 @@ float3 ClampHistory(in float4 colorSamples[9], float3 currentColor, float3 histo
         neighborMin = min(neighborMin, colorYCoCg);
         neighborMax = max(neighborMax, colorYCoCg);
     }
-    
-    // extend the color bounding box to avoid file flies, but may cause temporal lag
     float3 neighborCenter = (neighborMax + neighborMin) * 0.5;
-    neighborMin += (neighborMin - neighborCenter) * colorBoundScale;
-    neighborMax += (neighborMax - neighborCenter) * colorBoundScale;
 
     // 2. find intersection from history color to current color bounding box
     float3 rayOrigin = historyColor;
@@ -984,6 +979,41 @@ float GetTemporalDepthThreshold(float historySceneDepth)
     return historySceneDepth * 0.1;
 }
 
+// https://github.com/EpicGames/UnrealEngine/blob/5.1/Engine/Shaders/Private/Lumen/LumenReflections.usf#L776
+float ClampHistoryVariance(in float colorSamples[9], float historyColor)
+{
+    float count = 1;
+    float M1 = colorSamples[0]; // center pixel
+    float M2 = 0;
+
+    for (int i = 1; i < 9; i++)
+    {
+        float sample = colorSamples[i];
+
+        count += 1;
+        float delta1 = sample - M1;
+        M1 += delta1 / count;
+        float delta2 = sample - M1;
+        M2 += delta1 * delta2;
+    }
+
+    float mean = M1;
+    float variance = M2 / (count - 1);
+    float stdDev = sqrt(variance);
+
+    return ClampNaNs(clamp(historyColor, mean - stdDev, mean + stdDev));
+}
+
+float CalculateSampleAverage(in float colorSamples[9])
+{
+    float sum = 0;
+    for (int i = 0; i < 9; i++)
+    {
+        sum += colorSamples[i];
+    }
+    return sum / 9.0;
+}
+
 [numthreads(8, 8, 1)]
 void DiffuseTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
@@ -1000,11 +1030,13 @@ void DiffuseTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     }
 
     float4 colorSamples[9];
-    float4 shadowSamples[9];
+    float shadowSamples[9];
+    float SSAOSamples[9];
     for (int i = 0; i < 9; i++)
     {
         float2 neighborUV = uv + offsets3x3[i] * screenGatherTexelSize;
         colorSamples[i] = _DiffuseIndirectTexture.SampleLevel(sampler_PointClamp, neighborUV, 0);
+        SSAOSamples[i] = colorSamples[i].a;
         shadowSamples[i] = _IndirectShadowTexture.SampleLevel(sampler_PointClamp, neighborUV, 0).r;
     }
     float4 currentColor = colorSamples[0];
@@ -1021,37 +1053,32 @@ void DiffuseTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     float depthThreshold = GetTemporalDepthThreshold(historySceneDepth);
 
     float historyWeight = _TemporalFilterWeight;
-    float AOHistoryWeight = 0.8;
-    float shadowHistoryWeight = 0.9;
+    float SSAOHistoryWeight = _TemporalFilterWeight;
+    float shadowHistoryWeight = _TemporalFilterWeight;
     if (IsUVOutSideScreen(reprojectUV) || dot(historyNormal, pixelCtx.worldNormal) < 0.5 || abs(pixelCtx.sceneDepth - historySceneDepth) > depthThreshold)
     {
         historyWeight = 0;
-        AOHistoryWeight = 0;
+        SSAOHistoryWeight = 0;
         shadowHistoryWeight = 0;
     }
     
     // 4. clamp history
-    historyColor.rgb = ClampHistory(colorSamples, currentColor.rgb, historyColor.rgb, _HistoryColorBoundScale);
+    historyColor.rgb = ClampHistoryYCoCg(colorSamples, currentColor.rgb, historyColor.rgb);
     float4 outColor = float4(0, 0, 0, 0);
     outColor.rgb = lerp(currentColor.rgb, historyColor.rgb, historyWeight);
     
     // 5. output filter guidance ssao
-    float AOSum = 0;
-    for (int i = 0; i < 9; i++)
-    {
-        AOSum += colorSamples[i].a;
-    }
-    outColor.a = lerp(AOSum / 9.0, historyColor.a, AOHistoryWeight);
+    float currentSSAO = CalculateSampleAverage(SSAOSamples);
+    float historySSAO = ClampNaNs(historyColor.a);
+    historySSAO = ClampHistoryVariance(SSAOSamples, historySSAO);
+    outColor.a = lerp(currentSSAO, historySSAO, SSAOHistoryWeight);
     _RWDiffuseTemporalFilterOutput[pixelCoord] = outColor;
     
     // 6. output indirect shadow
-    float shadowHistory = _IndirectShadowHistory.SampleLevel(sampler_linearClamp, reprojectUV, 0).r;
-    float shadowSum = 0;
-    for (int i = 0; i < 9; i++)
-    {
-        shadowSum += shadowSamples[i];
-    }
-    _RWIndirectShadowTemporalFilterOutput[pixelCoord] = lerp(shadowSum / 9.0, shadowHistory, shadowHistoryWeight);
+    float currentShadow = CalculateSampleAverage(shadowSamples);
+    float historyShadow = ClampNaNs(_IndirectShadowHistory.SampleLevel(sampler_linearClamp, reprojectUV, 0).r);
+    historyShadow = ClampHistoryVariance(shadowSamples, historyShadow);
+    _RWIndirectShadowTemporalFilterOutput[pixelCoord] = lerp(currentShadow, historyShadow, shadowHistoryWeight);
 }
 
 // -------------------------------------------------------------------------------- //
@@ -1416,7 +1443,7 @@ void SpecularTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThr
     float4 historyColor = (lumaDiffWithSurfaceReproject < lumaDiffWithParallexReproject)
                         ? surfaceReprojectResult : parallexReprojectResult;
 
-    historyColor.rgb = ClampHistory(colorSamples, currentColor, historyColor.rgb, _HistoryColorBoundScale);
+    historyColor.rgb = ClampHistoryYCoCg(colorSamples, currentColor, historyColor.rgb);
     float3 filteredColor = lerp(currentColor, historyColor.rgb, historyColor.a);
 
     _RWSpecularTemporalFilterOutput[pixelCoord] = float4(filteredColor, 1);

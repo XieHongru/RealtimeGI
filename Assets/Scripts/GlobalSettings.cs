@@ -73,7 +73,6 @@ public class GlobalSettings : ScriptableObject
     public float spatialReuseSearchRange = 0.5f;
 
     public float diffuseTemporalFilterWeight = 0.95f;
-    public float diffuseTemporalFilterHistoryColorBoundScale = 0.1f;
     public int diffuseSpatialFilterIterationCount = 5;
 
     public float filterGuidanceSSAORange = 2.0f;
@@ -82,7 +81,6 @@ public class GlobalSettings : ScriptableObject
     public float filterGuidanceSSAOWeight = 10.0f;
 
     public float specularTemporalFilterWeight = 0.96f;
-    public float specularTemporalFilterHistoryColorBoundScale = 0.0f;
     public float specularResolveSearchRange = 4.0f;
     public float specularFilterSearchRange = 4.0f;
 
