@@ -618,7 +618,7 @@ void ReservoirSpatialReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
         float hemisphereDot2 = dot(pixelCtx.worldNormal, neighborPath);
         float hemisphereDot3 = dot(neighborReservoir.currentSample.rayStartNormal, neighborPath);
         float normalDot = dot(pixelCtx.worldNormal, neighborReservoir.currentSample.rayStartNormal);
-        if (hemisphereDot1 <= 0 || hemisphereDot2 <= 0 || hemisphereDot3 <= 0 || distance > distanceThreshold)
+        if (hemisphereDot1 <= 0 || hemisphereDot2 <= 0 || hemisphereDot3 <= 0 || normalDot < 0.8 || distance > distanceThreshold)
         {
             continue;
         }
@@ -940,8 +940,10 @@ Texture2D<float4> _DiffuseIndirectTexture;
 Texture2D<float4> _DiffuseIndirectHistory;
 Texture2D<float4> _IndirectShadowTexture;
 Texture2D<float4> _IndirectShadowHistory;
+Texture2D<float> _AccumulatedFrameTexture;
 RWTexture2D<float4> _RWDiffuseTemporalFilterOutput;
 RWTexture2D<float4> _RWIndirectShadowTemporalFilterOutput;
+RWTexture2D<float> _RWAccumulatedFrameTexture;
 
 float3 ClampHistoryYCoCg(in float4 colorSamples[9], float3 currentColor, float3 historyColor)
 {
@@ -1027,6 +1029,8 @@ void DiffuseTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     if (any(threadId.xy >= _ScreenGatherRTSize) || IsUVOutSideScreen(uv) || pixelCtx.rawDepth <= 0)
     {
         _RWDiffuseTemporalFilterOutput[pixelCoord] = float4(0, 0, 0, 0);
+        _RWIndirectShadowTemporalFilterOutput[pixelCoord] = float4(0, 0, 0, 0);
+        _RWAccumulatedFrameTexture[pixelCoord] = float4(0, 0, 0, 0);
         return;
     }
 
@@ -1053,17 +1057,14 @@ void DiffuseTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     float historySceneDepth = ConvertFromDeviceZ(historyNormalDepth.w);
     float depthThreshold = GetTemporalDepthThreshold(historySceneDepth);
 
-    float historyWeight = _TemporalFilterWeight;
-    float SSAOHistoryWeight = _TemporalFilterWeight;
-    float shadowHistoryWeight = _TemporalFilterWeight;
+    float accumulatedFrame = _AccumulatedFrameTexture.SampleLevel(sampler_PointClamp, reprojectUV, 0).r * 255.0;
     if (IsUVOutSideScreen(reprojectUV) || dot(historyNormal, pixelCtx.worldNormal) < 0.5 || abs(pixelCtx.sceneDepth - historySceneDepth) > depthThreshold)
     {
-        historyWeight = 0;
-        SSAOHistoryWeight = 0;
-        shadowHistoryWeight = 0;
+        accumulatedFrame = 0;
     }
+    float historyWeight = 1.0 - 1.0 / (1.0 + accumulatedFrame);
     
-    // 4. clamp history
+    // 4. clamp history and output color
     historyColor.rgb = ClampHistoryYCoCg(colorSamples, currentColor.rgb, historyColor.rgb);
     float4 outColor = float4(0, 0, 0, 0);
     outColor.rgb = lerp(currentColor.rgb, historyColor.rgb, historyWeight);
@@ -1072,14 +1073,18 @@ void DiffuseTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     float currentSSAO = CalculateSampleAverage(SSAOSamples);
     float historySSAO = ClampNaNs(historyColor.a);
     historySSAO = ClampHistoryVariance(SSAOSamples, historySSAO);
-    outColor.a = lerp(currentSSAO, historySSAO, SSAOHistoryWeight);
+    outColor.a = lerp(currentSSAO, historySSAO, historyWeight);
     _RWDiffuseTemporalFilterOutput[pixelCoord] = outColor;
     
     // 6. output indirect shadow
     float currentShadow = CalculateSampleAverage(shadowSamples);
     float historyShadow = ClampNaNs(_IndirectShadowHistory.SampleLevel(sampler_linearClamp, reprojectUV, 0).r);
     historyShadow = ClampHistoryVariance(shadowSamples, historyShadow);
-    _RWIndirectShadowTemporalFilterOutput[pixelCoord] = lerp(currentShadow, historyShadow, shadowHistoryWeight);
+    _RWIndirectShadowTemporalFilterOutput[pixelCoord] = lerp(currentShadow, historyShadow, historyWeight);
+    
+    // 7. output accumulated frame
+    float maxAccumulatedFrame = 1.0 / (1.0 - _TemporalFilterWeight);
+    _RWAccumulatedFrameTexture[pixelCoord] = clamp(accumulatedFrame + 1, 0, maxAccumulatedFrame) / 255.0;
 }
 
 // -------------------------------------------------------------------------------- //
@@ -1368,10 +1373,10 @@ float4 SpecularIndirectFetchHistory(float3 worldPosition, float2 currentUV, bool
     float3 historyColor = _SpecularIndirectHistory.SampleLevel(sampler_linearClamp, reprojectUV, 0).rgb;
     historyColor = ClampNaNs(historyColor);
     
-    float historyWeight = _TemporalFilterWeight;
+    float accumulatedFrame = _AccumulatedFrameTexture.SampleLevel(sampler_PointClamp, reprojectUV, 0).r * 255.0;
     if (IsUVOutSideScreen(reprojectUV))
     {
-        historyWeight = 0;
+        accumulatedFrame = 0;
     }
 
     // reject history if geometry change
@@ -1386,15 +1391,14 @@ float4 SpecularIndirectFetchHistory(float3 worldPosition, float2 currentUV, bool
         float4 currentNormalDepth = _NormalDepthTexture.SampleLevel(sampler_PointClamp, currentUV, 0);
         float3 currentNormal = currentNormalDepth.xyz * 2 - 1;
         float currentSceneDepth = ConvertFromDeviceZ(currentNormalDepth.w);
-
-        float historyWeight = _TemporalFilterWeight;
+        
         if (dot(historyNormal, currentNormal) < 0.5 || abs(historySceneDepth - currentSceneDepth) > depthThreshold)
         {
-            historyWeight = 0;
+            accumulatedFrame = 0;
         }
     }
 
-    return float4(historyColor, historyWeight);
+    return float4(historyColor, accumulatedFrame);
 }
 
 [numthreads(8, 8, 1)]
@@ -1418,6 +1422,7 @@ void SpecularTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThr
     if (IsUVOutSideScreen(uv) || rawDepth <= 0)
     {
         _RWSpecularTemporalFilterOutput[pixelCoord] = float4(0, 0, 0, 0);
+        _RWAccumulatedFrameTexture[pixelCoord] = float4(0, 0, 0, 0);
         return;
     }
 
@@ -1447,11 +1452,18 @@ void SpecularTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThr
     float lumaDiffWithParallexReproject = abs(Luma(parallexReprojectResult.rgb) - Luma(currentColorAverage));
     float4 historyColor = (lumaDiffWithSurfaceReproject < lumaDiffWithParallexReproject)
                         ? surfaceReprojectResult : parallexReprojectResult;
+    
+    // 6. output color
+    float accumulatedFrame = historyColor.a;
+    float historyWeight = 1.0 - 1.0 / (1.0 + accumulatedFrame);
 
     historyColor.rgb = ClampHistoryYCoCg(colorSamples, currentColor, historyColor.rgb);
-    float3 filteredColor = lerp(currentColor, historyColor.rgb, historyColor.a);
-
+    float3 filteredColor = lerp(currentColor, historyColor.rgb, historyWeight);
     _RWSpecularTemporalFilterOutput[pixelCoord] = float4(filteredColor, 1);
+    
+    // 7. output accumulated frame
+    float maxAccumulatedFrame = 1.0 / (1.0 - _TemporalFilterWeight);
+    _RWAccumulatedFrameTexture[pixelCoord] = clamp(accumulatedFrame + 1, 0, maxAccumulatedFrame) / 255.0;
 }
 
 // -------------------------------------------------------------------------------- //

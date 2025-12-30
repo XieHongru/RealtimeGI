@@ -50,18 +50,16 @@ MonoBehaviour:
   spatialSecondaryReuse: 0
   indirectShadowEnable: 1
   indirectShadowSharpness: 1
-  indirectShadowIntensity: 1
+  indirectShadowIntensity: 0.75
   indirectShadowSpatialFilterIterationCount: 3
   spatialReuseSearchRange: 0.5
   diffuseTemporalFilterWeight: 0.95
-  diffuseTemporalFilterHistoryColorBoundScale: 0.1
   diffuseSpatialFilterIterationCount: 5
   filterGuidanceSSAORange: 2
   filterGuidanceSSAOIntensity: 0.5
   filterGuidanceSSAOSharpness: 1
   filterGuidanceSSAOWeight: 10
   specularTemporalFilterWeight: 0.96
-  specularTemporalFilterHistoryColorBoundScale: 0
   specularResolveSearchRange: 4
   specularFilterSearchRange: 4
   useDistanceField: 1
