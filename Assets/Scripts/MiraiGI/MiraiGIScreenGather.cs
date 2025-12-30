@@ -1047,7 +1047,7 @@ public class MiraiGIScreenGather
 
         cmd.SetComputeIntParam(m_ScreenGatherCS, Shader.PropertyToID("_FrameNumber"), m_FrameNumber);
         cmd.SetComputeVectorParam(m_ScreenGatherCS, Shader.PropertyToID("_ScreenGatherRTSize"), (Vector2)m_ScreenGatherRTSize);
-        cmd.SetComputeFloatParam(m_ScreenGatherCS, Shader.PropertyToID("_TemporalFilterWeight"), GlobalSettings.Instance.diffuseTemporalFilterWeight);
+        cmd.SetComputeFloatParam(m_ScreenGatherCS, Shader.PropertyToID("_MaxAccumulatedFrame"), GlobalSettings.Instance.diffuseMaxAccumulatedFrame);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_NormalDepthTexture"), m_NormalDepthTexture);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_NormalDepthHistory"), m_NormalDepthHistory);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_DiffuseIndirectTexture"), m_DiffuseResolveOutputTexture);
@@ -1201,7 +1201,7 @@ public class MiraiGIScreenGather
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_MotionVectors"), Shader.GetGlobalTexture("_MotionVectorTexture"));
 
         cmd.SetComputeIntParam(m_ScreenGatherCS, Shader.PropertyToID("_FrameNumber"), m_FrameNumber);
-        cmd.SetComputeFloatParam(m_ScreenGatherCS, Shader.PropertyToID("_TemporalFilterWeight"), GlobalSettings.Instance.specularTemporalFilterWeight);
+        cmd.SetComputeFloatParam(m_ScreenGatherCS, Shader.PropertyToID("_MaxAccumulatedFrame"), GlobalSettings.Instance.specularMaxAccumulatedFrame);
         cmd.SetComputeVectorParam(m_ScreenGatherCS, Shader.PropertyToID("_SceneTextureRTSize"), (Vector2)m_SceneTextureRTSize);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_SpecularIndirectTexture"), m_SpecularResolveOutputTexture);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_SpecularIndirectHistory"), m_SpecularIndirectHistory);

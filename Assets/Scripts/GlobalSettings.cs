@@ -72,7 +72,7 @@ public class GlobalSettings : ScriptableObject
     public int indirectShadowSpatialFilterIterationCount = 3;
     public float spatialReuseSearchRange = 0.5f;
 
-    public float diffuseTemporalFilterWeight = 0.95f;
+    public float diffuseMaxAccumulatedFrame = 32.0f;
     public int diffuseSpatialFilterIterationCount = 5;
 
     public float filterGuidanceSSAORange = 2.0f;
@@ -80,7 +80,7 @@ public class GlobalSettings : ScriptableObject
     public float filterGuidanceSSAOSharpness = 1.0f;
     public float filterGuidanceSSAOWeight = 10.0f;
 
-    public float specularTemporalFilterWeight = 0.96f;
+    public float specularMaxAccumulatedFrame = 32.0f;
     public float specularResolveSearchRange = 4.0f;
     public float specularFilterSearchRange = 4.0f;
 

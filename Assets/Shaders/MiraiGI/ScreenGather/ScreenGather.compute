@@ -934,7 +934,7 @@ void FilterGuidanceSSAO(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadI
 // -------------------------------------------------------------------------------- //
 #pragma kernel DiffuseTemporalFilter
 
-float _TemporalFilterWeight;
+float _MaxAccumulatedFrame;
 
 Texture2D<float4> _DiffuseIndirectTexture;
 Texture2D<float4> _DiffuseIndirectHistory;
@@ -1083,8 +1083,7 @@ void DiffuseTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     _RWIndirectShadowTemporalFilterOutput[pixelCoord] = lerp(currentShadow, historyShadow, historyWeight);
     
     // 7. output accumulated frame
-    float maxAccumulatedFrame = 1.0 / (1.0 - _TemporalFilterWeight);
-    _RWAccumulatedFrameTexture[pixelCoord] = clamp(accumulatedFrame + 1, 0, maxAccumulatedFrame) / 255.0;
+    _RWAccumulatedFrameTexture[pixelCoord] = clamp(accumulatedFrame + 1, 0, _MaxAccumulatedFrame) / 255.0;
 }
 
 // -------------------------------------------------------------------------------- //
@@ -1462,8 +1461,7 @@ void SpecularTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThr
     _RWSpecularTemporalFilterOutput[pixelCoord] = float4(filteredColor, 1);
     
     // 7. output accumulated frame
-    float maxAccumulatedFrame = 1.0 / (1.0 - _TemporalFilterWeight);
-    _RWAccumulatedFrameTexture[pixelCoord] = clamp(accumulatedFrame + 1, 0, maxAccumulatedFrame) / 255.0;
+    _RWAccumulatedFrameTexture[pixelCoord] = clamp(accumulatedFrame + 1, 0, _MaxAccumulatedFrame) / 255.0;
 }
 
 // -------------------------------------------------------------------------------- //
