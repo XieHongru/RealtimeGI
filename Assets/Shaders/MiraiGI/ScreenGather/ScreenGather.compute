@@ -299,13 +299,11 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
     if (isHit)
     {
         hitRadiance = _SceneColorHistory.SampleLevel(sampler_linearClamp, reprojectRayHitUV, 0).rgb;
-        //hitRadiance = _SceneColorHistory.SampleLevel(sampler_linearClamp, reprojectRayHitUV, hitLevel).rgb;
         hitNormal = _NormalDepthHistory.SampleLevel(sampler_PointClamp, reprojectRayHitUV, 0).rgb * 2 - 1;
         
-        // discard back face hit
         if (dot(hitNormal, rayDirectionAndPDF.xyz) > 0)
         {
-            isHit = false;
+            hitNormal *= -1; // just turn the hit normal back away
         }
     }
 
@@ -532,9 +530,10 @@ void ReservoirTemporalReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThr
     Reservoir temporalReservoir = FetchReservoir(reprojectUV);
 
     // calculate geometry similarity to decide if we need cleanup reservoir history
+    float distanceThreshold = pixelCtx.sceneDepth * 0.1;
     float distance = length(pixelCtx.worldPosition - temporalReservoir.currentSample.rayStart);
     float normalDot = abs(dot(pixelCtx.worldNormal, temporalReservoir.currentSample.rayStartNormal));
-    if (distance > 0.5 || reprojectValidCount == 0 || isnan(temporalReservoir.weightSum) || isnan(temporalReservoir.estimatorWeight))
+    if (distance > distanceThreshold || reprojectValidCount == 0 || isnan(temporalReservoir.weightSum) || isnan(temporalReservoir.estimatorWeight))
     {
         temporalReservoir = (Reservoir) 0;
     }
@@ -592,6 +591,7 @@ void ReservoirSpatialReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     float3 vectorDDXY = length(pixelCtx.worldPosition - worldPositionDDXY);
     float distanceDDXY = max(max(vectorDDXY.x, vectorDDXY.y), vectorDDXY.z);
     float uvSearchRange = clamp((_SpatialReuseSearchRange / distanceDDXY) * screenGatherTexelSize, 0.02, 0.2);
+    float distanceThreshold = pixelCtx.sceneDepth * 0.2;
 
     // 3. reuse neighbor reservoirs
     for (int i = 0; i < _SpatialReuseSampleCount; i++)
@@ -608,6 +608,7 @@ void ReservoirSpatialReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
         }
 
         Reservoir neighborReservoir = FetchReservoir(neighborUV);
+        float distance = length(pixelCtx.worldPosition - neighborReservoir.currentSample.rayStart);
 
         // 3.2. consider geometry similarity
         float3 reusedPath = neighborReservoir.currentSample.rayEnd - pixelCtx.worldPosition;
@@ -617,7 +618,7 @@ void ReservoirSpatialReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
         float hemisphereDot2 = dot(pixelCtx.worldNormal, neighborPath);
         float hemisphereDot3 = dot(neighborReservoir.currentSample.rayStartNormal, neighborPath);
         float normalDot = dot(pixelCtx.worldNormal, neighborReservoir.currentSample.rayStartNormal);
-        if (hemisphereDot1 <= 0 || hemisphereDot2 <= 0 || hemisphereDot3 <= 0 || normalDot < 0.8)
+        if (hemisphereDot1 <= 0 || hemisphereDot2 <= 0 || hemisphereDot3 <= 0 || distance > distanceThreshold)
         {
             continue;
         }
@@ -1125,6 +1126,7 @@ void DiffuseSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThrea
     uint2 randomSeed = Rand3DPCG16(uint3(uv * 11451.514, _FrameNumber + 1919)).xy;
     float2 E = Hammersley16(0, 1, randomSeed) * 2 - 1; // [-1, 1]
     float2 uvJitter = (_FilterRadius > ATROUS_SAFE_RANGE) ? E * 0.25 : 0;
+    float normalSpatialWeight = min(_FilterRadius * 2, 20); // keep more directionality when radius large
 
     for (int i = 1; i < 9; i++)
     {
@@ -1139,11 +1141,12 @@ void DiffuseSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThrea
 
         float3 neighborPixelPosition, neighborPixelNormal;
         float neighborDepth = GetPixelPositionAndNormal(neighborUV, neighborPixelPosition, neighborPixelNormal);
+        float normalDiff = 1 - saturate(dot(neighborPixelNormal, pixelCtx.worldNormal));
 
         float weight = 1;
         weight *= gaussianWeights3x3[i];
         weight *= exp(-abs(neighborDepth - pixelCtx.sceneDepth) * 0.01);
-        weight *= saturate(dot(neighborPixelNormal, pixelCtx.worldNormal));
+        weight *= exp(-normalDiff * normalSpatialWeight);
         weight *= exp(-abs(guidanceSSAO - neighborColor.w) * _SSAOGuidanceWeight);
 
         colorSum += neighborColor * weight;
@@ -1195,7 +1198,7 @@ void DiffuseComposite(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     for (int i = 0; i < 9; i++)
     {
         float2 neighborUV = uv + offsets3x3[i] * screenGatherTexelSize;
-        float neighborDepth = _MiniDepthTexture.SampleLevel(sampler_PointClamp, uv, 0).r;
+        float neighborDepth = _MiniDepthTexture.SampleLevel(sampler_PointClamp, neighborUV, 0).r;
 
         float depthDiff = abs(neighborDepth - centerDepth);
         if (depthDiff < bestDepthDiff)
@@ -1283,6 +1286,7 @@ void SpecularResolve(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId :
     
     // bug ??
     float3 worldPosition = ReconstructWorldPositionFromDepth(uv, _SceneDepthTexture.SampleLevel(sampler_PointClamp, uv, 0));
+    float linearRoughness = sqrt(GBufferNormalRoughness.w);
 
     // 2. query and resolve neighbor pixels
     const int neighborSampleCount = 4;
@@ -1290,14 +1294,15 @@ void SpecularResolve(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId :
     float3 radianceSum = 0;
     float3 weightSum = 0;
     float rayDistanceSum = 0;
-    
+    float2 searchRange = screenGatherTexelSize * _SpecularResolveSearchRange * lerp(1e-3, 2, linearRoughness);
+
     for (int i = 0; i < resolveSampleCount; i++)
     {
         float2 E = Hammersley16(i, neighborSampleCount, randomSeed);
         float2 uvOffset = E * 2 - 1;
         uvOffset = (i <= neighborSampleCount) ? uvOffset : 0;
         
-        float2 neighborUV = uv + uvOffset * screenGatherTexelSize * _SpecularResolveSearchRange;
+        float2 neighborUV = uv + uvOffset * searchRange;
         float3 rayStartPosition, rayStartNormal;
         GetPixelPositionAndNormal(neighborUV, rayStartPosition, rayStartNormal);
 
@@ -1470,6 +1475,7 @@ void SpecularSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     float rawDepth = _SceneDepthTexture.SampleLevel(sampler_PointClamp, uv, 0);
     float sceneDepth = ConvertFromDeviceZ(rawDepth);
     float4 GBufferNormalRoughness = _GBufferNormal.SampleLevel(sampler_PointClamp, uv, 0);
+    float linearRoughness = sqrt(GBufferNormalRoughness.w);
     float depthTolerance = sceneDepth * 0.25;
 
     if (IsUVOutSideScreen(uv) || rawDepth <= 0)
@@ -1483,7 +1489,7 @@ void SpecularSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     const int sampleCount = neighborSampleCount + 1;
     float weightSum = 0;
     float4 colorSum = 0;
-    float searchRange = texelSize * _FilterRadius * lerp(1e-3, 8, GBufferNormalRoughness.w);
+    float2 searchRange = texelSize * _FilterRadius * lerp(1e-3, 4, linearRoughness);
 
     for (int i = 0; i < sampleCount; i++)
     {
@@ -1506,11 +1512,12 @@ void SpecularSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
 
         float neighborDepth = ConvertFromDeviceZ(_SceneDepthTexture.SampleLevel(sampler_PointClamp, neighborUV, 0));
         float3 neighborNormal = _GBufferNormal.SampleLevel(sampler_PointClamp, neighborUV, 0).xyz;
+        float normalDiff = 1 - saturate(dot(neighborNormal, GBufferNormalRoughness.xyz));
 
         // float Weight = 1.0;
         float weight = exp(-length(neighborUV - uv) / searchRange);
         weight *= exp(-abs(neighborDepth - sceneDepth) / depthTolerance);
-        weight *= saturate(dot(neighborNormal, GBufferNormalRoughness.xyz));
+        weight *= exp(-normalDiff * 5.0);
 
         colorSum += neighborColor * weight;
         weightSum += weight;
