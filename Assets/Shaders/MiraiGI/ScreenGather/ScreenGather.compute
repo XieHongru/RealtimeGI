@@ -796,6 +796,7 @@ void ReservoirEvaluateIrradiance(uint3 threadId : SV_DispatchThreadID, uint3 gro
 float _AOWorldRange;
 float _AOSharpness;
 
+Texture2D<float4> _DiffuseResolveInput;
 RWTexture2D<float4> _RWDiffuseResolveOutputTexture;
 
 float3 TransformDirectionWorldToView(float3 worldNormal)
@@ -928,7 +929,7 @@ void FilterGuidanceSSAO(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadI
 
 #endif  // #if USE_GTAO
 
-    _RWDiffuseResolveOutputTexture[pixelCoord] = float4(finalOcclusion.xxxx);
+    _RWDiffuseResolveOutputTexture[pixelCoord] = float4(_DiffuseResolveInput[pixelCoord].xyz, finalOcclusion);
 }
 
 // -------------------------------------------------------------------------------- //

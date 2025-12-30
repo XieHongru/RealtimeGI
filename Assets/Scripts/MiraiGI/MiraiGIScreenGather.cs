@@ -995,6 +995,9 @@ public class MiraiGIScreenGather
 
         int kernel = m_ScreenGatherCS.FindKernel("FilterGuidanceSSAO");
 
+        RenderTexture diffuseResolveInput = RenderTexture.GetTemporary(m_DiffuseResolveOutputTexture.descriptor);
+        cmd.Blit(m_DiffuseResolveOutputTexture, diffuseResolveInput);
+
         cmd.SetComputeVectorParam(m_ScreenGatherCS, Shader.PropertyToID("_CameraPosition"), Camera.main.transform.position);
 
         // ReconstructWorldPositionFromDepth params
@@ -1018,6 +1021,7 @@ public class MiraiGIScreenGather
         cmd.SetComputeFloatParam(m_ScreenGatherCS, Shader.PropertyToID("_AOSharpness"), GlobalSettings.Instance.filterGuidanceSSAOSharpness);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_NormalDepthTexture"), m_NormalDepthTexture);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_MiniDepthTexture"), m_MiniDepthTexture);
+        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_DiffuseResolveInput"), diffuseResolveInput);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWDiffuseResolveOutputTexture"), m_DiffuseResolveOutputTexture);
 
         cmd.DispatchCompute(m_ScreenGatherCS, kernel, Mathf.CeilToInt((float)m_ScreenGatherRTSize.x / 8), Mathf.CeilToInt((float)m_ScreenGatherRTSize.y / 8), 1);
