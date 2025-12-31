@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Collections.Generic;
+using UnityEditor.Experimental.GraphView;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
@@ -11,7 +12,7 @@ public class MiraiGIRendererFeature : ScriptableRendererFeature
     public override void Create()
     {
         m_MiraiGIRenderPass = new MiraiGIRenderPass();
-        m_MiraiGIRenderPass.renderPassEvent = RenderPassEvent.AfterRenderingPostProcessing;
+        m_MiraiGIRenderPass.renderPassEvent = RenderPassEvent.BeforeRenderingTransparents;
     }
 
     public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
@@ -54,13 +55,22 @@ public class MiraiGIRenderPass : ScriptableRenderPass
         CommandBuffer cmd = CommandBufferPool.Get("Blit Visualize Result");
 
         if (GlobalSettings.NeedVisualize())
-            cmd.Blit(m_GIController.miraiGIGPUScene.miraiGIClipmap.GetVisualizeColorTarget(), cameraTarget);
+        {
+            if (GlobalSettings.Instance.visualizeScreenGather == 7)
+            {
+                m_GIController.MiraiGIDiffuseComposite(ref renderingData);
+                //m_GIController.MiraiGISpecularComposite(ref renderingData);
+                cmd.Blit(m_GIController.miraiGIGPUScene.miraiGIScreenGather.GetDiffuseCompositeTexture(), cameraTarget);
+                //cmd.Blit(m_GIController.miraiGIGPUScene.miraiGIScreenGather.GetSpecularCompositeTexture(), cameraTarget);
+            }
+            else
+            {
+                cmd.Blit(m_GIController.miraiGIGPUScene.miraiGIClipmap.GetVisualizeColorTarget(), cameraTarget);
+            }
+        }
         else
         {
-            m_GIController.MiraiGIDiffuseComposite(ref renderingData);
-            //m_GIController.MiraiGISpecularComposite(ref renderingData);
-            cmd.Blit(m_GIController.miraiGIGPUScene.miraiGIScreenGather.GetDiffuseCompositeTexture(), cameraTarget);
-            //cmd.Blit(m_GIController.miraiGIGPUScene.miraiGIScreenGather.GetSpecularCompositeTexture(), cameraTarget);
+
         }
 
         context.ExecuteCommandBuffer(cmd);

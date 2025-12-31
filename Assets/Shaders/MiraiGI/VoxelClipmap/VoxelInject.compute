@@ -87,7 +87,6 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         ObjectInfo objectInfo = _ObjectsInfo[objectId];
 
         // transform voxel center to object's space
-        //float3 localPosition = mul(float4(voxelPosition, 1), objectInfo.worldToLocalMatrix);
         float3 localPosition = mul(objectInfo.worldToLocalMatrix, float4(voxelPosition, 1));
 
         // note: ObjectInfo.WorldBoundsMax will extend when rotate object

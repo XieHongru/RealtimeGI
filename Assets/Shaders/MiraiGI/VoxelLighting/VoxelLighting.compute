@@ -115,7 +115,7 @@ float GetMainLightShadow(in ClipmapInfo clipmapInfo, float3 worldPosition, float
     voxelClipPosition.xyz /= voxelClipPosition.w;
     bool isVoxelInFrustum = all(abs(voxelClipPosition.xy) < 1) && voxelClipPosition.z > 0; // voxel may behind camera frustum where csm is invalid
 
-    /*
+    
     // @TODO: fix light leaking caused by normal bias
     // 1. use whole scene shadow map
     if (isVoxelInFrustum)
@@ -137,7 +137,7 @@ float GetMainLightShadow(in ClipmapInfo clipmapInfo, float3 worldPosition, float
     }
     // 2. trace shadow ray as fallback
     else
-    */
+    
     {
         VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
         RTRequest.rayStart = worldPosition + normalBias * 0.707;

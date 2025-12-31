@@ -424,7 +424,7 @@ void InitialSampleVoxelTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupTh
     {
         hitRadiance = FetchRadianceFromVoxelScene(RTRequest, hit);
         rayDistance = length(hit.position - pixelCtx.worldPosition);
-        hitNormal = FetchRadianceFromVoxelScene(RTRequest, hit);
+        hitNormal = FetchNormalFromVoxelScene(RTRequest, hit);
     }
     else
     {
@@ -1179,6 +1179,7 @@ float _AOIntensity;
 float _IndirectShadowSharpness;
 float _IndirectShadowIntensity;
 Texture2D<float4> _GBufferBaseColor;
+Texture2D<float4> _SceneColor;
 RWTexture2D<float4> _RWDiffuseCompositeTexture;
 
 [numthreads(8, 8, 1)]
@@ -1229,7 +1230,7 @@ void DiffuseComposite(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     occlusion = min(occlusion, indirectShadow);
 
     diffuseIndirect *= occlusion;
-    _RWDiffuseCompositeTexture[threadId.xy] = float4(ClampNaNs(diffuseIndirect), 1);
+    _RWDiffuseCompositeTexture[threadId.xy] = float4(ClampNaNs(diffuseIndirect), 1) + _SceneColor.SampleLevel(sampler_PointClamp, uv, 0);
 }
 
 // -------------------------------------------------------------------------------- //
