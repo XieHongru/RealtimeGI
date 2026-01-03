@@ -2,6 +2,30 @@ using UnityEditor;
 using UnityEditor.ShaderGraph.Internal;
 using UnityEngine;
 
+public class ChineseLabelAttribute : PropertyAttribute
+{
+    public string Label { get; private set; }
+
+    public ChineseLabelAttribute(string label)
+    {
+        Label = label;
+    }
+}
+
+#if UNITY_EDITOR
+
+[CustomPropertyDrawer(typeof(ChineseLabelAttribute))]
+public class ChineseLabelDrawer : PropertyDrawer
+{
+    public override void OnGUI(Rect position, SerializedProperty property, GUIContent label)
+    {
+        ChineseLabelAttribute chineseLabel = (ChineseLabelAttribute)attribute;
+        label.text = chineseLabel.Label;
+        EditorGUI.PropertyField(position, property, label);
+    }
+}
+#endif
+
 [CreateAssetMenu(menuName = "Settings/Realtime GI Settings")]
 public class GlobalSettings : ScriptableObject
 {
@@ -33,6 +57,8 @@ public class GlobalSettings : ScriptableObject
     public int adaptiveSurfaceCacheCount = 8;
 
     // Clipmap
+    [Header("Clipmap Settings")]
+
     public int chunkCountToUpdatePerFrame = 64;
     public int cullingObjectCountPerChunk = 64;
     public int voxelCascadeCount = 4;
@@ -46,6 +72,8 @@ public class GlobalSettings : ScriptableObject
     public float clipmapObjectCullingRejectFactor4 = 4.0f;
 
     // Voxel Lighting
+    [Header("Voxel Lighting Settings")]
+
     public int voxelLightingCheckerBoardSize = 2;
     public int freezeLightingForDebug = 0;
     public int probeUpdateCheckerBoardSize = 2;
@@ -60,29 +88,53 @@ public class GlobalSettings : ScriptableObject
     public float irradianceProbeTemporalWeight = 0.75f;
 
     // Screen Gather
+    [Header("Screen Gather Settings")]
+
+    [ChineseLabel("可视化模式")]
     public int visualizeScreenGather = 0;
+    [ChineseLabel("降采样分辨率比例")]
     public int screenGatherDownsampleFactor = 2;
+    [ChineseLabel("启用Reservoir空间重用")]
     public int useReservoirSpatialReuse = 1;
+    [ChineseLabel("空间重用采样数")]
     public int spatialReuseSampleCount = 8;
+    [ChineseLabel("空间次反射重用采样数")]
     public int spatialSecondaryReuseSampleCount = 4;
+    [ChineseLabel("启用空间次反射重用")]
     public int spatialSecondaryReuse = 0;
+    [ChineseLabel("启用间接阴影")]
     public int indirectShadowEnable = 1;
+    [ChineseLabel("间接阴影锐利度")]
     public float indirectShadowSharpness = 1.0f;
+    [ChineseLabel("间接阴影强度")]
     public float indirectShadowIntensity = 0.75f;
+    [ChineseLabel("间接阴影空间滤波迭代次数")]
     public int indirectShadowSpatialFilterIterationCount = 3;
+    [ChineseLabel("空间重用贡献范围")]
     public float spatialReuseSearchRange = 0.5f;
 
+    [ChineseLabel("漫反射累积帧数")]
     public float diffuseMaxAccumulatedFrame = 32.0f;
+    [ChineseLabel("漫反射空间滤波迭代次数")]
     public int diffuseSpatialFilterIterationCount = 5;
 
+    [ChineseLabel("SSAO范围")]
     public float filterGuidanceSSAORange = 2.0f;
+    [ChineseLabel("SSAO强度")]
     public float filterGuidanceSSAOIntensity = 0.5f;
+    [ChineseLabel("SSAO锐利度")]
     public float filterGuidanceSSAOSharpness = 1.0f;
+    [ChineseLabel("SSAO滤波权重")]
     public float filterGuidanceSSAOWeight = 10.0f;
 
+    [ChineseLabel("高光累计帧数")]
     public float specularMaxAccumulatedFrame = 32.0f;
+    [ChineseLabel("高光重建贡献范围")]
     public float specularResolveSearchRange = 4.0f;
+    [ChineseLabel("高光过滤范围")]
     public float specularFilterSearchRange = 4.0f;
+
+    [Header("SDF Settings")]
 
     // Distance Field
     public int useDistanceField = 1;
