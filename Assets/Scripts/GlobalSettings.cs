@@ -90,6 +90,11 @@ public class GlobalSettings : ScriptableObject
     // Screen Gather
     [Header("Screen Gather Settings")]
 
+    [ChineseLabel("启用漫反射间接光")]
+    public int diffuseIndirectEnable = 1;
+    [ChineseLabel("启用镜面反射间接光")]
+    public int specularIndirectEnable = 1;
+
     [ChineseLabel("可视化模式")]
     public int visualizeScreenGather = 0;
     [ChineseLabel("降采样分辨率比例")]

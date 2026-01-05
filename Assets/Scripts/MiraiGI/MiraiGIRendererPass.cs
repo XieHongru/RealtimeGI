@@ -56,21 +56,20 @@ public class MiraiGIRenderPass : ScriptableRenderPass
 
         if (GlobalSettings.NeedVisualize())
         {
-            if (GlobalSettings.Instance.visualizeScreenGather == 7)
-            {
-                m_GIController.MiraiGIDiffuseComposite(ref renderingData);
-                //m_GIController.MiraiGISpecularComposite(ref renderingData);
-                cmd.Blit(m_GIController.miraiGIGPUScene.miraiGIScreenGather.GetDiffuseCompositeTexture(), cameraTarget);
-                //cmd.Blit(m_GIController.miraiGIGPUScene.miraiGIScreenGather.GetSpecularCompositeTexture(), cameraTarget);
-            }
-            else
-            {
-                cmd.Blit(m_GIController.miraiGIGPUScene.miraiGIClipmap.GetVisualizeColorTarget(), cameraTarget);
-            }
+            cmd.Blit(m_GIController.miraiGIGPUScene.miraiGIClipmap.GetVisualizeColorTarget(), cameraTarget);
         }
         else
         {
-
+            if (GlobalSettings.Instance.diffuseIndirectEnable > 0)
+            {
+                m_GIController.MiraiGIDiffuseComposite(ref renderingData);
+                cmd.Blit(m_GIController.miraiGIGPUScene.miraiGIScreenGather.GetDiffuseCompositeTexture(), cameraTarget);
+            }
+            if (GlobalSettings.Instance.specularIndirectEnable > 0)
+            {
+                m_GIController.MiraiGISpecularComposite(ref renderingData);
+                cmd.Blit(m_GIController.miraiGIGPUScene.miraiGIScreenGather.GetSpecularCompositeTexture(), cameraTarget);
+            }
         }
 
         context.ExecuteCommandBuffer(cmd);

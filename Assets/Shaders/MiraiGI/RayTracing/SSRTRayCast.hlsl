@@ -82,8 +82,8 @@ bool CastScreenSpaceRay(
     const float3 RayStartScreen = Ray.RayStartScreen;
     float3 RayStepScreen = Ray.RayStepScreen;
 
-    float3 RayStartUVz = float3((RayStartScreen.xy * float2(0.5, -0.5) + 0.5) * HZBUvFactorAndInvFactor.xy, RayStartScreen.z);
-    float3 RayStepUVz = float3(RayStepScreen.xy * float2(0.5, -0.5) * HZBUvFactorAndInvFactor.xy, RayStepScreen.z);
+    float3 RayStartUVz = float3((RayStartScreen.xy * float2(0.5, 0.5) + 0.5) * HZBUvFactorAndInvFactor.xy, RayStartScreen.z);
+    float3 RayStepUVz = float3(RayStepScreen.xy * float2(0.5, 0.5) * HZBUvFactorAndInvFactor.xy, RayStepScreen.z);
 	
     const float Step = 1.0 / NumSteps;
     float CompareTolerance = Ray.CompareTolerance * Step;
@@ -226,30 +226,6 @@ bool RayCast(
         ScreenPositionScaleBias,
 		/* out */ OutHitUVz,
 		/* out */ Level);
-}
-
-float ComputeHitVignetteFromScreenPos(float2 ScreenPos)
-{
-    float2 Vignette = saturate(abs(ScreenPos) * 5 - 4);
-	
-	//PrevScreen sometimes has NaNs or Infs.  DX11 is protected because saturate turns NaNs -> 0.
-	//Do a SafeSaturate so other platforms get the same protection.
-    return saturate(1.0 - dot(Vignette, Vignette));
-}
-
-void ReprojectHit(float4 PrevScreenPositionScaleBias, float3 HitUVz, float4 ScreenPositionScaleBias, float4x4 ClipToPrevClip,
-                    out float2 OutPrevUV, out float OutVignette)
-{
-	// Camera motion for pixel (in ScreenPos space).
-    float2 ThisScreen = (HitUVz.xy - ScreenPositionScaleBias.wz) / ScreenPositionScaleBias.xy;
-    float4 ThisClip = float4(ThisScreen, HitUVz.z, 1);
-    // is this right?
-    float4 PrevClip = mul(ThisClip, ClipToPrevClip);
-    float2 PrevScreen = PrevClip.xy / PrevClip.w;
-    float2 PrevUV = PrevScreen.xy * PrevScreenPositionScaleBias.xy + PrevScreenPositionScaleBias.zw;
-
-    OutVignette = min(ComputeHitVignetteFromScreenPos(ThisScreen), ComputeHitVignetteFromScreenPos(PrevScreen));
-    OutPrevUV = PrevUV;
 }
 
 #endif

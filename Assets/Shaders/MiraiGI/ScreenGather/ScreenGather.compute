@@ -4,11 +4,9 @@
 #include "ReservoirSampling.hlsl"
 #include "../RayTracing/BRDF.hlsl"
 
-// -------------------------------------------------------------------------------- //
-#ifndef TRACE_SPECULAR_RAY
-#define TRACE_SPECULAR_RAY 0
-#endif
+#pragma multi_compile _ TRACE_SPECULAR_RAY
 
+// -------------------------------------------------------------------------------- //
 #define SPECULAR_USE_CLAMPED_BRDF 0
 #define SPECULAR_BRDF_BIAS (0.6f)
 
@@ -106,6 +104,7 @@ float4 SetupSpecularRay(float3 worldPosition, float3 worldNormal, float2 E, floa
     float3x3 tangentBasis = GetTangentBasis(worldNormal);
     float3 V = normalize(_CameraPosition - worldPosition);
     float3 tangentV = mul(V, tangentBasis);
+    //float3 tangentV = mul(tangentBasis, V);
 
     float a2 = roughness * roughness * roughness * roughness;
     float4 tangentH = ImportanceSampleVisibleGGX(UniformSampleDisk(E), a2, tangentV);
@@ -113,7 +112,7 @@ float4 SetupSpecularRay(float3 worldPosition, float3 worldNormal, float2 E, floa
     
     float samplePDF = max(tangentH.w, 1e-3);
     float3 rayDirection = 2 * dot(V, H) * H - V;
-    // rayDirection = reflect(V, worldNormal); // for debug
+    rayDirection = reflect(V, worldNormal); // for debug
 
     return float4(rayDirection, samplePDF);
 }
@@ -247,7 +246,7 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
     const float2 uv = (float2(pixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
     
     PixelContext pixelCtx = ResolvePixelContext(uv);
-    const bool isValidPixel = all(threadId.xy < _ScreenGatherRTSize - 1) && pixelCtx.rawDepth > 0;
+    const bool isValidPixel = all(threadId.xy < _ScreenGatherRTSize) && pixelCtx.rawDepth > 0;
     
 #if TRACE_SPECULAR_RAY
     float roughness = max(_GBufferNormal.SampleLevel(sampler_linearClamp, uv, 0).w, 0.01);
@@ -303,14 +302,14 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
         
         if (dot(hitNormal, rayDirectionAndPDF.xyz) > 0)
         {
-            hitNormal *= -1; // just turn the hit normal back away
+            isHit = false;
         }
     }
 
     _RWInitialSampleRadiance[pixelCoord] = isValidPixel ? float4(hitRadiance, isHit) : 0;
     _RWInitialSampleHitInfo[pixelCoord] = isValidPixel ? float4(hitNormal * 0.5 + 0.5, rayDistance) : float4(0, 0, 1, 1);
     _RWInitialSampleRayInfo[pixelCoord] = isValidPixel ? float4(rayDirectionAndPDF.xyz * 0.5 + 0.5, rayDirectionAndPDF.w) : float4(0, 0, 1, 1);
-
+    
     gs_PixelValidMask[groupThreadIndex] = isValidPixel;
     gs_ScreenHitMask[groupThreadIndex] = isHit;
 
@@ -1347,7 +1346,7 @@ void SpecularResolve(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId :
 #if !APPLY_BRDF_AFTER_TAA
     float3 V = normalize(_CameraPosition - worldPosition);
     float NoV = saturate(dot(GBufferNormalRoughness.xyz, V));
-    float3 preIntegratedGF = EnvBRDF(GBufferSpecular, GBufferNormalRoughness.w, NoV);
+    float3 preIntegratedGF = EnvBRDFApprox(GBufferSpecular, GBufferNormalRoughness.w, NoV);
     float3 specularIndirect = resolveRadiance * preIntegratedGF;
 #else
     float3 specularIndirect = resolveRadiance;
@@ -1363,6 +1362,7 @@ Texture2D<float4> _SpecularIndirectTexture;
 Texture2D<float4> _SpecularIndirectHistory;
 
 RWTexture2D<float4> _RWSpecularTemporalFilterOutput;
+RWTexture2D<float4> _RWTestOutput;
 
 float4 SpecularIndirectFetchHistory(float3 worldPosition, float2 currentUV, bool checkGeometrySimilarity)
 {
@@ -1461,6 +1461,7 @@ void SpecularTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThr
     historyColor.rgb = ClampHistoryYCoCg(colorSamples, currentColor, historyColor.rgb);
     float3 filteredColor = lerp(currentColor, historyColor.rgb, historyWeight);
     _RWSpecularTemporalFilterOutput[pixelCoord] = float4(filteredColor, 1);
+    _RWTestOutput[pixelCoord] = float4(historyColor.a / 255.0f, 0, 0, 1);
     
     // 7. output accumulated frame
     _RWAccumulatedFrameTexture[pixelCoord] = clamp(accumulatedFrame + 1, 0, _MaxAccumulatedFrame) / 255.0;
@@ -1570,11 +1571,11 @@ void SpecularComposite(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId
 #if APPLY_BRDF_AFTER_TAA
     float3 V = normalize(_CameraPosition - worldPosition);
     float NoV = saturate(dot(GBufferNormalRoughness.xyz, V));
-    float3 preIntegratedGF = EnvBRDF(GBufferSpecular, GBufferNormalRoughness.w, NoV);
+    float3 preIntegratedGF = EnvBRDFApprox(GBufferSpecular, GBufferNormalRoughness.w, NoV);
     float3 specularIndirect = irradiance * preIntegratedGF;
 #else
     float3 specularIndirect = irradiance;
 #endif
 
-    _RWSpecularCompositeTexture[pixelCoord] = float4(specularIndirect, 1);
+    _RWSpecularCompositeTexture[pixelCoord] = float4(specularIndirect, 1) + _SceneColor.SampleLevel(sampler_linearClamp, uv, 0);
 }
