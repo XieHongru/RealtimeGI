@@ -17,8 +17,6 @@ public enum ProbeVisualizeMode
 
 public class MiraiGIRadianceCache
 {
-    public uint frameNumberRenderThread;
-
     int m_VoxelLightingCheckerBoardSize = 2;
     ComputeBuffer m_ValidVoxelCounter;
     ComputeBuffer m_ValidVoxelBuffer;
@@ -70,8 +68,6 @@ public class MiraiGIRadianceCache
 
     public void Init()
     {
-        frameNumberRenderThread = 0;
-
         m_VoxelLightingCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelLighting/VoxelLighting.compute");
         m_VoxelPoolInitCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelClipmap/VoxelPoolInit.compute");
 
@@ -173,8 +169,6 @@ public class MiraiGIRadianceCache
 
         Graphics.ExecuteCommandBuffer(cmd);
         CommandBufferPool.Release(cmd);
-
-        frameNumberRenderThread++;
     }
 
     public void PrepareRenderResources(CommandBuffer cmd, MiraiGIGPUScene scene)
@@ -378,7 +372,7 @@ public class MiraiGIRadianceCache
         Vector3Int blockCountInXYZ = clipmap.voxelResolution / GlobalShared.VOXEL_BLOCK_SIZE;
         Vector3Int blockCountToLightInXYZ = blockCountInXYZ / m_VoxelLightingCheckerBoardSize;
         int maxFrameNum = m_VoxelLightingCheckerBoardSize * m_VoxelLightingCheckerBoardSize * m_VoxelLightingCheckerBoardSize;
-        Vector3Int checkerBoardOffset = GlobalShared.Index1DTo3DLinear((int)frameNumberRenderThread % maxFrameNum, 
+        Vector3Int checkerBoardOffset = GlobalShared.Index1DTo3DLinear((int)scene.frameNumber % maxFrameNum, 
                                                                         new Vector3Int(m_VoxelLightingCheckerBoardSize, m_VoxelLightingCheckerBoardSize, m_VoxelLightingCheckerBoardSize));
 
         int kernel = m_VoxelLightingCS.FindKernel("PickValidVoxel");
@@ -483,7 +477,7 @@ public class MiraiGIRadianceCache
         // one thread for one block, one block for one probe
         Vector3Int probeCountInXYZ = clipmap.voxelResolution / GlobalShared.VOXEL_BLOCK_SIZE;
         int maxFrameNum = checkerBoardSize * checkerBoardSize * checkerBoardSize;
-        Vector3Int checkerBoardOffset = GlobalShared.Index1DTo3DLinear((int)frameNumberRenderThread % maxFrameNum, 
+        Vector3Int checkerBoardOffset = GlobalShared.Index1DTo3DLinear((int)scene.frameNumber % maxFrameNum, 
                                                                         new Vector3Int(checkerBoardSize, checkerBoardSize, checkerBoardSize));
 
         int kernel = m_VoxelLightingCS.FindKernel("PickValidProbe");
@@ -513,7 +507,7 @@ public class MiraiGIRadianceCache
 
         int checkerBoardSize = m_ProbeUpdateCheckerBoardSize;
         int maxFrameNum = checkerBoardSize * checkerBoardSize * checkerBoardSize;
-        Vector3Int checkerBoardOffset = GlobalShared.Index1DTo3DLinear((int)frameNumberRenderThread % maxFrameNum, 
+        Vector3Int checkerBoardOffset = GlobalShared.Index1DTo3DLinear((int)scene.frameNumber % maxFrameNum, 
                                                                         new Vector3Int(checkerBoardSize, checkerBoardSize, checkerBoardSize));
 
         int maxRadianceProbeNum = m_RadianceProbeCountInAtlasXY.x * m_RadianceProbeCountInAtlasXY.y;
@@ -719,7 +713,7 @@ public class MiraiGIRadianceCache
             cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ValidProbeBuffer"), m_ValidProbeBuffer);
 
             // pass
-            cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_FrameCountMod8"), (int)frameNumberRenderThread % 8);
+            cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_FrameCountMod8"), (int)scene.frameNumber % 8);
             cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_SampleCount"), Mathf.Clamp(GlobalSettings.Instance.irradianceProbeSampleCount, 0, 4));
             cmd.SetComputeFloatParam(m_VoxelLightingCS, Shader.PropertyToID("_TemporalWeight"), Mathf.Clamp(GlobalSettings.Instance.irradianceProbeTemporalWeight, 0.0f, 1.0f));
             cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWIrradianceProbeClipmap"), m_IrradianceProbeClipmap);

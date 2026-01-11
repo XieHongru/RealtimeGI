@@ -343,11 +343,14 @@ struct DirectionParams
     float padding;
 };
 
+int _UpdateFrame;
+int _UpdateOMPerFrame;
 float4x4 _BaseOMViewProjMat;
 
 Texture2DArray<uint> _BaseOccupancyMap;
 StructuredBuffer<DirectionParams> _DirectionParamsArray;
 RWTexture2DArray<uint> _RWROMA;
+RWStructuredBuffer<float4> _RWROMACenter;
 
 float3 positionUVToWS(float3 posUV, float4x4 invViewProjMat)
 {
@@ -381,8 +384,8 @@ void GenerateROMA(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV
     const uint occupancyMapClipCount = occupancyMapSize / 32;
     
     const uint2 pixelIndex = threadId.xy;
-    const uint arrayIndex = threadId.z;
-    const float4x4 invViewProjMat = _DirectionParamsArray[arrayIndex].invViewProjMat;
+    const uint arrayIndex = _UpdateFrame * _UpdateOMPerFrame + threadId.z;
+    const float4x4 invViewProjMat = _DirectionParamsArray[threadId.z].invViewProjMat;
     
     const float2 uv = (pixelIndex + 0.5f) / occupancyMapSize;
 

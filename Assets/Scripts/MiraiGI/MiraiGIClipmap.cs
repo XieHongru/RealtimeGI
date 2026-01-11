@@ -134,6 +134,8 @@ public class MiraiGIClipmap
 
     public MiraiGICascadeInfo[] cascadeInfos;
 
+    List<Vector3> m_ROMADirection;
+
     const int MAX_OBJECT_NUM_PER_CASCADE = 2048;
     const int MAX_UPDATE_CHUNK_PER_FRAME = 256;
     const int MAX_OBJECT_NUM_PER_UPDATE_CHUNK = 128;
@@ -171,6 +173,7 @@ public class MiraiGIClipmap
     ComputeBuffer m_UpdateChunkCullingResults;
     ComputeBuffer m_UpdateChunkObjectCounter;
     ComputeBuffer[] m_DirectionParamsBuffer;
+    ComputeBuffer m_ROMACenter;
 
     // last element in list is pointer to next read write position
     ComputeBuffer m_VoxelPageFreeList;
@@ -193,8 +196,7 @@ public class MiraiGIClipmap
     public RenderTexture GetVoxelPoolEmissive() => m_VoxelPoolEmissive;
     public RenderTexture GetVisualizeColorTarget() => m_VisualizeColorTarget;
     public RenderTexture GetVisualizeDepthTarget() => m_VisualizeDepthTarget;
-    public RenderTexture GetDistanceFieldClipmap() => m_DistanceFieldClipmap[(radianceCache.frameNumberRenderThread + 0) % 2];
-    public RenderTexture GetDistanceFieldClipmapNextFrame() => m_DistanceFieldClipmap[(radianceCache.frameNumberRenderThread + 1) % 2];
+    public RenderTexture GetDistanceFieldClipmap(int index) => m_DistanceFieldClipmap[index];
     public ComputeBuffer GetUpdateChunkCleanupList(int cascadeId) => m_UpdateChunkCleanupList[cascadeId];
 
     public void CreateClipmap()
@@ -335,8 +337,13 @@ public class MiraiGIClipmap
             m_ROMA[i].enableRandomWrite = true;
             m_ROMA[i].Create();
 
-            m_DirectionParamsBuffer[i] = new ComputeBuffer(GlobalSettings.Instance.occupancyMapCount, Marshal.SizeOf(typeof(DirectionParams)));
+            m_DirectionParamsBuffer[i] = new ComputeBuffer(GlobalSettings.Instance.occupancyMapCount / 8, Marshal.SizeOf(typeof(DirectionParams)));
         }
+
+        m_ROMACenter = new ComputeBuffer(GlobalSettings.Instance.occupancyMapCount, sizeof(float) * 4);
+
+        m_ROMADirection = new List<Vector3>();
+        GenerateUniformHemisphereDirections(m_ROMADirection);
 
         CommandBuffer cmd = CommandBufferPool.Get("Init Voxel Page");
 
@@ -414,6 +421,7 @@ public class MiraiGIClipmap
             m_ROMA[i]?.Release();
             m_DirectionParamsBuffer[i]?.Release();
         }
+        m_ROMACenter?.Release();
 
         m_VoxelMap = null;
         m_VoxelPageClipmap = null;
@@ -433,6 +441,7 @@ public class MiraiGIClipmap
             m_ROMA[i] = null;
             m_DirectionParamsBuffer[i] = null;
         }
+        m_ROMACenter = null;
 
         for (int cascadeId = 0; cascadeId < CASCADE_COUNT; cascadeId++)
         {
@@ -730,7 +739,7 @@ public class MiraiGIClipmap
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPoolNormal"), m_VoxelPoolNormal);
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPoolEmissive"), m_VoxelPoolEmissive);
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWScrollingBOM"), m_ScrollingBOM[cascadeIndex]);
-        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWDistanceFieldClipmap"), GetDistanceFieldClipmap());
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWDistanceFieldClipmap"), GetDistanceFieldClipmap((scene.frameNumber + 0) % 2));
 
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelOccupy"), m_VoxelOccupy);
 
@@ -762,8 +771,8 @@ public class MiraiGIClipmap
         cmd.SetComputeVectorParam(m_VoxelInjectCS, Shader.PropertyToID("_CascadeResolution"), (Vector3)voxelResolution);
         cmd.SetComputeVectorParam(m_VoxelInjectCS, Shader.PropertyToID("_CascadeScrolling"), (Vector3)cascadeInfo.scrolling);
         cmd.SetComputeVectorParam(m_VoxelInjectCS, Shader.PropertyToID("_CascadeSize"), cascadeInfo.cascadeSize);
-        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_DistanceFieldClipmap"), GetDistanceFieldClipmap());
-        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWDistanceFieldClipmap"), GetDistanceFieldClipmapNextFrame());
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_DistanceFieldClipmap"), GetDistanceFieldClipmap((scene.frameNumber + 0) % 2));
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWDistanceFieldClipmap"), GetDistanceFieldClipmap((scene.frameNumber + 1) % 2));
 
         cmd.DispatchCompute(m_VoxelInjectCS, kernel, voxelResolution.x / 4, voxelResolution.y / 4, voxelResolution.z / 4);
 
@@ -794,11 +803,7 @@ public class MiraiGIClipmap
 
         MiraiGICascadeInfo cascadeInfo = cascadeInfos[cascadeId];
 
-        // 1. Generate direction array
-        List<Vector3> rotateDirection = new List<Vector3>();
-        GenerateUniformHemisphereDirections(rotateDirection);
-
-        // 2. Get clipmap bounds camera params
+        // 1. Get clipmap bounds camera params
         Vector3 center = Camera.main.transform.position;
 
         float halfSize = cascadeInfo.cascadeSize.x * 0.5f;
@@ -813,13 +818,16 @@ public class MiraiGIClipmap
         }
         Matrix4x4 baseOMViewProjMat = baseProjectionMatrix * baseViewMatrix;
 
-        // 3. Get ROMA direction params
-        CameraParams[] cameraParamsArray = new CameraParams[GlobalSettings.Instance.occupancyMapCount];
-        for (int omId = 0; omId < GlobalSettings.Instance.occupancyMapCount; omId++)
+        // 2. Get ROMA direction params
+        int updateFrame = scene.frameNumber % 8;
+        int updateOMPerFrame = GlobalSettings.Instance.occupancyMapCount / 8;
+
+        CameraParams[] cameraParamsArray = new CameraParams[updateOMPerFrame];
+        for (int omId = 0; omId < updateOMPerFrame; omId++)
         {
             cameraParamsArray[omId] = new CameraParams();
 
-            Vector3 viewDir = rotateDirection[omId];
+            Vector3 viewDir = m_ROMADirection[updateOMPerFrame * updateFrame + omId];
             Vector3 up = Vector3.up;
             Matrix4x4 viewMatrix = Matrix4x4.LookAt(center, center + viewDir, up).inverse;
             Matrix4x4 projectionMatrix = Matrix4x4.Ortho(-halfSize, halfSize, -halfSize, halfSize, -halfSize, halfSize);
@@ -835,15 +843,18 @@ public class MiraiGIClipmap
         }
         m_DirectionParamsBuffer[cascadeId].SetData(cameraParamsArray);
 
-        // 4. Generate ROMA
+        // 3. Generate ROMA
         int kernel = m_VoxelInjectCS.FindKernel("GenerateROMA");
 
+        cmd.SetComputeIntParam(m_VoxelInjectCS, Shader.PropertyToID("_UpdateFrame"), updateFrame);
+        cmd.SetComputeIntParam(m_VoxelInjectCS, Shader.PropertyToID("_UpdateOMPerFrame"), updateOMPerFrame);
         cmd.SetComputeMatrixParam(m_VoxelInjectCS, Shader.PropertyToID("_BaseOMViewProjMat"), baseOMViewProjMat);
         cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_DirectionParamsArray"), m_DirectionParamsBuffer[cascadeId]);
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_BaseOccupancyMap"), m_BaseOccupancyMap[cascadeId]);
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWROMA"), m_ROMA[cascadeId]);
+        cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWROMACenter"), m_ROMACenter);
 
-        cmd.DispatchCompute(m_VoxelInjectCS, kernel, voxelResolution.x / 16, voxelResolution.y / 16, GlobalSettings.Instance.occupancyMapCount);
+        cmd.DispatchCompute(m_VoxelInjectCS, kernel, voxelResolution.x / 16, voxelResolution.y / 16, updateOMPerFrame);
 
         cmd.EndSample($"Generate ROMA Cascade {cascadeId}");
     }
@@ -957,7 +968,7 @@ public class MiraiGIClipmap
         cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_VoxelPoolNormal"), m_VoxelPoolNormal);
         cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_VoxelPoolEmissive"), m_VoxelPoolEmissive);
         cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_VoxelPoolRadiance"), radianceCache.GetVoxelPoolRadiance());
-        cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_DistanceFieldClipmap"), GetDistanceFieldClipmap());
+        cmd.SetComputeTextureParam(computeShader, kernel, Shader.PropertyToID("_DistanceFieldClipmap"), GetDistanceFieldClipmap((scene.frameNumber + 0) % 2));
     }
 
     int Index3DTo1DLinear(Vector3Int index3D, Vector3Int size3D)

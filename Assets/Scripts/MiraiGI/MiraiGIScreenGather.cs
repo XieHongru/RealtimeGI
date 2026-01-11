@@ -385,7 +385,7 @@ public class MiraiGIScreenGather
 
     void PrepareRenderResources(ref RenderingData renderingData, CommandBuffer cmd, MiraiGIGPUScene scene)
     {
-        m_FrameNumber = (int)scene.miraiGIRadianceCache.frameNumberRenderThread;
+        m_FrameNumber = scene.frameNumber;
 
         int downsampleFactor = Mathf.Clamp(GlobalSettings.Instance.screenGatherDownsampleFactor, 1, 4);
         m_SceneTextureRTSize = new Vector2Int(renderingData.cameraData.cameraTargetDescriptor.width, renderingData.cameraData.cameraTargetDescriptor.height);
