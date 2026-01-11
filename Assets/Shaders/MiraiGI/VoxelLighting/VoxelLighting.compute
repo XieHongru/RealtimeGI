@@ -196,7 +196,8 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
 
         // 3.1. evaluate direct lighting
         float mainLightShadow = GetMainLightShadow(clipmapInfo, voxelPosition, faceNormal, cascadeInfo.voxelSize);
-        radiance += saturate(dot(faceNormal, _MainLightDirection)) * _MainLightColor * mainLightShadow * baseColor / (PI);
+        // in unity, baseColor includes normalization with PI, therefore we don't need to devide PI here as UE
+        radiance += saturate(dot(faceNormal, _MainLightDirection)) * _MainLightColor * mainLightShadow * baseColor /*/ (PI)*/;
         // TODO: pre-exposure
         
         // 3.2. evaluate indirect lighting

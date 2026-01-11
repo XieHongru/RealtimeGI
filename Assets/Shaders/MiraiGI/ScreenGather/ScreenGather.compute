@@ -1228,7 +1228,7 @@ void DiffuseComposite(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     indirectShadow = lerp(1, indirectShadow, _IndirectShadowIntensity);
     occlusion = min(occlusion, indirectShadow);
 
-    diffuseIndirect *= occlusion;
+    //diffuseIndirect *= occlusion;
     _RWDiffuseCompositeTexture[threadId.xy] = float4(ClampNaNs(diffuseIndirect), 1) + _SceneColor.SampleLevel(sampler_PointClamp, uv, 0);
 }
 

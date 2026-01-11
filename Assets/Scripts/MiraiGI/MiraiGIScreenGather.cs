@@ -799,7 +799,7 @@ public class MiraiGIScreenGather
             cmd.DispatchCompute(m_ScreenGatherCS, kernel, m_VoxelTraceIndirectArgs, 0);
         }
 
-        cmd.EndSample("Screen Trace");
+        cmd.EndSample("Voxel Trace");
     }
 
     void ReservoirTemporalReuse(CommandBuffer cmd, MiraiGIGPUScene scene)

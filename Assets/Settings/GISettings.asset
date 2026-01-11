@@ -21,15 +21,11 @@ MonoBehaviour:
   adaptiveSurfaceCacheCount: 8
   chunkCountToUpdatePerFrame: 64
   cullingObjectCountPerChunk: 64
-  voxelCascadeCount: 4
-  voxelSize: 0.2
+  voxelSize: 0.25
+  voxelResolution: 128
   voxelVisualizeMode: 0
   voxelVisualizeCascadeLevel: 0
   voxelVisualizeUpdateChunk: 0
-  clipmapObjectCullingRejectFactor1: 1
-  clipmapObjectCullingRejectFactor2: 2
-  clipmapObjectCullingRejectFactor3: 3
-  clipmapObjectCullingRejectFactor4: 4
   voxelLightingCheckerBoardSize: 2
   freezeLightingForDebug: 0
   probeUpdateCheckerBoardSize: 2
@@ -65,3 +61,4 @@ MonoBehaviour:
   specularResolveSearchRange: 4
   specularFilterSearchRange: 4
   useDistanceField: 1
+  occupancyMapCount: 16

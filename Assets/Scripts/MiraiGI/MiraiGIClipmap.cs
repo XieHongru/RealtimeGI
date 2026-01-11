@@ -111,6 +111,14 @@ public struct ObjectCullParams
     public float voxelCellSize;
 }
 
+public struct DirectionParams
+{
+    public Matrix4x4 viewProjMat;
+    public Matrix4x4 invViewProjMat;
+    public Vector3 viewDir;
+    public float padding;
+}
+
 // ---------------------------------------------------
 // Clipmap data is per view info
 // TODO: support muti-camera view
@@ -127,11 +135,10 @@ public class MiraiGIClipmap
     public MiraiGICascadeInfo[] cascadeInfos;
 
     const int MAX_OBJECT_NUM_PER_CASCADE = 2048;
-    const int MAX_UPDATE_CHUNK_PER_FRAME = 64;
-    const int MAX_OBJECT_NUM_PER_UPDATE_CHUNK = 64;
+    const int MAX_UPDATE_CHUNK_PER_FRAME = 256;
+    const int MAX_OBJECT_NUM_PER_UPDATE_CHUNK = 128;
     const int VOXEL_BLOCK_SIZE = 4;
     const int PAGE_ID_INVALID = (0x3FFFFFFF);
-    const int VISUALIZE_MODE = 1;
 
     RenderTexture m_VoxelMap;
     RenderTexture m_VoxelPageClipmap;
@@ -148,6 +155,10 @@ public class MiraiGIClipmap
     RenderTexture m_VoxelPoolNormal;
     RenderTexture m_VoxelPoolEmissive;
 
+    RenderTexture[] m_ScrollingBOM;
+    RenderTexture[] m_BaseOccupancyMap;
+    RenderTexture[] m_ROMA;
+
     ObjectCullParams[] m_ObjectCullParams;
     ComputeBuffer[] m_ObjectCullParamsCB;
 
@@ -159,6 +170,7 @@ public class MiraiGIClipmap
     // 2D array as 1D, single row represent an update chunk
     ComputeBuffer m_UpdateChunkCullingResults;
     ComputeBuffer m_UpdateChunkObjectCounter;
+    ComputeBuffer[] m_DirectionParamsBuffer;
 
     // last element in list is pointer to next read write position
     ComputeBuffer m_VoxelPageFreeList;
@@ -187,6 +199,9 @@ public class MiraiGIClipmap
 
     public void CreateClipmap()
     {
+        voxelResolution = new Vector3Int(GlobalSettings.Instance.voxelResolution, GlobalSettings.Instance.voxelResolution, GlobalSettings.Instance.voxelResolution);
+        voxelPageCountInXYZ = voxelResolution / 4;
+
         m_CullObjectCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelClipmap/CullObject.compute");
         m_VoxelInjectCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelClipmap/VoxelInject.compute");
         m_VisualizeClipmapCS = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/MiraiGI/VoxelClipmap/VisualizeClipmap.compute");
@@ -210,9 +225,9 @@ public class MiraiGIClipmap
         m_VisualizeDepthTarget = new RenderTexture(Camera.main.pixelWidth, Camera.main.pixelHeight, 24, RenderTextureFormat.Depth);
         m_VisualizeDepthTarget.Create();
 
-        m_VoxelOccupy = new RenderTexture(128, 128, 0, RenderTextureFormat.RFloat);
+        m_VoxelOccupy = new RenderTexture(voxelResolution.x, voxelResolution.y, 0, RenderTextureFormat.RFloat);
         m_VoxelOccupy.dimension = TextureDimension.Tex3D;
-        m_VoxelOccupy.volumeDepth = 128 * CASCADE_COUNT;
+        m_VoxelOccupy.volumeDepth = voxelResolution.z * CASCADE_COUNT;
         m_VoxelOccupy.enableRandomWrite = true;
         m_VoxelOccupy.Create();
 
@@ -227,7 +242,6 @@ public class MiraiGIClipmap
         {
             cascadeInfos[cascadeId] = new MiraiGICascadeInfo();
             MiraiGICascadeInfo cascadeInfo = cascadeInfos[cascadeId];
-            cascadeInfo.updateChunkResolution = voxelResolution / GlobalShared.UPDATE_CHUNK_NUM;
 
             Vector3Int updateChunkDimension = new Vector3Int(
                 voxelResolution.x / cascadeInfo.updateChunkResolution.x,
@@ -237,7 +251,7 @@ public class MiraiGIClipmap
             int updateChunkCount = updateChunkDimension.x * updateChunkDimension.y * updateChunkDimension.z;
 
             cascadeInfo.cascadeCenter = Camera.main.transform.position;
-            cascadeInfo.cascadeSize = new Vector3(32, 32, 32) * (1 << cascadeId);
+            cascadeInfo.cascadeSize = (Vector3)voxelResolution * GlobalSettings.Instance.voxelSize * (1 << cascadeId);
             cascadeInfo.scrolling = Vector3Int.zero;
             cascadeInfo.chunkCountInXYZ = updateChunkDimension; // TODO: no effect
             // mark all chunks dirty
@@ -253,7 +267,7 @@ public class MiraiGIClipmap
             m_ObjectCullParamsCB[cascadeId] = new ComputeBuffer(1, Marshal.SizeOf<ObjectCullParams>());
 
             m_UpdateChunkList[cascadeId] = new ComputeBuffer(MAX_UPDATE_CHUNK_PER_FRAME, sizeof(int), ComputeBufferType.Raw);
-            m_UpdateChunkCleanupList[cascadeId] = new ComputeBuffer(GlobalShared.UPDATE_CHUNK_NUM * GlobalShared.UPDATE_CHUNK_NUM * GlobalShared.UPDATE_CHUNK_NUM, sizeof(int), ComputeBufferType.Raw);
+            m_UpdateChunkCleanupList[cascadeId] = new ComputeBuffer(updateChunkCount, sizeof(int), ComputeBufferType.Raw);
         }
 
         Vector3Int DFTextureResolution = clipmapResolution * VOXEL_BLOCK_SIZE;
@@ -295,6 +309,34 @@ public class MiraiGIClipmap
         m_VoxelPoolEmissive.volumeDepth = textureSize.z;
         m_VoxelPoolEmissive.enableRandomWrite = true;
         m_VoxelPoolEmissive.Create();
+
+        m_ScrollingBOM = new RenderTexture[4];
+        m_BaseOccupancyMap = new RenderTexture[4];
+        m_ROMA = new RenderTexture[4];
+        m_DirectionParamsBuffer = new ComputeBuffer[4];
+
+        for (int i = 0; i < 4; i++)
+        {
+            m_ScrollingBOM[i] = new RenderTexture(voxelResolution.x, voxelResolution.y, 0, RenderTextureFormat.RInt);
+            m_ScrollingBOM[i].dimension = TextureDimension.Tex2DArray;
+            m_ScrollingBOM[i].volumeDepth = voxelResolution.z / 16;
+            m_ScrollingBOM[i].enableRandomWrite = true;
+            m_ScrollingBOM[i].Create();
+
+            m_BaseOccupancyMap[i] = new RenderTexture(voxelResolution.x, voxelResolution.y, 0, RenderTextureFormat.RInt);
+            m_BaseOccupancyMap[i].dimension = TextureDimension.Tex2DArray;
+            m_BaseOccupancyMap[i].volumeDepth = voxelResolution.z / 32;
+            m_BaseOccupancyMap[i].enableRandomWrite = true;
+            m_BaseOccupancyMap[i].Create();
+
+            m_ROMA[i] = new RenderTexture(voxelResolution.x, voxelResolution.y, 0, RenderTextureFormat.RInt);
+            m_ROMA[i].dimension = TextureDimension.Tex2DArray;
+            m_ROMA[i].volumeDepth = voxelResolution.z / 32 * GlobalSettings.Instance.occupancyMapCount;
+            m_ROMA[i].enableRandomWrite = true;
+            m_ROMA[i].Create();
+
+            m_DirectionParamsBuffer[i] = new ComputeBuffer(GlobalSettings.Instance.occupancyMapCount, Marshal.SizeOf(typeof(DirectionParams)));
+        }
 
         CommandBuffer cmd = CommandBufferPool.Get("Init Voxel Page");
 
@@ -342,6 +384,8 @@ public class MiraiGIClipmap
             CullObjectToUpdateChunk(cmd, gpuScene, camera, cascadeIndex);
             VoxelInject(cmd, gpuScene, cascadeIndex);
             DistanceFieldPropagate(cmd, gpuScene, cascadeIndex);
+            BaseOccupancyMapProject(cmd, gpuScene, cascadeIndex);
+            GenerateROMA(cmd, gpuScene, cascadeIndex);
         }
 
         ReleaseVoxelPage(cmd);
@@ -363,6 +407,14 @@ public class MiraiGIClipmap
         m_VoxelPoolBaseColor?.Release();
         m_VoxelPoolNormal?.Release();
         m_VoxelPoolEmissive?.Release();
+        for (int i = 0; i < 4; i++)
+        {
+            m_ScrollingBOM[i]?.Release();
+            m_BaseOccupancyMap[i]?.Release();
+            m_ROMA[i]?.Release();
+            m_DirectionParamsBuffer[i]?.Release();
+        }
+
         m_VoxelMap = null;
         m_VoxelPageClipmap = null;
         m_VisualizeColorTarget = null;
@@ -374,6 +426,13 @@ public class MiraiGIClipmap
         m_VoxelPoolBaseColor = null;
         m_VoxelPoolNormal = null;
         m_VoxelPoolEmissive = null;
+        for (int i = 0; i < 4; i++)
+        {
+            m_ScrollingBOM[i] = null;
+            m_BaseOccupancyMap[i] = null;
+            m_ROMA[i] = null;
+            m_DirectionParamsBuffer[i] = null;
+        }
 
         for (int cascadeId = 0; cascadeId < CASCADE_COUNT; cascadeId++)
         {
@@ -573,6 +632,8 @@ public class MiraiGIClipmap
 
     void CullObjectToClipmap(CommandBuffer cmd, MiraiGIGPUScene scene, Camera camera, int cascadeIndex)
     {
+        cmd.BeginSample($"Cull Object To Clipmap Cascade {cascadeIndex}");
+
         MiraiGICascadeInfo cascadeInfo = cascadeInfos[cascadeIndex];
         int numObjects = scene.GPUSceneData.objects.Count;
 
@@ -584,10 +645,14 @@ public class MiraiGIClipmap
         cmd.SetComputeBufferParam(m_CullObjectCS, kernel, Shader.PropertyToID("_RWClipmapObjectCounter"), m_ClipmapObjectCounter);
 
         cmd.DispatchCompute(m_CullObjectCS, kernel, Mathf.CeilToInt((float)numObjects / 8), 1, 1);
+
+        cmd.EndSample($"Cull Object To Clipmap Cascade {cascadeIndex}");
     }
 
     void CullObjectToUpdateChunk(CommandBuffer cmd, MiraiGIGPUScene scene, Camera camera, int cascadeIndex)
     {
+        cmd.BeginSample($"Cull Object To Update Chunk Cascade {cascadeIndex}");
+
         MiraiGICascadeInfo cascadeInfo = cascadeInfos[cascadeIndex];
         int kernel;
 
@@ -618,10 +683,14 @@ public class MiraiGIClipmap
 
             cmd.DispatchCompute(m_CullObjectCS, kernel, m_UpdateChunkCullingIndirectArgs, 0);
         }
+
+        cmd.EndSample($"Cull Object To Update Chunk Cascade {cascadeIndex}");
     }
 
     void VoxelInject(CommandBuffer cmd, MiraiGIGPUScene scene, int cascadeIndex)
     {
+        cmd.BeginSample($"Voxel Inject Cascade {cascadeIndex}");
+
         MiraiGICascadeInfo cascadeInfo = cascadeInfos[cascadeIndex];
 
         int kernel = m_VoxelInjectCS.FindKernel("VoxelInject");
@@ -660,9 +729,10 @@ public class MiraiGIClipmap
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPoolBaseColor"), m_VoxelPoolBaseColor);
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPoolNormal"), m_VoxelPoolNormal);
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelPoolEmissive"), m_VoxelPoolEmissive);
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWScrollingBOM"), m_ScrollingBOM[cascadeIndex]);
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWDistanceFieldClipmap"), GetDistanceFieldClipmap());
 
-        //cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelOccupy"), m_VoxelOccupy);
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWVoxelOccupy"), m_VoxelOccupy);
 
         Vector3Int groupCount = new Vector3Int(Mathf.CeilToInt((float)cascadeInfo.updateChunkResolution.x / 4 * cascadeInfo.chunksToUpdate.Count),
                                                 Mathf.CeilToInt((float)cascadeInfo.updateChunkResolution.y / 4),
@@ -671,6 +741,8 @@ public class MiraiGIClipmap
         {
             cmd.DispatchCompute(m_VoxelInjectCS, kernel, groupCount.x, groupCount.y, groupCount.z);
         }
+
+        cmd.EndSample($"Voxel Inject Cascade {cascadeIndex}");
     }
 
     void DistanceFieldPropagate(CommandBuffer cmd, MiraiGIGPUScene scene, int cascadeId)
@@ -679,6 +751,8 @@ public class MiraiGIClipmap
         {
             return;
         }
+
+        cmd.BeginSample($"Distance Field Propagate Cascade {cascadeId}");
 
         MiraiGICascadeInfo cascadeInfo = cascadeInfos[cascadeId];
 
@@ -692,6 +766,86 @@ public class MiraiGIClipmap
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWDistanceFieldClipmap"), GetDistanceFieldClipmapNextFrame());
 
         cmd.DispatchCompute(m_VoxelInjectCS, kernel, voxelResolution.x / 4, voxelResolution.y / 4, voxelResolution.z / 4);
+
+        cmd.EndSample($"Distance Field Propagate Cascade {cascadeId}");
+    }
+
+    void BaseOccupancyMapProject(CommandBuffer cmd, MiraiGIGPUScene scene, int cascadeId)
+    {
+        cmd.BeginSample($"Base Occupancy Map Project Cascade {cascadeId}");
+
+        MiraiGICascadeInfo cascadeInfo = cascadeInfos[cascadeId];
+
+        int kernel = m_VoxelInjectCS.FindKernel("BaseOccupancyMapProject");
+
+        cmd.SetComputeVectorParam(m_VoxelInjectCS, Shader.PropertyToID("_CascadeResolution"), (Vector3)voxelResolution);
+        cmd.SetComputeVectorParam(m_VoxelInjectCS, Shader.PropertyToID("_CascadeScrolling"), (Vector3)cascadeInfo.scrolling);
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_ScrollingBOM"), m_ScrollingBOM[cascadeId]);
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWBaseOccupancyMap"), m_BaseOccupancyMap[cascadeId]);
+
+        cmd.DispatchCompute(m_VoxelInjectCS, kernel, voxelResolution.x / 4, voxelResolution.y / 4, 1);
+
+        cmd.EndSample($"Base Occupancy Map Project Cascade {cascadeId}");
+    }
+
+    void GenerateROMA(CommandBuffer cmd, MiraiGIGPUScene scene, int cascadeId)
+    {
+        cmd.BeginSample($"Generate ROMA Cascade {cascadeId}");
+
+        MiraiGICascadeInfo cascadeInfo = cascadeInfos[cascadeId];
+
+        // 1. Generate direction array
+        List<Vector3> rotateDirection = new List<Vector3>();
+        GenerateUniformHemisphereDirections(rotateDirection);
+
+        // 2. Get clipmap bounds camera params
+        Vector3 center = Camera.main.transform.position;
+
+        float halfSize = cascadeInfo.cascadeSize.x * 0.5f;
+
+        Vector3 baseViewDir = Vector3.forward;
+        Vector3 baseUp = Vector3.up;
+        Matrix4x4 baseViewMatrix = Matrix4x4.LookAt(center, center + baseViewDir, baseUp).inverse;
+        Matrix4x4 baseProjectionMatrix = Matrix4x4.Ortho(-halfSize, halfSize, -halfSize, halfSize, -halfSize, halfSize);
+        if (SystemInfo.usesReversedZBuffer)
+        {
+            baseProjectionMatrix = Matrix4x4.Ortho(-halfSize, halfSize, -halfSize, halfSize, halfSize, -halfSize);
+        }
+        Matrix4x4 baseOMViewProjMat = baseProjectionMatrix * baseViewMatrix;
+
+        // 3. Get ROMA direction params
+        CameraParams[] cameraParamsArray = new CameraParams[GlobalSettings.Instance.occupancyMapCount];
+        for (int omId = 0; omId < GlobalSettings.Instance.occupancyMapCount; omId++)
+        {
+            cameraParamsArray[omId] = new CameraParams();
+
+            Vector3 viewDir = rotateDirection[omId];
+            Vector3 up = Vector3.up;
+            Matrix4x4 viewMatrix = Matrix4x4.LookAt(center, center + viewDir, up).inverse;
+            Matrix4x4 projectionMatrix = Matrix4x4.Ortho(-halfSize, halfSize, -halfSize, halfSize, -halfSize, halfSize);
+            if (SystemInfo.usesReversedZBuffer)
+            {
+                projectionMatrix = Matrix4x4.Ortho(-halfSize, halfSize, -halfSize, halfSize, halfSize, -halfSize);
+            }
+            Matrix4x4 viewProjMatrix = projectionMatrix * viewMatrix;
+
+            cameraParamsArray[omId].viewProjMat = viewProjMatrix;
+            cameraParamsArray[omId].invViewProjMat = viewProjMatrix.inverse;
+            cameraParamsArray[omId].viewDir = viewDir;
+        }
+        m_DirectionParamsBuffer[cascadeId].SetData(cameraParamsArray);
+
+        // 4. Generate ROMA
+        int kernel = m_VoxelInjectCS.FindKernel("GenerateROMA");
+
+        cmd.SetComputeMatrixParam(m_VoxelInjectCS, Shader.PropertyToID("_BaseOMViewProjMat"), baseOMViewProjMat);
+        cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_DirectionParamsArray"), m_DirectionParamsBuffer[cascadeId]);
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_BaseOccupancyMap"), m_BaseOccupancyMap[cascadeId]);
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWROMA"), m_ROMA[cascadeId]);
+
+        cmd.DispatchCompute(m_VoxelInjectCS, kernel, voxelResolution.x / 16, voxelResolution.y / 16, GlobalSettings.Instance.occupancyMapCount);
+
+        cmd.EndSample($"Generate ROMA Cascade {cascadeId}");
     }
 
     void ReleaseVoxelPage(CommandBuffer cmd)
@@ -727,7 +881,7 @@ public class MiraiGIClipmap
 
     public void VisualizeMiraiGIScene(CommandBuffer cmd, MiraiGIGPUScene scene, Camera camera)
     {
-        if (GlobalSettings.Instance.voxelVisualizeMode <= 0 || GlobalSettings.Instance.voxelVisualizeMode > 4)
+        if (GlobalSettings.Instance.voxelVisualizeMode <= 0 || GlobalSettings.Instance.voxelVisualizeMode > 5)
         {
             return;
         }
@@ -876,6 +1030,24 @@ public class MiraiGIClipmap
                     cascadeInfo.PushUpdateChunk(dirtyChunk);
                 }
             }
+        }
+    }
+
+    void GenerateUniformHemisphereDirections(List<Vector3> directions)
+    {
+        float goldenAngle = Mathf.PI * (3.0f - Mathf.Sqrt(5.0f));
+
+        for (int i = 0; i < GlobalSettings.Instance.occupancyMapCount; i++)
+        {
+            // Fibonacci Hemisphere Sample
+            float y = 1.0f - (i / (float)(GlobalSettings.Instance.occupancyMapCount - 1)); // y ¡Ê [0, 1]
+            float radius = Mathf.Sqrt(1.0f - y * y);
+            float theta = goldenAngle * i;
+
+            float x = Mathf.Cos(theta) * radius;
+            float z = Mathf.Sin(theta) * radius;
+
+            directions.Add(math.normalize(new Vector3(x, y, z)));
         }
     }
 }

@@ -44,7 +44,7 @@ public class GlobalSettings : ScriptableObject
 
     public static bool NeedVisualize()
     {
-        return (m_Instance.voxelVisualizeMode > 0 && m_Instance.voxelVisualizeMode <= 4) || (m_Instance.visualizeScreenGather > 0) ||
+        return (m_Instance.voxelVisualizeMode > 0 && m_Instance.voxelVisualizeMode <= 5) || (m_Instance.visualizeScreenGather > 0) ||
                 (m_Instance.visualizeRadianceProbe > 0) || (m_Instance.visualizeIrradianceProbe > 0);
     }
 
@@ -57,19 +57,24 @@ public class GlobalSettings : ScriptableObject
     public int adaptiveSurfaceCacheCount = 8;
 
     // Clipmap
-    [Header("Clipmap Settings")]
+    [Header("Clipmap Settings (禁止运行时修改)")]
 
+    [ChineseLabel("每帧最大更新区块数")]
     public int chunkCountToUpdatePerFrame = 64;
+    [ChineseLabel("每区块支持的最大对象数")]
     public int cullingObjectCountPerChunk = 64;
-    public int voxelCascadeCount = 4;
+    //public int voxelCascadeCount = 4;
+    [ChineseLabel("体素尺寸")]
     public float voxelSize = 0.2f;
+    [ChineseLabel("体素分辨率")]
+    public int voxelResolution = 128;
+
+    // Clipmap Visualize
+    [Header("Clipmap Visualize Settings")]
+
     public int voxelVisualizeMode = 4;
     public int voxelVisualizeCascadeLevel = 0;
     public int voxelVisualizeUpdateChunk = 0;
-    public float clipmapObjectCullingRejectFactor1 = 1.0f;
-    public float clipmapObjectCullingRejectFactor2 = 2.0f;
-    public float clipmapObjectCullingRejectFactor3 = 3.0f;
-    public float clipmapObjectCullingRejectFactor4 = 4.0f;
 
     // Voxel Lighting
     [Header("Voxel Lighting Settings")]
@@ -143,4 +148,9 @@ public class GlobalSettings : ScriptableObject
 
     // Distance Field
     public int useDistanceField = 1;
+
+    [Header("ROMA Settings")]
+
+    [ChineseLabel("占用图数量")]
+    public int occupancyMapCount = 16;
 }

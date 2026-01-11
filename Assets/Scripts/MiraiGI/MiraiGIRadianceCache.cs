@@ -402,7 +402,7 @@ public class MiraiGIRadianceCache
         GameObject mainLightObject = GameObject.Find("Directional Light");
         Light mainLight = mainLightObject.GetComponent<Light>();
         Vector3 mainLightDirection = mainLight.transform.forward * -1;
-        Color mainLightColor = mainLight.color;
+        Color mainLightColor = mainLight.color * mainLight.intensity;
 
         // get main light shadow
         Matrix4x4[] worldToShadowMatrices = new Matrix4x4[4];
