@@ -118,25 +118,25 @@ float GetMainLightShadow(in ClipmapInfo clipmapInfo, float3 worldPosition, float
     
     // @TODO: fix light leaking caused by normal bias
     // 1. use whole scene shadow map
-    if (isVoxelInFrustum)
-    {
-        for (int cascadeIndex = 0; cascadeIndex < _CSMNumCascades; cascadeIndex++)
-        {
-            float4 boundSphere = _CSMShadowBounds[cascadeIndex];
-            if (length(worldPosition - boundSphere.xyz) > boundSphere.w)
-            {
-                continue;
-            }
+    //if (isVoxelInFrustum)
+    //{
+    //    for (int cascadeIndex = 0; cascadeIndex < _CSMNumCascades; cascadeIndex++)
+    //    {
+    //        float4 boundSphere = _CSMShadowBounds[cascadeIndex];
+    //        if (length(worldPosition - boundSphere.xyz) > boundSphere.w)
+    //        {
+    //            continue;
+    //        }
         
-            float4 shadowPosition = mul(_CSMWorldToShadowMatrices[cascadeIndex], float4(worldPosition + normalBias * 4, 1));
-            shadowPosition.xyz /= shadowPosition.w;
-            float sampleZ = _ShadowDepthTexture.SampleLevel(sampler_PointClamp, shadowPosition.xy, 0).r;
-            mainLightShadow *= (shadowPosition.z >= sampleZ);
-            break;
-        }
-    }
-    // 2. trace shadow ray as fallback
-    else
+    //        float4 shadowPosition = mul(_CSMWorldToShadowMatrices[cascadeIndex], float4(worldPosition + normalBias * 4, 1));
+    //        shadowPosition.xyz /= shadowPosition.w;
+    //        float sampleZ = _ShadowDepthTexture.SampleLevel(sampler_PointClamp, shadowPosition.xy, 0).r;
+    //        mainLightShadow *= (shadowPosition.z >= sampleZ);
+    //        break;
+    //    }
+    //}
+    //// 2. trace shadow ray as fallback
+    //else
     
     {
         VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
@@ -217,7 +217,7 @@ void VoxelLighting(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : S
     }    
 }
 
-// -------------------------------------------------------------------------------- //
+// -------------------------------------------------------------------------------- //                  
 #pragma kernel PickValidProbe
 
 RWStructuredBuffer<int> _RWValidProbeCounter;
@@ -264,7 +264,12 @@ void PickValidProbe(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : 
 
         int3 voxelClipmapAccessIndex = BlockClipmapAddressMapping(neighborProbeIndex, cascadeInfo.resolution, cascadeInfo.scrolling, _CascadeIndex);
         uint2 bitOccupy = _VoxelBitOccupyClipmap[voxelClipmapAccessIndex].xy;
-        isProbeValid = isProbeValid || any(bitOccupy != 0);
+        
+        if (any(bitOccupy != 0))
+        {
+            isProbeValid = true;
+            break;
+        }
     }
     
     gs_ThreadProbeValidMask[groupThreadIndex] = isProbeValid;
@@ -315,7 +320,7 @@ void PickValidProbe(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : 
 
         float3 probeCenter = float(VOXEL_BLOCK_SIZE / 2).xxx - 0.5; // 1.5 is center of [0, 1, 2, 3], unit is voxel
         int3 probeOffset = int3(0, 0, 0);
-        float minDistance = 128000.0f;
+        float minDistance = 1000.0f;
 
         // find a place near to block center to minimize the offset
         for (int i = 0; i < VOXEL_COUNT_PER_BLOCK; i++)
@@ -857,8 +862,8 @@ void IrradianceProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
         RTRequest.rayDir = rayDirection;
         RTRequest.minCascadeIndex = _CascadeIndex;
         RTRequest.maxCascadeIndex = _CascadeCount - 1;
-        RTRequest.maxStepNum = 128000;
-        RTRequest.maxDistance = 12800000;
+        RTRequest.maxStepNum = 1000;
+        RTRequest.maxDistance = 100000;
     
 #if USE_RADIANCE_PROBE_AS_FALLBACK
         RTRequest.maxDistance = GetRadianceProbeSize(cascadeInfo);

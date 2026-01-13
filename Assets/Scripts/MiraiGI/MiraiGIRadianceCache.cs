@@ -362,6 +362,8 @@ public class MiraiGIRadianceCache
 
     public void PickValidVoxel(CommandBuffer cmd, MiraiGIGPUScene scene, int cascadeId)
     {
+        cmd.BeginSample("Pick Valid Voxel");
+
         MiraiGIClipmap clipmap = scene.miraiGIClipmap;
         MiraiGICascadeInfo clipmapInfo = clipmap.cascadeInfos[cascadeId];
 
@@ -384,10 +386,14 @@ public class MiraiGIRadianceCache
         cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWValidVoxelBuffer"), m_ValidVoxelBuffer);
 
         cmd.DispatchCompute(m_VoxelLightingCS, kernel, blockCountToLightInXYZ.x / 4, blockCountToLightInXYZ.y / 4, blockCountToLightInXYZ.z / 4);
+
+        cmd.EndSample("Pick Valid Voxel");
     }
 
     public void VoxelLighting(CommandBuffer cmd, ref RenderingData renderingData, MiraiGIGPUScene scene, int cascadeId)
     {
+        cmd.BeginSample("Voxel Lighting");
+
         MiraiGIClipmap clipmap = scene.miraiGIClipmap;
         MiraiGICascadeInfo cascadeInfo = clipmap.cascadeInfos[cascadeId];
         MiraiGICascadeInfo[] cascadeInfos = clipmap.cascadeInfos;
@@ -461,6 +467,8 @@ public class MiraiGIRadianceCache
 
             cmd.DispatchCompute(m_VoxelLightingCS, kernel, m_VoxelLightingIndirectArgs, 0);
         }
+
+        cmd.EndSample("Voxel Lighting");
     }
 
     void PickValidProbe(CommandBuffer cmd, MiraiGIGPUScene scene, int cascadeId)
@@ -661,6 +669,8 @@ public class MiraiGIRadianceCache
 
     void IrradianceProbeGather(CommandBuffer cmd, MiraiGIGPUScene scene, int cascadeId)
     {
+        cmd.BeginSample("Irradiance Probe Gather");
+
         MiraiGIClipmap clipmap = scene.miraiGIClipmap;
         MiraiGICascadeInfo[] cascadeInfos = clipmap.cascadeInfos;
 
@@ -720,6 +730,8 @@ public class MiraiGIRadianceCache
 
             cmd.DispatchCompute(m_VoxelLightingCS, kernel, m_IrradianceProbeGatherIndirectArgs, 0);
         }
+
+        cmd.EndSample("Irradiance Probe Gather");
     }
 
     void CleanupDirtyUpdateChunk(CommandBuffer cmd, MiraiGIGPUScene scene, int cascadeId)
@@ -732,6 +744,8 @@ public class MiraiGIRadianceCache
         {
             return;
         }
+
+        cmd.BeginSample("Cleanup Dirty Update Chunk");
 
         // 1. clear voxel radiance
         {
@@ -758,6 +772,8 @@ public class MiraiGIRadianceCache
                                                             cascadeInfo.updateChunkResolution.y / GlobalShared.VOXEL_BLOCK_SIZE / 4, 
                                                             cascadeInfo.updateChunkResolution.z / GlobalShared.VOXEL_BLOCK_SIZE / 4);
         }
+
+        cmd.EndSample("Cleanup Dirty Update Chunk");
     }
 
     public void VisualizeProbe(CommandBuffer cmd, MiraiGIGPUScene scene, ref RenderingData renderingData, ProbeVisualizeMode visualizeMode)

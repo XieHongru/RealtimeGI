@@ -91,7 +91,7 @@ float2 LineBoxIntersect(float3 RayOrigin, float3 RayEnd, float3 BoxMin, float3 B
 }
 
 // https://sugulee.wordpress.com/2021/01/19/screen-space-reflections-implementation-and-optimization-part-2-hi-z-tracing-method/
-float MoveToNextCellDDA(CascadeInfo cascadeInfo, float3 samplePoint, float3 rayDir, int mipLevel)
+float MoveToNextCellDDA(in CascadeInfo cascadeInfo, float3 samplePoint, float3 rayDir, int mipLevel)
 {
     float3 cellSize = cascadeInfo.voxelSize * pow(2, mipLevel);
 
@@ -107,13 +107,13 @@ float MoveToNextCellDDA(CascadeInfo cascadeInfo, float3 samplePoint, float3 rayD
 
 	// 3. calc min distance to move SamplePoint, make it move at least 1 cell align X, Y or Z 
     float3 deltaPos = nextCellBoundary - samplePoint;
-    deltaPos /= rayDir;
+    deltaPos /= rayDir + float3(1e-4, 1e-4, 1e-4);
     float moveDistance = min(deltaPos.x, min(deltaPos.y, deltaPos.z));
 
     return moveDistance;
 }
 
-bool IsPointInsideVoxel(CascadeInfo cascadeInfo, int3 voxelIndex, uint2 bitOccupy, int mipLevel)
+bool IsPointInsideVoxel(in CascadeInfo cascadeInfo, int3 voxelIndex, uint2 bitOccupy, int mipLevel)
 {
     int3 indexInsideBlock = voxelIndex % VOXEL_BLOCK_SIZE;
 
@@ -127,7 +127,7 @@ bool IsPointInsideVoxel(CascadeInfo cascadeInfo, int3 voxelIndex, uint2 bitOccup
         int bitOffset = Index3DTo1D_2x2x2(indexInsideBlock / 2) * 8;
         int bitComp = bitOffset / 32; // select .x or .y component in bitOccupy
         int bitOffsetRound = bitOffset % 32;
-        uint bit2x2x2 = ((bitComp == 0 ? bitOccupy.x : bitOccupy.y) >> bitOffsetRound) & 0xFF;
+        uint bit2x2x2 = (bitOccupy[bitComp] >> bitOffsetRound) & 0xFF;
         return bit2x2x2 != 0;
     }
 
@@ -160,7 +160,7 @@ bool IsTwoPointInDifferentBlock(in CascadeInfo cascadeInfo, float3 pointA, float
 #define MIN_MIP_LEVEL (0)
 #define MAX_MIP_LEVEL (2)
 
-VoxelRayTracingHitPayload VoxelRaytracingSingleCascade(CascadeInfo cascadeInfo, Texture3D<uint2> bitOccupyClipmap, inout VoxelRaytracingRequest RTRequest)
+VoxelRayTracingHitPayload VoxelRaytracingSingleCascade(CascadeInfo cascadeInfo, in Texture3D<uint2> bitOccupyClipmap, inout VoxelRaytracingRequest RTRequest)
 {
     float3 samplePoint = RTRequest.rayStart - cascadeInfo.center;
     int3 voxelIndex = int3(0, 0, 0);
@@ -180,7 +180,7 @@ VoxelRayTracingHitPayload VoxelRaytracingSingleCascade(CascadeInfo cascadeInfo, 
         
         int3 blockIndex = voxelIndex / VOXEL_BLOCK_SIZE;
         clipmapAccessIndex = BlockClipmapAddressMapping(blockIndex, cascadeInfo.resolution, cascadeInfo.scrolling, cascadeInfo.cascadeIndex);
-        uint2 bitOccupy = bitOccupyClipmap.Load(int4(clipmapAccessIndex, 0)).xy;
+        uint2 bitOccupy = bitOccupyClipmap[clipmapAccessIndex].xy;
 
 		// 1. check if sample point hit mip 0,1,2 voxel
         bool isHitMip = IsPointInsideVoxel(cascadeInfo, voxelIndex, bitOccupy, mipLevel);
@@ -214,9 +214,9 @@ VoxelRayTracingHitPayload VoxelRaytracingSingleCascade(CascadeInfo cascadeInfo, 
     return payload;
 }
 
-VoxelRayTracingHitPayload VoxelRaytracing(ClipmapInfo clipmapInfo, Texture3D<uint2> bitOccupyClipmap, inout VoxelRaytracingRequest RTRequest)
+VoxelRayTracingHitPayload VoxelRaytracing(ClipmapInfo clipmapInfo, in Texture3D<uint2> bitOccupyClipmap, inout VoxelRaytracingRequest RTRequest)
 {
-    for (int cascadeId = RTRequest.minCascadeIndex; cascadeId < RTRequest.maxCascadeIndex; cascadeId++)
+    for (int cascadeId = RTRequest.minCascadeIndex; cascadeId <= RTRequest.maxCascadeIndex; cascadeId++)
     {
         CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, cascadeId);
 

@@ -21,7 +21,7 @@ MonoBehaviour:
   adaptiveSurfaceCacheCount: 8
   chunkCountToUpdatePerFrame: 64
   cullingObjectCountPerChunk: 64
-  voxelSize: 0.25
+  voxelSize: 0.125
   voxelResolution: 128
   voxelVisualizeMode: 0
   voxelVisualizeCascadeLevel: 0
@@ -60,5 +60,5 @@ MonoBehaviour:
   specularMaxAccumulatedFrame: 32
   specularResolveSearchRange: 4
   specularFilterSearchRange: 4
-  useDistanceField: 1
+  useDistanceField: 0
   occupancyMapCount: 16
