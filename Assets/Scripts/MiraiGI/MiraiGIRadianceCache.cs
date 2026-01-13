@@ -262,7 +262,7 @@ public class MiraiGIRadianceCache
 
         if (m_ProbeOffsetClipmap == null)
         {
-            m_ProbeOffsetClipmap = new RenderTexture(clipmapResolution.x, clipmapResolution.y, 0, RenderTextureFormat.ARGB32);
+            m_ProbeOffsetClipmap = new RenderTexture(clipmapResolution.x, clipmapResolution.y, 0, RenderTextureFormat.ARGBFloat);
             m_ProbeOffsetClipmap.dimension = TextureDimension.Tex3D;
             m_ProbeOffsetClipmap.volumeDepth = clipmapResolution.z;
             m_ProbeOffsetClipmap.enableRandomWrite = true;
@@ -790,6 +790,8 @@ public class MiraiGIRadianceCache
             return;
         }
 
+        cmd.BeginSample($"Visualize Probe {cascadeId}");
+
         Shader probeVisualizeShader = Shader.Find("Mirai/VisualizeProbe");
         Material probeVisualizeMaterial = new Material(probeVisualizeShader);
         probeVisualizeMaterial.enableInstancing = true;
@@ -838,6 +840,8 @@ public class MiraiGIRadianceCache
             cmd.DrawMesh(m_ProbeSphereMesh, instanceMatrices[i], probeVisualizeMaterial, 0, 0, props);
         }
         //cmd.DrawMeshInstanced(m_ProbeSphereMesh, 0, probeVisualizeMaterial, 0, instanceMatrices, instanceCount);
+
+        cmd.EndSample($"Visualize Probe {cascadeId}");
     }
 
     public void SetupProbeVolumeParameters(CommandBuffer cmd, ComputeShader computeShader, int kernel,

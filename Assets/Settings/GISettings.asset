@@ -21,7 +21,7 @@ MonoBehaviour:
   adaptiveSurfaceCacheCount: 8
   chunkCountToUpdatePerFrame: 64
   cullingObjectCountPerChunk: 64
-  voxelSize: 0.125
+  voxelSize: 0.25
   voxelResolution: 128
   voxelVisualizeMode: 0
   voxelVisualizeCascadeLevel: 0

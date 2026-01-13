@@ -118,26 +118,25 @@ float GetMainLightShadow(in ClipmapInfo clipmapInfo, float3 worldPosition, float
     
     // @TODO: fix light leaking caused by normal bias
     // 1. use whole scene shadow map
-    //if (isVoxelInFrustum)
-    //{
-    //    for (int cascadeIndex = 0; cascadeIndex < _CSMNumCascades; cascadeIndex++)
-    //    {
-    //        float4 boundSphere = _CSMShadowBounds[cascadeIndex];
-    //        if (length(worldPosition - boundSphere.xyz) > boundSphere.w)
-    //        {
-    //            continue;
-    //        }
+    if (isVoxelInFrustum)
+    {
+        for (int cascadeIndex = 0; cascadeIndex < _CSMNumCascades; cascadeIndex++)
+        {
+            float4 boundSphere = _CSMShadowBounds[cascadeIndex];
+            if (length(worldPosition - boundSphere.xyz) > boundSphere.w)
+            {
+                continue;
+            }
         
-    //        float4 shadowPosition = mul(_CSMWorldToShadowMatrices[cascadeIndex], float4(worldPosition + normalBias * 4, 1));
-    //        shadowPosition.xyz /= shadowPosition.w;
-    //        float sampleZ = _ShadowDepthTexture.SampleLevel(sampler_PointClamp, shadowPosition.xy, 0).r;
-    //        mainLightShadow *= (shadowPosition.z >= sampleZ);
-    //        break;
-    //    }
-    //}
-    //// 2. trace shadow ray as fallback
-    //else
-    
+            float4 shadowPosition = mul(_CSMWorldToShadowMatrices[cascadeIndex], float4(worldPosition + normalBias * 4, 1));
+            shadowPosition.xyz /= shadowPosition.w;
+            float sampleZ = _ShadowDepthTexture.SampleLevel(sampler_PointClamp, shadowPosition.xy, 0).r;
+            mainLightShadow *= (shadowPosition.z >= sampleZ);
+            break;
+        }
+    }
+    // 2. trace shadow ray as fallback
+    else
     {
         VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
         RTRequest.rayStart = worldPosition + normalBias * 0.707;
