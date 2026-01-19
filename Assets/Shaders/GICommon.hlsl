@@ -28,6 +28,10 @@
 #define PROBE_STATE_NEED_RELEASE (2)
 
 #define DISTANCE_FIELD_MAX_RANGE (32.0)		// map distance to R8 [0~1], 1 is for 32 voxel's distance
+#define BASE_OM_SIZE 128
+#define TOTAL_UINT_IN_BASE_OM 4
+#define DIST_PER_UINT_BASE (1.0f / TOTAL_UINT_IN_BASE_OM)
+#define DIST_PER_BIT_BASE (DIST_PER_UINT_BASE / 32)
 
 struct ObjectInfo
 {
@@ -398,6 +402,43 @@ float3 YCoCgToRGB(float3 YCoCg)
 
     float3 RGB = float3(R, G, B);
     return RGB;
+}
+
+float3 positionUVToNDC(float3 posUV)
+{
+    return float3((posUV.x - 0.5f) * 2.0f, (0.5f - posUV.y) * 2.0f, (posUV.z - 0.5f) * 2.0f);
+}
+
+float3 positionNDCToUV(float3 ndc)
+{
+    return float3(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y, 0.5 + 0.5 * ndc.z);
+}
+
+float3 positionUVToWS(float3 posUV, float4x4 invViewProjMat)
+{
+    float3 posNDC = positionUVToNDC(posUV);
+    float4 posWS = mul(invViewProjMat, float4(posNDC, 1.0f));
+    return posWS.xyz / posWS.w;
+}
+
+float3 positionWSToUV(float3 posWS, float4x4 viewProjMat)
+{
+    float4 posCS = mul(viewProjMat, float4(posWS, 1.f));
+    float3 posNDC = posCS.xyz / posCS.w;
+    float3 posUV = positionNDCToUV(posNDC);
+    return posUV;
+}
+
+float3 directionNDCToUV(float3 ndc)
+{
+    return float3(0.5 * ndc.x, -0.5 * ndc.y, 0.5 * ndc.z);
+}
+
+float3 directionWSToUV(float3 dirWS, float4x4 viewProjMat)
+{
+    float3 dirNDC = mul(viewProjMat, float4(dirWS, 0.f)).xyz;
+    float3 dirUV = directionNDCToUV(dirNDC);
+    return dirUV;
 }
 
 #endif

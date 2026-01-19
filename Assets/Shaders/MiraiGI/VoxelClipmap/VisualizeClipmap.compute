@@ -1,6 +1,8 @@
 #include "../VoxelLighting/VoxelLightingParameters.hlsl"
 #pragma kernel VisualizeClipmap
 
+#pragma multi_compile _ USE_DISTANCE_FIELD
+
 float4 _ScreenResolution;
 float4 _CameraPosition;
 float4x4 _InvViewProjMat;
@@ -34,10 +36,6 @@ float3 ReconstructWorldPositionFromDepth(float2 uv, float depth)
     return worldPos.xyz;
 }
 
-#ifndef USE_DISTANCE_FIELD
-#define USE_DISTANCE_FIELD 0
-#endif
-
 [numthreads(8, 8, 1)]
 void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
@@ -54,7 +52,7 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     ClipmapInfo clipmapInfo = ResolveClipmapInfo();
     
     float3 rayDir = normalize(pixelWorldPosition - _CameraPosition.xyz);
-    float3 rayEnd = rayDir * 1000000;
+    float3 rayEnd = rayDir * 1000;
     float3 color = float3(0, 0, 0) + _VoxelOccupy[uint3(0, 0, 0)];
     
     VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
@@ -62,10 +60,12 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     RTRequest.rayDir = rayDir;
     RTRequest.minCascadeIndex = clamp(_VisualizeCascadeLevel, 0, _CascadeCount - 1);
     RTRequest.maxCascadeIndex = _CascadeCount - 1;
-    RTRequest.maxStepNum = 128000;
-    RTRequest.maxDistance = 200000000;
+    RTRequest.maxStepNum = 1000;
+    RTRequest.maxDistance = 100000;
     
-#if USE_DISTANCE_FIELD
+#if USE_ROMA
+    VoxelRayTracingHitPayload hit = OccupancyMapRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
+#elif USE_DISTANCE_FIELD
     VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
 #else
     VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _VoxelBitOccupyClipmap, RTRequest);

@@ -276,7 +276,7 @@ public class MiraiGIClipmap
         m_DistanceFieldClipmap = new RenderTexture[2];
         for (int i = 0; i < 2; i++)
         {
-            m_DistanceFieldClipmap[i] = new RenderTexture(DFTextureResolution.x, DFTextureResolution.y, 0, RenderTextureFormat.R8);
+            m_DistanceFieldClipmap[i] = new RenderTexture(DFTextureResolution.x, DFTextureResolution.y, 0, RenderTextureFormat.RFloat);
             m_DistanceFieldClipmap[i].dimension = TextureDimension.Tex3D;
             m_DistanceFieldClipmap[i].volumeDepth = DFTextureResolution.z;
             m_DistanceFieldClipmap[i].enableRandomWrite = true;
@@ -333,17 +333,22 @@ public class MiraiGIClipmap
 
             m_ROMA[i] = new RenderTexture(voxelResolution.x, voxelResolution.y, 0, RenderTextureFormat.RInt);
             m_ROMA[i].dimension = TextureDimension.Tex2DArray;
-            m_ROMA[i].volumeDepth = voxelResolution.z / 32 * GlobalSettings.Instance.occupancyMapCount;
+            m_ROMA[i].volumeDepth = voxelResolution.z / 32 * (GlobalSettings.Instance.occupancyMapXCount * GlobalSettings.Instance.occupancyMapYCount);
             m_ROMA[i].enableRandomWrite = true;
             m_ROMA[i].Create();
 
-            m_DirectionParamsBuffer[i] = new ComputeBuffer(GlobalSettings.Instance.occupancyMapCount / 8, Marshal.SizeOf(typeof(DirectionParams)));
+            m_DirectionParamsBuffer[i] = new ComputeBuffer((GlobalSettings.Instance.occupancyMapXCount * GlobalSettings.Instance.occupancyMapYCount) / 8, Marshal.SizeOf(typeof(DirectionParams)));
         }
 
-        m_ROMACenter = new ComputeBuffer(GlobalSettings.Instance.occupancyMapCount, sizeof(float) * 4);
+        m_ROMACenter = new ComputeBuffer((GlobalSettings.Instance.occupancyMapXCount * GlobalSettings.Instance.occupancyMapYCount), sizeof(float) * 4);
 
         m_ROMADirection = new List<Vector3>();
-        GenerateUniformHemisphereDirections(m_ROMADirection);
+        List<Vector2> samples = new List<Vector2>();
+        StratifiedSample2D(samples, GlobalSettings.Instance.occupancyMapXCount, GlobalSettings.Instance.occupancyMapYCount, false);
+        for (int i = 0; i < samples.Count; i++)
+        {
+            m_ROMADirection.Add(SampleUniformConcentricHemisphere(samples[i]));
+        }
 
         CommandBuffer cmd = CommandBufferPool.Get("Init Voxel Page");
 
@@ -353,6 +358,10 @@ public class MiraiGIClipmap
         cmd.SetComputeTextureParam(m_VoxelPoolInitCS, 0, Shader.PropertyToID("_RWVoxelPoolNormal"), m_VoxelPoolNormal);
         cmd.SetComputeTextureParam(m_VoxelPoolInitCS, 0, Shader.PropertyToID("_RWVoxelPoolEmissive"), m_VoxelPoolEmissive);
         cmd.DispatchCompute(m_VoxelPoolInitCS, 0, clipmapResolution.x / 4, clipmapResolution.y / 4, clipmapResolution.z / 4);
+
+        cmd.SetComputeTextureParam(m_VoxelPoolInitCS, m_VoxelPoolInitCS.FindKernel("DistanceFieldInit"), Shader.PropertyToID("_RWDistanceField0"), m_DistanceFieldClipmap[0]);
+        cmd.SetComputeTextureParam(m_VoxelPoolInitCS, m_VoxelPoolInitCS.FindKernel("DistanceFieldInit"), Shader.PropertyToID("_RWDistanceField1"), m_DistanceFieldClipmap[1]);
+        cmd.DispatchCompute(m_VoxelPoolInitCS, m_VoxelPoolInitCS.FindKernel("DistanceFieldInit"), voxelResolution.x / 4, voxelResolution.y / 4, voxelResolution.z);
 
         Graphics.ExecuteCommandBuffer(cmd);
         CommandBufferPool.Release(cmd);
@@ -707,11 +716,11 @@ public class MiraiGIClipmap
         bool useDistanceField = GlobalSettings.Instance.useDistanceField > 0;
         if (useDistanceField)
         {
-            m_VoxelInjectCS.EnableKeyword("USE_DISTANCE_FIELD");
+            cmd.EnableShaderKeyword("USE_DISTANCE_FIELD");
         }
         else
         {
-            m_VoxelInjectCS.DisableKeyword("USE_DISTANCE_FIELD");
+            cmd.DisableShaderKeyword("USE_DISTANCE_FIELD");
         }
 
         cmd.SetComputeConstantBufferParam(m_VoxelInjectCS, Shader.PropertyToID("_Params"), m_ObjectCullParamsCB[cascadeIndex], 0, Marshal.SizeOf<ObjectCullParams>());
@@ -820,7 +829,7 @@ public class MiraiGIClipmap
 
         // 2. Get ROMA direction params
         int updateFrame = scene.frameNumber % 8;
-        int updateOMPerFrame = GlobalSettings.Instance.occupancyMapCount / 8;
+        int updateOMPerFrame = (GlobalSettings.Instance.occupancyMapXCount * GlobalSettings.Instance.occupancyMapYCount) / 8;
 
         CameraParams[] cameraParamsArray = new CameraParams[updateOMPerFrame];
         for (int omId = 0; omId < updateOMPerFrame; omId++)
@@ -895,6 +904,16 @@ public class MiraiGIClipmap
         if (GlobalSettings.Instance.voxelVisualizeMode <= 0 || GlobalSettings.Instance.voxelVisualizeMode > 5)
         {
             return;
+        }
+
+        bool useDistanceField = GlobalSettings.Instance.useDistanceField > 0;
+        if (useDistanceField)
+        {
+            cmd.EnableShaderKeyword("USE_DISTANCE_FIELD");
+        }
+        else
+        {
+            cmd.DisableShaderKeyword("USE_DISTANCE_FIELD");
         }
 
         MiraiGIRadianceCache radianceCache = scene.miraiGIRadianceCache;
@@ -1044,21 +1063,60 @@ public class MiraiGIClipmap
         }
     }
 
-    void GenerateUniformHemisphereDirections(List<Vector3> directions)
+    void StratifiedSample2D(List<Vector2> samples, int nx, int ny, bool jitter)
     {
-        float goldenAngle = Mathf.PI * (3.0f - Mathf.Sqrt(5.0f));
-
-        for (int i = 0; i < GlobalSettings.Instance.occupancyMapCount; i++)
+        float dx = 1.0f / nx, dy = 1.0f / ny;
+        for (int y = 0; y < ny; y++)
         {
-            // Fibonacci Hemisphere Sample
-            float y = 1.0f - (i / (float)(GlobalSettings.Instance.occupancyMapCount - 1)); // y ¡Ê [0, 1]
-            float radius = Mathf.Sqrt(1.0f - y * y);
-            float theta = goldenAngle * i;
-
-            float x = Mathf.Cos(theta) * radius;
-            float z = Mathf.Sin(theta) * radius;
-
-            directions.Add(math.normalize(new Vector3(x, y, z)));
+            for (int x = 0; x < nx; x++)
+            {
+                Vector2 jitterXY = new Vector2(0.0f, 0.0f);
+                // @TODO: Jitter generate
+                float jx = jitter ? jitterXY.x + 0.5f : 0.5f;
+                float jy = jitter ? jitterXY.y + 0.5f : 0.5f;
+                Vector2 sample = new Vector2((x + jx) * dx, (y + jy) * dy);
+                samples.Add(sample);
+            }
         }
     }
+
+    Vector3 SampleUniformConcentricHemisphere(float2 u)
+    {
+        u = 2.0f * u - 1.0f;
+        if (u.x == 0.0f && u.y == 0.0f) 
+        { 
+            return new Vector3(0.0f, 0.0f, 1.0f); 
+        }
+        float r, phi;
+        if (Mathf.Abs(u.x) > Mathf.Abs(u.y))
+        {
+            r = u.x;
+            phi = Mathf.PI / 4.0f * (u.y / u.x);
+        }
+        else
+        {
+            r = u.y;
+            phi = Mathf.PI / 2.0f - Mathf.PI / 4.0f * (u.x / u.y);
+        }
+        float sinTheta = r * Mathf.Sqrt(2.0f - r * r);
+        return new Vector3(Mathf.Cos(phi) * sinTheta, Mathf.Sin(phi) * sinTheta, 1 - r * r);
+    }
+
+    //void GenerateUniformHemisphereDirections(List<Vector3> directions)
+    //{
+    //    float goldenAngle = Mathf.PI * (3.0f - Mathf.Sqrt(5.0f));
+
+    //    for (int i = 0; i < GlobalSettings.Instance.occupancyMapCount; i++)
+    //    {
+    //        // Fibonacci Hemisphere Sample
+    //        float y = 1.0f - (i / (float)(GlobalSettings.Instance.occupancyMapCount - 1)); // y ¡Ê [0, 1]
+    //        float radius = Mathf.Sqrt(1.0f - y * y);
+    //        float theta = goldenAngle * i;
+
+    //        float x = Mathf.Cos(theta) * radius;
+    //        float z = Mathf.Sin(theta) * radius;
+
+    //        directions.Add(math.normalize(new Vector3(x, y, z)));
+    //    }
+    //}
 }

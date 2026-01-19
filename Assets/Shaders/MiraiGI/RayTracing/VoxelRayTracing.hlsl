@@ -45,6 +45,13 @@ struct VoxelRayTracingHitPayload
     int3 clipmapAccessIndex;
 };
 
+struct RayBoxHitInfo
+{
+    float tMin;
+    float tMax;
+    bool hit;
+};
+
 CascadeInfo ResolveCascadeInfo(ClipmapInfo clipmapInfo, int cascadeId)
 {
     CascadeInfo cascadeInfo;
@@ -57,6 +64,48 @@ CascadeInfo ResolveCascadeInfo(ClipmapInfo clipmapInfo, int cascadeId)
     cascadeInfo.voxelSize = cascadeInfo.size / cascadeInfo.resolution;
     return cascadeInfo;
 }
+
+RayBoxHitInfo CheckRayBoxIntersection(float3 startUV, float3 dirUV)
+{
+    RayBoxHitInfo hitInfo = (RayBoxHitInfo) 0;
+    const float3 bounds[2] = { float3(0.0f, 0.0f, 0.0f), float3(1.0f, 1.0f, 1.0f) };
+    const int3 signs = int3(dirUV.x < 0, dirUV.y < 0, dirUV.z < 0);
+    const float3 invDir = 1.0f / dirUV;
+    float tmin, tmax, tymin, tymax, tzmin, tzmax;
+
+    tmin = (bounds[signs[0]].x - startUV.x) * invDir.x;
+    tmax = (bounds[1 - signs[0]].x - startUV.x) * invDir.x;
+    tymin = (bounds[signs[1]].y - startUV.y) * invDir.y;
+    tymax = (bounds[1 - signs[1]].y - startUV.y) * invDir.y;
+
+    if ((tmin > tymax) || (tymin > tmax))
+        return hitInfo;
+
+    if (tymin > tmin)
+        tmin = tymin;
+    if (tymax < tmax)
+        tmax = tymax;
+
+    tzmin = (bounds[signs[2]].z - startUV.z) * invDir.z;
+    tzmax = (bounds[1 - signs[2]].z - startUV.z) * invDir.z;
+
+    if ((tmin > tzmax) || (tzmin > tmax))
+        return hitInfo;
+
+    if (tzmin > tmin)
+        tmin = tzmin;
+    if (tzmax < tmax)
+        tmax = tzmax;
+
+    if (tmax <= 0.0f)
+        return hitInfo;
+    
+    hitInfo.tMin = tmin;
+    hitInfo.tMax = tmax;
+    hitInfo.hit = true;
+    return hitInfo;
+}
+
 
 float3 SignNotZero3(float3 v)
 {
@@ -267,7 +316,9 @@ VoxelRayTracingHitPayload DistanceFieldRaytracingSingleCascade(in CascadeInfo ca
         }
 
         // note: sqrt 3 is for conservative step scale (propagate distance may > real distance)
-        samplePoint += RTRequest.rayDir * distance / sqrt(3.0f);
+        float stepDistance = distance / sqrt(3.0f);
+        samplePoint += RTRequest.rayDir * stepDistance;
+        RTRequest.rayDistance += stepDistance;
     }
 
 	// 4. find a voxel we actually hit by searching voxel neighbors
@@ -318,6 +369,237 @@ VoxelRayTracingHitPayload DistanceFieldRaytracing(in ClipmapInfo clipmapInfo, in
         CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, cascadeId);
 
         VoxelRayTracingHitPayload hit = DistanceFieldRaytracingSingleCascade(cascadeInfo, distanceFieldClipmap, linearSampler, RTRequest);
+
+        if (hit.isHit)
+        {
+            return hit;
+        }
+
+		// trace from last clip's ray start
+        RTRequest.rayStart = hit.position;
+    }
+
+    return (VoxelRayTracingHitPayload) 0;
+}
+
+//VoxelRayTracingHitPayload ROMARaytracingSingleCascade(in CascadeInfo cascadeInfo, in Texture2DArray<float> ROMA, in int OMIndex,
+//                                                                in SamplerState linearSampler, inout VoxelRaytracingRequest RTRequest)
+//{
+    
+
+//    VoxelRayTracingHitPayload payload = (VoxelRayTracingHitPayload) 0;
+//    payload.position = samplePoint + cascadeInfo.center;
+//    payload.isHit = hitMask;
+//    payload.voxelIndex = voxelIndex;
+//    payload.voxelPosition = CalcVoxelCenterPos(voxelIndex, cascadeInfo.resolution, cascadeInfo.center, cascadeInfo.size);
+//    payload.voxelCellSize = cascadeInfo.voxelSize.x;
+//    payload.cascadeIndex = cascadeInfo.cascadeIndex;
+//    payload.clipmapAccessIndex = clipmapAccessIndex;
+
+//    return payload;
+//}
+
+inline float lowBitDistanceBASE(uint bits)
+{
+    return (32 - log2(bits & (-bits)) - 0.5f) * DIST_PER_BIT_BASE;
+}
+inline float foremostBitDistanceBASE(uint bits)
+{
+    return (32 - int(log2(bits)) - 0.5f) * DIST_PER_BIT_BASE;
+}
+
+VoxelRayTracingHitPayload BaseOMRaytracingSingleCascade(in CascadeInfo cascadeInfo, in Texture2DArray<float> baseOM, in float4x4 baseOMViewProjMat,
+                                                                in SamplerState linearSampler, inout VoxelRaytracingRequest RTRequest)
+{
+    VoxelRayTracingHitPayload payload = (VoxelRayTracingHitPayload) 0;
+    
+    float3 posUV = positionWSToUV(RTRequest.rayStart, baseOMViewProjMat);
+    float3 dirUV = normalize(directionWSToUV(RTRequest.rayDir, baseOMViewProjMat));
+    bool startFromInside = true;
+    RayBoxHitInfo info = CheckRayBoxIntersection(posUV, dirUV);
+    // Fail to enter volume
+    if (!info.hit)
+        return payload;
+    // Check if we're starting from outside of the volume
+    // if start from outside, step forward the ray into volume
+    if (any(posUV <= 0) || any(posUV >= 1))
+    {
+        startFromInside = false;
+        const float offset = (info.tMax - info.tMin) / sqrt(2.0f * BASE_OM_SIZE * BASE_OM_SIZE);
+        posUV += (info.tMin + offset) * dirUV;
+        info.tMax -= (info.tMin + offset) + offset;
+    }
+    else
+    {
+        const float offset = info.tMax / sqrt(2.0f * BASE_OM_SIZE * BASE_OM_SIZE);
+        info.tMax -= offset;
+    }
+
+    // Start from the finest level
+    uint step = 0;
+    float texelCount = float(BASE_OM_SIZE);
+    float tMax = info.tMax;
+    const float3 startUV = posUV;
+    // Compute cross step (the direction we march)
+    int3 crossStep = int3(dirUV.x >= 0.0f ? 1 : -1, dirUV.y >= 0.0f ? 1 : -1, dirUV.z >= 0.0f ? 1 : -1);
+    float2 crossOffset = crossStep.xy / texelCount / sqrt(2.0f * texelCount * texelCount);
+    // Find texel that curtains query start position
+    float3 curUV = posUV;
+    int2 curTexIndex = int2(floor(curUV.xy * texelCount));
+    int2 nextTexIndex = int2(0, 0);
+    float curT = 0.0f;
+    float nextT = 0.0f;
+
+    // Intersect next texel boundary to find nextT
+    {
+        float2 nextUV = (curTexIndex + crossStep.xy) / texelCount;
+        nextUV += crossOffset;
+        float2 delta = nextUV - curUV.xy;
+        delta /= dirUV.xy;
+        if (delta.x < delta.y)
+        {
+            nextT = curT + delta.x;
+            nextTexIndex = curTexIndex + int2(crossStep.x, 0);
+        }
+        else if (delta.y < delta.x)
+        {
+            nextT = curT + delta.y;
+            nextTexIndex = curTexIndex + int2(0, crossStep.y);
+        }
+        else
+        {
+            nextT = curT + delta.x;
+            nextTexIndex = curTexIndex + crossStep.xy;
+        }
+        nextT = min(nextT, tMax);
+    }
+
+    // Find all voxels belong to current texel
+    int startZIndex = int(floor(startUV.z * texelCount));
+    int endZIndex = int(floor((startUV.z + nextT * dirUV.z) * texelCount));
+    int bMin = min(startZIndex, endZIndex);
+    int bMax = max(startZIndex, endZIndex);
+
+    // Check hit
+    uint occluded = 0;
+    if (startZIndex != endZIndex)
+    {
+        // If there are at least two voxels to check
+        // We can not just simply skip the first texel : in some cases, the ray will intersect voxels belongs to the first texel
+        // So instead, we skip only the first voxel at current texel for avoiding self - intersection
+        if (startFromInside)
+            startZIndex += int(crossStep.z);
+        for (int i = 0; i < TOTAL_UINT_IN_BASE_OM; i++)
+        {
+            int index = (startZIndex >= endZIndex) ? (TOTAL_UINT_IN_BASE_OM - 1) - i : i;
+            uint omBit = baseOM[int3(curTexIndex, index)];
+            // Find the intersection of intervals
+            int amin = index * 32;
+            int amax = (index + 1) * 32 - 1;
+            int insecMin = max(amin, bMin);
+            int insecMax = min(amax, bMax);
+            if (insecMin > insecMax)
+                continue;
+            occluded = omBit << (insecMin - amin) >> (insecMin - amin + amax - insecMax) << (amax - insecMax);
+            if (occluded > 0)
+            {
+                float3 hitUV = float3(curUV.xy, index * DIST_PER_UINT_BASE + ((startZIndex >= endZIndex) ? lowBitDistanceBASE(occluded) : foremostBitDistanceBASE(occluded)));
+                int3 hitVoxel = int3(floor(hitUV * texelCount));
+                int3 blockIndex = hitVoxel / VOXEL_BLOCK_SIZE;
+                int3 clipmapAccessIndex = BlockClipmapAddressMapping(blockIndex, cascadeInfo.resolution, cascadeInfo.scrolling, cascadeInfo.cascadeIndex);
+                payload.isHit = true;
+                payload.position = positionUVToWS(hitUV, baseOMViewProjMat);
+                payload.voxelIndex = hitVoxel;
+                payload.voxelPosition = CalcVoxelCenterPos(hitVoxel, cascadeInfo.resolution, cascadeInfo.center, cascadeInfo.size);
+                payload.voxelCellSize = cascadeInfo.voxelSize.x;
+                payload.cascadeIndex = cascadeInfo.cascadeIndex;
+                payload.clipmapAccessIndex = clipmapAccessIndex;
+                return payload;
+            }
+        }
+    }
+    
+    // Now we can safely go to the next texel
+    curT = nextT;
+    while (curT < tMax && step < RTRequest.maxStepNum)
+    {
+        step += 1;
+        curUV = startUV + curT * dirUV;
+        curTexIndex = nextTexIndex;
+        // Intersect next texel boundary to find nextT
+        {
+            float2 nextUV = (curTexIndex + crossStep.xy) / texelCount;
+            nextUV += crossOffset;
+            float2 delta = nextUV - curUV.xy;
+            delta /= dirUV.xy;
+            if (delta.x < delta.y)
+            {
+                nextT = curT + delta.x;
+                nextTexIndex = curTexIndex + int2(crossStep.x, 0);
+            }
+            else if (delta.y < delta.x)
+            {
+                nextT = curT + delta.y;
+                nextTexIndex = curTexIndex + int2(0, crossStep.y);
+            }
+            else
+            {
+                nextT = curT + delta.x;
+                nextTexIndex = curTexIndex + crossStep.xy;
+            }
+            nextT = min(nextT, tMax);
+        }
+
+        // Find all voxels belong to current texel
+        startZIndex = int(floor((startUV.z + curT * dirUV.z) * texelCount));
+        endZIndex = int(floor((startUV.z + nextT * dirUV.z) * texelCount));
+        bMin = min(startZIndex, endZIndex);
+        bMax = max(startZIndex, endZIndex);
+
+        // Check hit
+        for (int i = 0; i < TOTAL_UINT_IN_BASE_OM; i++)
+        {
+            int index = (startZIndex >= endZIndex) ? (TOTAL_UINT_IN_BASE_OM - 1) - i : i;
+            uint omBit = baseOM[int3(curTexIndex, index)];
+            // Find the intersection of intervals
+            int amin = index * 32;
+            int amax = (index + 1) * 32 - 1;
+            int insecMin = max(amin, bMin);
+            int insecMax = min(amax, bMax);
+            if (insecMin > insecMax)
+                continue;
+            occluded = omBit << (insecMin - amin) >> (insecMin - amin + amax - insecMax) << (amax - insecMax);
+            if (occluded > 0)
+            {
+                float3 hitUV = float3(curUV.xy, index * DIST_PER_UINT_BASE + ((startZIndex >= endZIndex) ? lowBitDistanceBASE(occluded) : foremostBitDistanceBASE(occluded)));
+                int3 hitVoxel = int3(floor(hitUV * texelCount));
+                int3 blockIndex = hitVoxel / VOXEL_BLOCK_SIZE;
+                int3 clipmapAccessIndex = BlockClipmapAddressMapping(blockIndex, cascadeInfo.resolution, cascadeInfo.scrolling, cascadeInfo.cascadeIndex);
+                payload.isHit = true;
+                payload.position = positionUVToWS(hitUV, baseOMViewProjMat);
+                payload.voxelIndex = hitVoxel;
+                payload.voxelPosition = CalcVoxelCenterPos(hitVoxel, cascadeInfo.resolution, cascadeInfo.center, cascadeInfo.size);
+                payload.voxelCellSize = cascadeInfo.voxelSize.x;
+                payload.cascadeIndex = cascadeInfo.cascadeIndex;
+                payload.clipmapAccessIndex = clipmapAccessIndex;
+            }
+            curT = nextT;
+        }
+    }
+
+    return payload;
+}
+
+VoxelRayTracingHitPayload OccupancyMapRaytracing(in ClipmapInfo clipmapInfo, in Texture2DArray<float> occupancyMap, in float4x4 baseOMViewProjMat,
+                                                    in SamplerState linearSampler, inout VoxelRaytracingRequest RTRequest)
+{
+    float3 rayDirection = RTRequest.rayDir;
+    
+    for (int cascadeId = RTRequest.minCascadeIndex; cascadeId <= RTRequest.maxCascadeIndex; cascadeId++)
+    {
+        CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, cascadeId);
+
+        VoxelRayTracingHitPayload hit = BaseOMRaytracingSingleCascade(cascadeInfo, occupancyMap, baseOMViewProjMat, linearSampler, RTRequest);
 
         if (hit.isHit)
         {

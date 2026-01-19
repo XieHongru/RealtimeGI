@@ -150,7 +150,10 @@ public class GlobalSettings : ScriptableObject
     public int useDistanceField = 1;
 
     [Header("ROMA Settings")]
-
-    [ChineseLabel("占用图数量")]
-    public int occupancyMapCount = 16;
+    [ChineseLabel("启用ROMA")]
+    public int useROMA = 0;
+    [ChineseLabel("占用图X方向数")]
+    public int occupancyMapXCount = 4;
+    [ChineseLabel("占用图Y方向数")]
+    public int occupancyMapYCount = 4;
 }

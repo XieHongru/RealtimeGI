@@ -24,6 +24,8 @@ Texture3D<float4> _VoxelPoolNormal;
 Texture3D<float4> _VoxelPoolEmissive;
 Texture3D<float3> _VoxelPoolRadiance;
 Texture3D<float> _DistanceFieldClipmap;
+Texture2DArray<uint> _BaseOccupancyMap;
+Texture2DArray<uint> _ROMA;
 
 ClipmapInfo ResolveClipmapInfo()
 {

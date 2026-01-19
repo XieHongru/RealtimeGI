@@ -1,7 +1,7 @@
 #include "../../GICommon.hlsl"
 #pragma kernel VoxelInject
 
-//#pragma multi_compile _ USE_DISTANCE_FIELD
+#pragma multi_compile _ USE_DISTANCE_FIELD
 //#pragma multi_compile _ USE_ROMA
 
 cbuffer _Params
@@ -36,7 +36,7 @@ Texture2D _SurfaceCacheAtlasDepth;
 SamplerState sampler_LinearClamp;
 
 RWTexture3D<uint2> _RWVoxelBitOccupyClipmap;
-RWTexture3D<float> _RWVoxelOccupy;
+//RWTexture3D<float> _RWVoxelOccupy;
 
 RWTexture3D<int> _RWVoxelPageClipmap;
 RWStructuredBuffer<int> _RWVoxelPageFreeList;
@@ -79,7 +79,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
     float2 uvInAtlas = (float2) 0;
     float4x4 localToWorldMatrix = (float4x4) 0; // for transform hit normal to world
     float4 bilinearValidMask = (float4) 0;      // valid pixel mask when doing bilinear filter in surface cache atlas
-    float minDistance = 128000;                 // min distance from cur voxel to object surface
+    float minDistance = 1000;                 // min distance from cur voxel to object surface
 
     // 1. loop all objects in update chunk, see if clipmap's voxel intersect with object
     for (int i = 0; i < numObjectsInUpdateChunk; i++)
@@ -152,13 +152,14 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
 
             //float worldDistance = abs(cardDepth - voxelDepth) * orthoDepthWorldSize;
             //if (worldDistance < voxelCellSize * 0.707)  // tolerance radius is sqrt(2) / 2, for unit cube
-            float worldDistance = abs(cardDepth - voxelDepth) * orthoDepthLocalSize;
+            float localDistance = abs(cardDepth - voxelDepth) * orthoDepthLocalSize;
+            float worldDistance = abs(cardDepth - voxelDepth) * orthoDepthWorldSize;
             
 #if USE_DISTANCE_FIELD
-            minDistance = min(minDistance, worldDistancce);
+            minDistance = min(minDistance, worldDistance);
 #endif
-            
-            if (worldDistance < localSpaceCellRadius * 0.5)
+            //if (worldDistance < voxelCellSize * 0.707)
+            if (localDistance < localSpaceCellRadius * 0.5)
             {
                 hasVoxel = true;
                 localToWorldMatrix = objectInfo.localToWorldMatrix;
@@ -190,7 +191,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         uint bitMask = ~(1u << (15 - bitIndex));
         InterlockedAnd(_RWScrollingBOM[uint3(scrollingIndex.xy, arrayIndex)], bitMask);
     }
-    _RWVoxelOccupy[scrollingIndex + uint3(0, 0, (int) _CascadeResolution.x * _CascadeIndex)] = hasVoxel ? 1.0f : 0.0f;
+    //_RWVoxelOccupy[scrollingIndex + uint3(0, 0, (int) _CascadeResolution.x * _CascadeIndex)] = hasVoxel ? 1.0f : 0.0f;
 
     // 3. single head thread encode ThreadVoxelOccupy to uint64, write into bit occupy volume
     uint2 bitOccupyBlock = uint2(0, 0);
@@ -269,7 +270,6 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
 #pragma kernel DistanceFieldPropagate
 
 Texture3D<float> _DistanceFieldClipmap;
-RWTexture3D<float> _RWVoxelNeighborClipmap;
 
 [numthreads(4, 4, 4)]
 void DistanceFieldPropagate(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
@@ -293,7 +293,6 @@ void DistanceFieldPropagate(uint3 threadId : SV_DispatchThreadID, uint3 groupThr
 
     // 2. sample neighbor cell's distance
     float distance = DecodeDistance(_DistanceFieldClipmap[readWriteIndex], voxelSize);
-    float neighborSamples[6];
     for (int i = 0; i < 6; i++)
     {
         // clamp sample wrap physical boundary
@@ -303,7 +302,6 @@ void DistanceFieldPropagate(uint3 threadId : SV_DispatchThreadID, uint3 groupThr
         
         float neighborVal = DecodeDistance(_DistanceFieldClipmap[offsetIndex], voxelSize);
         distance = min(distance, neighborVal + voxelSize);
-        neighborSamples[i] = neighborVal;
     }
 
     // 3. write distance
@@ -351,31 +349,6 @@ Texture2DArray<uint> _BaseOccupancyMap;
 StructuredBuffer<DirectionParams> _DirectionParamsArray;
 RWTexture2DArray<uint> _RWROMA;
 RWStructuredBuffer<float4> _RWROMACenter;
-
-float3 positionUVToWS(float3 posUV, float4x4 invViewProjMat)
-{
-    float3 posNDC = float3(
-        (posUV.x - 0.5f) * 2.0f,
-        (0.5f - posUV.y) * 2.0f,
-        (posUV.z - 0.5f) * 2.0f
-    );
-    
-    float4 posWS = mul(invViewProjMat, float4(posNDC, 1.0f));
-    
-    return posWS.xyz;
-}
-
-float3 positionWSToUV(float3 posWS, float4x4 viewProjMat)
-{
-    float4 posCS = mul(viewProjMat, float4(posWS, 1.f));
-    float3 posNDC = posCS.xyz;
-    
-    return float3(
-        0.5f + 0.5f * posNDC.x,
-        0.5f - 0.5f * posNDC.y,
-        0.5f + 0.5f * posNDC.z
-    );
-}
 
 [numthreads(16, 16, 1)]
 void GenerateROMA(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)

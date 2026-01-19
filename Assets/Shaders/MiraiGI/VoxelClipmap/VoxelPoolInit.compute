@@ -37,3 +37,16 @@ void VoxelPoolRadianceInit(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
         _RWVoxelPoolRadiance[threadId * int3(1, 1, VOXEL_FACE_NUM) + int3(0, 0, face)] = float3(0, 0, 0);
     }
 }
+
+// -------------------------------------------------------------------------------- //
+#pragma kernel DistanceFieldInit
+
+RWTexture3D<float> _RWDistanceField0;
+RWTexture3D<float> _RWDistanceField1;
+
+[numthreads(4, 4, 4)]
+void DistanceFieldInit(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    _RWDistanceField0[threadId] = 10.f;
+    _RWDistanceField1[threadId] = 10.f;
+}
