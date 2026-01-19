@@ -28,6 +28,7 @@
 #define PROBE_STATE_NEED_RELEASE (2)
 
 #define DISTANCE_FIELD_MAX_RANGE (32.0)		// map distance to R8 [0~1], 1 is for 32 voxel's distance
+#define ROMA_COUNT 16
 #define BASE_OM_SIZE 128
 #define TOTAL_UINT_IN_BASE_OM 4
 #define DIST_PER_UINT_BASE (1.0f / TOTAL_UINT_IN_BASE_OM)
