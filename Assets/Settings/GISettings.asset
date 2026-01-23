@@ -23,7 +23,7 @@ MonoBehaviour:
   cullingObjectCountPerChunk: 64
   voxelSize: 0.25
   voxelResolution: 128
-  voxelVisualizeMode: 2
+  voxelVisualizeMode: 1
   voxelVisualizeCascadeLevel: 0
   voxelVisualizeUpdateChunk: 0
   voxelLightingCheckerBoardSize: 2
@@ -60,5 +60,7 @@ MonoBehaviour:
   specularMaxAccumulatedFrame: 32
   specularResolveSearchRange: 4
   specularFilterSearchRange: 4
-  useDistanceField: 1
-  occupancyMapCount: 16
+  useDistanceField: 0
+  useROMA: 1
+  occupancyMapXCount: 4
+  occupancyMapYCount: 4

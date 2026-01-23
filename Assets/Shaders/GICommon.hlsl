@@ -31,8 +31,6 @@
 #define ROMA_COUNT 16
 #define BASE_OM_SIZE 128
 #define TOTAL_UINT_IN_BASE_OM 4
-#define DIST_PER_UINT_BASE (1.0f / TOTAL_UINT_IN_BASE_OM)
-#define DIST_PER_BIT_BASE (DIST_PER_UINT_BASE / 32)
 
 struct ObjectInfo
 {
@@ -71,6 +69,14 @@ StructuredBuffer<ObjectInfo>    _ObjectsInfo;
 StructuredBuffer<MeshInfo>      _MeshInfo;
 StructuredBuffer<float3>        _VertexBuffer;
 StructuredBuffer<int>           _IndexBuffer;
+
+struct DirectionParams
+{
+    float4x4 viewProjMat;
+    float4x4 invViewProjMat;
+    float3 viewDir;
+    float padding;
+};
 
 /** Reverses all the 32 bits. */
 uint ReverseBits32(uint bits)
@@ -407,12 +413,12 @@ float3 YCoCgToRGB(float3 YCoCg)
 
 float3 positionUVToNDC(float3 posUV)
 {
-    return float3((posUV.x - 0.5f) * 2.0f, (0.5f - posUV.y) * 2.0f, (posUV.z - 0.5f) * 2.0f);
+    return float3((posUV.x - 0.5f) * 2.0f, (posUV.y - 0.5f) * 2.0f, (posUV.z - 0.5f) * 2.0f);
 }
 
 float3 positionNDCToUV(float3 ndc)
 {
-    return float3(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y, 0.5 + 0.5 * ndc.z);
+    return float3(0.5 + 0.5 * ndc.x, 0.5 + 0.5 * ndc.y, 0.5 + 0.5 * ndc.z);
 }
 
 float3 positionUVToWS(float3 posUV, float4x4 invViewProjMat)
@@ -432,7 +438,7 @@ float3 positionWSToUV(float3 posWS, float4x4 viewProjMat)
 
 float3 directionNDCToUV(float3 ndc)
 {
-    return float3(0.5 * ndc.x, -0.5 * ndc.y, 0.5 * ndc.z);
+    return float3(0.5 * ndc.x, 0.5 * ndc.y, 0.5 * ndc.z);
 }
 
 float3 directionWSToUV(float3 dirWS, float4x4 viewProjMat)

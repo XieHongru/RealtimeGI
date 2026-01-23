@@ -24,6 +24,10 @@ Texture3D<float4> _VoxelPoolNormal;
 Texture3D<float4> _VoxelPoolEmissive;
 Texture3D<float3> _VoxelPoolRadiance;
 Texture3D<float> _DistanceFieldClipmap;
+
+float4x4 _BaseOMViewProjMatArray[MAX_CASCADE_COUNT];
+float4x4 _BaseOMInvViewProjMatArray[MAX_CASCADE_COUNT];
+StructuredBuffer<DirectionParams> _DirectionParamsArray;
 Texture2DArray<uint> _BaseOccupancyMap;
 Texture2DArray<uint> _ROMA;
 

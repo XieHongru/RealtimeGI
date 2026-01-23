@@ -401,114 +401,126 @@ VoxelRayTracingHitPayload DistanceFieldRaytracing(in ClipmapInfo clipmapInfo, in
 
 inline float lowBitDistanceBASE(uint bits)
 {
-    return (32 - log2(bits & (-bits)) - 0.5f) * DIST_PER_BIT_BASE;
+    return (32 - log2(bits & (-bits)) - 0.5f) / (float) BASE_OM_SIZE;
 }
 inline float foremostBitDistanceBASE(uint bits)
 {
-    return (32 - int(log2(bits)) - 0.5f) * DIST_PER_BIT_BASE;
+    return (32 - int(log2(bits)) - 0.5f) / (float) BASE_OM_SIZE;
 }
 
-VoxelRayTracingHitPayload BaseOMRaytracingSingleCascade(in CascadeInfo cascadeInfo, in Texture2DArray<float> baseOM, in float4x4 baseOMViewProjMat,
-                                                                in SamplerState linearSampler, inout VoxelRaytracingRequest RTRequest)
+VoxelRayTracingHitPayload BaseOMRaytracingSingleCascade(in CascadeInfo cascadeInfo, in Texture2DArray<uint> baseOM, 
+                                                        in float4x4 baseOMViewProjMat, in float4x4 baseOMInvViewProjMat,
+                                                        in SamplerState linearSampler, inout VoxelRaytracingRequest RTRequest)
 {
     VoxelRayTracingHitPayload payload = (VoxelRayTracingHitPayload) 0;
     
-    float3 posUV = positionWSToUV(RTRequest.rayStart, baseOMViewProjMat);
-    float3 dirUV = normalize(directionWSToUV(RTRequest.rayDir, baseOMViewProjMat));
-    bool startFromInside = true;
-    RayBoxHitInfo info = CheckRayBoxIntersection(posUV, dirUV);
+    float3 posVFloat = positionWSToUV(RTRequest.rayStart, baseOMViewProjMat);
+    float3 dirV = normalize(directionWSToUV(RTRequest.rayDir, baseOMViewProjMat));
+    float3 posV = posVFloat;
+    RayBoxHitInfo info = CheckRayBoxIntersection(posV, dirV);
+    bool startFromInside = false;
+    const float epsilon = 1e-6;
     // Fail to enter volume
     if (!info.hit)
         return payload;
     // Check if we're starting from outside of the volume
     // if start from outside, step forward the ray into volume
-    if (any(posUV <= 0) || any(posUV >= 1))
+    if (any(posV <= 0) || any(posV >= 1))
     {
         startFromInside = false;
         const float offset = (info.tMax - info.tMin) / sqrt(2.0f * BASE_OM_SIZE * BASE_OM_SIZE);
-        posUV += (info.tMin + offset) * dirUV;
-        info.tMax -= (info.tMin + offset) + offset;
+        posV += (info.tMin + epsilon) * dirV;
+        info.tMax -= (info.tMin + epsilon) + offset;
     }
     else
     {
         const float offset = info.tMax / sqrt(2.0f * BASE_OM_SIZE * BASE_OM_SIZE);
-        info.tMax -= offset;
+        info.tMax -= epsilon;
     }
+    
+    // Intersect that OM
+    const uint3 gridSize = uint3(BASE_OM_SIZE, BASE_OM_SIZE, BASE_OM_SIZE);
+    
+    const float2 rayPosGridXY = posV.xy * float2(gridSize.xy);
+    const float tRatio = 1.0f / length(dirV.xy * float2(gridSize.x, gridSize.y));
+    int2 texelIndex = int2(floor(rayPosGridXY));
+    float2 rayUnitStepSize = float2(sqrt(1.0f + dirV.y * dirV.y / (dirV.x * dirV.x)),
+                                    sqrt(1.0f + dirV.x * dirV.x / (dirV.y * dirV.y)));
 
-    // Start from the finest level
-    uint step = 0;
-    float texelCount = float(BASE_OM_SIZE);
-    float tMax = info.tMax;
-    const float3 startUV = posUV;
-    // Compute cross step (the direction we march)
-    int3 crossStep = int3(dirUV.x >= 0.0f ? 1 : -1, dirUV.y >= 0.0f ? 1 : -1, dirUV.z >= 0.0f ? 1 : -1);
-    float2 crossOffset = crossStep.xy / texelCount / sqrt(2.0f * texelCount * texelCount);
-    // Find texel that curtains query start position
-    float3 curUV = posUV;
-    int2 curTexIndex = int2(floor(curUV.xy * texelCount));
-    int2 nextTexIndex = int2(0, 0);
-    float curT = 0.0f;
-    float nextT = 0.0f;
-
-    // Intersect next texel boundary to find nextT
+    float2 rayLength1D;
+    int2 rayStep;
+    if (dirV.x < 0.f)
     {
-        float2 nextUV = (curTexIndex + crossStep.xy) / texelCount;
-        nextUV += crossOffset;
-        float2 delta = nextUV - curUV.xy;
-        delta /= dirUV.xy;
-        if (delta.x < delta.y)
+        rayStep.x = -1;
+        rayLength1D.x = (rayPosGridXY.x - float(texelIndex.x)) * rayUnitStepSize.x;
+    }
+    else
+    {
+        rayStep.x = 1;
+        rayLength1D.x = (float(texelIndex.x) + 1.0f - rayPosGridXY.x) * rayUnitStepSize.x;
+    }
+    if (dirV.y < 0)
+    {
+        rayStep.y = -1;
+        rayLength1D.y = (rayPosGridXY.y - float(texelIndex.y)) * rayUnitStepSize.y;
+    }
+    else
+    {
+        rayStep.y = 1;
+        rayLength1D.y = (float(texelIndex.y) + 1.0f - rayPosGridXY.y) * rayUnitStepSize.y;
+    }
+    
+    int2 prevTexelIndex = texelIndex;
+    int numIteration = 0;
+    float prevT = 0.0f;
+    float curT = 0.0f;
+    while (curT < info.tMax && numIteration < RTRequest.maxStepNum)
+    {
+        if (rayLength1D.x < rayLength1D.y)
         {
-            nextT = curT + delta.x;
-            nextTexIndex = curTexIndex + int2(crossStep.x, 0);
-        }
-        else if (delta.y < delta.x)
-        {
-            nextT = curT + delta.y;
-            nextTexIndex = curTexIndex + int2(0, crossStep.y);
+            texelIndex.x += rayStep.x;
+            curT = rayLength1D.x * tRatio;
+            rayLength1D.x += rayUnitStepSize.x;
         }
         else
         {
-            nextT = curT + delta.x;
-            nextTexIndex = curTexIndex + crossStep.xy;
+            texelIndex.y += rayStep.y;
+            curT = rayLength1D.y * tRatio;
+            rayLength1D.y += rayUnitStepSize.y;
         }
-        nextT = min(nextT, tMax);
-    }
-
-    // Find all voxels belong to current texel
-    int startZIndex = int(floor(startUV.z * texelCount));
-    int endZIndex = int(floor((startUV.z + nextT * dirUV.z) * texelCount));
-    int bMin = min(startZIndex, endZIndex);
-    int bMax = max(startZIndex, endZIndex);
-
-    // Check hit
-    uint occluded = 0;
-    if (startZIndex != endZIndex)
-    {
-        // If there are at least two voxels to check
-        // We can not just simply skip the first texel : in some cases, the ray will intersect voxels belongs to the first texel
-        // So instead, we skip only the first voxel at current texel for avoiding self - intersection
-        if (startFromInside)
-            startZIndex += int(crossStep.z);
+        const float3 prevPosR = posV + prevT * dirV;
+        const float3 curPosR = posV + curT * dirV;
+        const float prevZR = prevPosR.z;
+        const float curZR = curPosR.z;
+        const float minZ = min(prevZR, curZR);
+        const float maxZ = max(prevZR, curZR);
+        const uint startZIndex = uint(floor(prevZR * gridSize.z));
+        const uint endZIndex = uint(floor(curZR * gridSize.z));
+        
+        uint occluded = 0;
+        // Check hit
         for (int i = 0; i < TOTAL_UINT_IN_BASE_OM; i++)
         {
             int index = (startZIndex >= endZIndex) ? (TOTAL_UINT_IN_BASE_OM - 1) - i : i;
-            uint omBit = baseOM[int3(curTexIndex, index)];
+            uint omBit = baseOM[int3(uint2(prevTexelIndex), index + cascadeInfo.cascadeIndex * BASE_OM_SIZE / 32)];
             // Find the intersection of intervals
             int amin = index * 32;
             int amax = (index + 1) * 32 - 1;
+            int bMin = min(startZIndex, endZIndex);
+            int bMax = max(startZIndex, endZIndex);
             int insecMin = max(amin, bMin);
             int insecMax = min(amax, bMax);
             if (insecMin > insecMax)
                 continue;
             occluded = omBit << (insecMin - amin) >> (insecMin - amin + amax - insecMax) << (amax - insecMax);
-            if (occluded > 0)
+            if (occluded != 0)
             {
-                float3 hitUV = float3(curUV.xy, index * DIST_PER_UINT_BASE + ((startZIndex >= endZIndex) ? lowBitDistanceBASE(occluded) : foremostBitDistanceBASE(occluded)));
-                int3 hitVoxel = int3(floor(hitUV * texelCount));
+                float3 hitUV = float3(prevTexelIndex.xy / float(BASE_OM_SIZE), index / (float) TOTAL_UINT_IN_BASE_OM + ((startZIndex >= endZIndex) ? lowBitDistanceBASE(occluded) : foremostBitDistanceBASE(occluded)));
+                int3 hitVoxel = int3(floor(hitUV * gridSize));
                 int3 blockIndex = hitVoxel / VOXEL_BLOCK_SIZE;
                 int3 clipmapAccessIndex = BlockClipmapAddressMapping(blockIndex, cascadeInfo.resolution, cascadeInfo.scrolling, cascadeInfo.cascadeIndex);
                 payload.isHit = true;
-                payload.position = positionUVToWS(hitUV, baseOMViewProjMat);
+                payload.position = positionUVToWS(hitUV, baseOMInvViewProjMat);
                 payload.voxelIndex = hitVoxel;
                 payload.voxelPosition = CalcVoxelCenterPos(hitVoxel, cascadeInfo.resolution, cascadeInfo.center, cascadeInfo.size);
                 payload.voxelCellSize = cascadeInfo.voxelSize.x;
@@ -517,80 +529,18 @@ VoxelRayTracingHitPayload BaseOMRaytracingSingleCascade(in CascadeInfo cascadeIn
                 return payload;
             }
         }
-    }
-    
-    // Now we can safely go to the next texel
-    curT = nextT;
-    while (curT < tMax && step < RTRequest.maxStepNum)
-    {
-        step += 1;
-        curUV = startUV + curT * dirUV;
-        curTexIndex = nextTexIndex;
-        // Intersect next texel boundary to find nextT
-        {
-            float2 nextUV = (curTexIndex + crossStep.xy) / texelCount;
-            nextUV += crossOffset;
-            float2 delta = nextUV - curUV.xy;
-            delta /= dirUV.xy;
-            if (delta.x < delta.y)
-            {
-                nextT = curT + delta.x;
-                nextTexIndex = curTexIndex + int2(crossStep.x, 0);
-            }
-            else if (delta.y < delta.x)
-            {
-                nextT = curT + delta.y;
-                nextTexIndex = curTexIndex + int2(0, crossStep.y);
-            }
-            else
-            {
-                nextT = curT + delta.x;
-                nextTexIndex = curTexIndex + crossStep.xy;
-            }
-            nextT = min(nextT, tMax);
-        }
-
-        // Find all voxels belong to current texel
-        startZIndex = int(floor((startUV.z + curT * dirUV.z) * texelCount));
-        endZIndex = int(floor((startUV.z + nextT * dirUV.z) * texelCount));
-        bMin = min(startZIndex, endZIndex);
-        bMax = max(startZIndex, endZIndex);
-
-        // Check hit
-        for (int i = 0; i < TOTAL_UINT_IN_BASE_OM; i++)
-        {
-            int index = (startZIndex >= endZIndex) ? (TOTAL_UINT_IN_BASE_OM - 1) - i : i;
-            uint omBit = baseOM[int3(curTexIndex, index)];
-            // Find the intersection of intervals
-            int amin = index * 32;
-            int amax = (index + 1) * 32 - 1;
-            int insecMin = max(amin, bMin);
-            int insecMax = min(amax, bMax);
-            if (insecMin > insecMax)
-                continue;
-            occluded = omBit << (insecMin - amin) >> (insecMin - amin + amax - insecMax) << (amax - insecMax);
-            if (occluded > 0)
-            {
-                float3 hitUV = float3(curUV.xy, index * DIST_PER_UINT_BASE + ((startZIndex >= endZIndex) ? lowBitDistanceBASE(occluded) : foremostBitDistanceBASE(occluded)));
-                int3 hitVoxel = int3(floor(hitUV * texelCount));
-                int3 blockIndex = hitVoxel / VOXEL_BLOCK_SIZE;
-                int3 clipmapAccessIndex = BlockClipmapAddressMapping(blockIndex, cascadeInfo.resolution, cascadeInfo.scrolling, cascadeInfo.cascadeIndex);
-                payload.isHit = true;
-                payload.position = positionUVToWS(hitUV, baseOMViewProjMat);
-                payload.voxelIndex = hitVoxel;
-                payload.voxelPosition = CalcVoxelCenterPos(hitVoxel, cascadeInfo.resolution, cascadeInfo.center, cascadeInfo.size);
-                payload.voxelCellSize = cascadeInfo.voxelSize.x;
-                payload.cascadeIndex = cascadeInfo.cascadeIndex;
-                payload.clipmapAccessIndex = clipmapAccessIndex;
-            }
-            curT = nextT;
-        }
+        
+        prevT = curT;
+        prevTexelIndex = texelIndex;
+        numIteration++;
     }
 
+    payload.position = positionUVToWS(posV + (curT + epsilon) * dirV, baseOMInvViewProjMat);
     return payload;
 }
 
-VoxelRayTracingHitPayload OccupancyMapRaytracing(in ClipmapInfo clipmapInfo, in Texture2DArray<float> occupancyMap, in float4x4 baseOMViewProjMat,
+VoxelRayTracingHitPayload OccupancyMapRaytracing(in ClipmapInfo clipmapInfo, in Texture2DArray<uint> occupancyMap, 
+                                                    in float4x4 baseOMViewProjMatArray[MAX_CASCADE_COUNT], in float4x4 baseOMInvViewProjMatArray[MAX_CASCADE_COUNT],
                                                     in SamplerState linearSampler, inout VoxelRaytracingRequest RTRequest)
 {
     float3 rayDirection = RTRequest.rayDir;
@@ -599,13 +549,14 @@ VoxelRayTracingHitPayload OccupancyMapRaytracing(in ClipmapInfo clipmapInfo, in 
     {
         CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, cascadeId);
 
-        VoxelRayTracingHitPayload hit = BaseOMRaytracingSingleCascade(cascadeInfo, occupancyMap, baseOMViewProjMat, linearSampler, RTRequest);
-
+        VoxelRayTracingHitPayload hit = BaseOMRaytracingSingleCascade(cascadeInfo, occupancyMap, baseOMViewProjMatArray[cascadeId], baseOMInvViewProjMatArray[cascadeId],
+                                                                            linearSampler, RTRequest);
+        
         if (hit.isHit)
         {
             return hit;
         }
-
+        
 		// trace from last clip's ray start
         RTRequest.rayStart = hit.position;
     }

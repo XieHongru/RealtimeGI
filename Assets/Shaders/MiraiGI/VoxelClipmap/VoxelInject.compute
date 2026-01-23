@@ -36,7 +36,7 @@ Texture2D _SurfaceCacheAtlasDepth;
 SamplerState sampler_LinearClamp;
 
 RWTexture3D<uint2> _RWVoxelBitOccupyClipmap;
-//RWTexture3D<float> _RWVoxelOccupy;
+RWTexture3D<float> _RWVoxelOccupy;
 
 RWTexture3D<int> _RWVoxelPageClipmap;
 RWStructuredBuffer<int> _RWVoxelPageFreeList;
@@ -191,7 +191,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         uint bitMask = ~(1u << (15 - bitIndex));
         InterlockedAnd(_RWScrollingBOM[uint3(scrollingIndex.xy, arrayIndex + _CascadeIndex * BASE_OM_SIZE / 16)], bitMask);
     }
-    //_RWVoxelOccupy[scrollingIndex + uint3(0, 0, (int) _CascadeResolution.x * _CascadeIndex)] = hasVoxel ? 1.0f : 0.0f;
+    _RWVoxelOccupy[scrollingIndex + uint3(0, 0, (int) _CascadeResolution.x * _CascadeIndex)] = hasVoxel ? 1.0f : 0.0f;
 
     // 3. single head thread encode ThreadVoxelOccupy to uint64, write into bit occupy volume
     uint2 bitOccupyBlock = uint2(0, 0);
@@ -333,14 +333,6 @@ void BaseOccupancyMapProject(uint3 threadId : SV_DispatchThreadID, uint3 groupTh
 
 // --------------------------------------------------------------------------------------- //
 #pragma kernel GenerateROMA
-
-struct DirectionParams
-{
-    float4x4 viewProjMat;
-    float4x4 invViewProjMat;
-    float3 viewDir;
-    float padding;
-};
 
 int _UpdateFrame;
 int _UpdateOMPerFrame;

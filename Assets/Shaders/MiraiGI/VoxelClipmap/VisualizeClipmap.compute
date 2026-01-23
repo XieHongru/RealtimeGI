@@ -2,6 +2,7 @@
 #pragma kernel VisualizeClipmap
 
 #pragma multi_compile _ USE_DISTANCE_FIELD
+#pragma multi_compile _ USE_ROMA
 
 float4 _ScreenResolution;
 float4 _CameraPosition;
@@ -64,7 +65,7 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     RTRequest.maxDistance = 100000;
     
 #if USE_ROMA
-    VoxelRayTracingHitPayload hit = OccupancyMapRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
+    VoxelRayTracingHitPayload hit = OccupancyMapRaytracing(clipmapInfo, _BaseOccupancyMap, _BaseOMViewProjMatArray, _BaseOMInvViewProjMatArray, sampler_linearClamp, RTRequest);
 #elif USE_DISTANCE_FIELD
     VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
 #else
@@ -99,7 +100,8 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
             }
             if (_VisualizeMode == 3)  // emissive
             {
-                debugColor = _VoxelPoolEmissive.Load(uint4(indexInPool, 0)).rgb;
+                //debugColor = _VoxelPoolEmissive.Load(uint4(indexInPool, 0)).rgb;
+                debugColor = hit.voxelIndex;
             }
             if (_VisualizeMode == 4)  // radiance
             {
@@ -136,6 +138,13 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
         }
         
         color += debugColor;
+    }
+    else
+    {
+        if (_VisualizeMode == 3)  // emissive
+        {
+            color = hit.position;
+        }
     }
     
     if (_VisualizeUpdateChunk > 0)
