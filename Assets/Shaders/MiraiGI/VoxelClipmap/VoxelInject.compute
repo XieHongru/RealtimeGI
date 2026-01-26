@@ -364,6 +364,12 @@ void GenerateROMA(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV
     float3 curPosBaseUV = positionWSToUV(startPosWS, _BaseOMViewProjMat);
     const float3 endPosBaseUV = positionWSToUV(endPosWS, _BaseOMViewProjMat);
     const float3 rayStep = (endPosBaseUV - curPosBaseUV) / (occupancyMapSize - 1.f);
+    
+    // Clear data for previous frame
+    for (int i = 0; i < occupancyMapClipCount; i++)
+    {
+        _RWROMA[uint3(pixelIndex, occupancyMapClipCount * arrayIndex + _CascadeIndex * BASE_OM_SIZE / 32 * ROMA_COUNT + i)] = 0;
+    }
 
     for (int i = 0; i < occupancyMapSize; i++, curPosBaseUV += rayStep)
     {

@@ -2,6 +2,7 @@
 #pragma kernel VisualizeClipmap
 
 #pragma multi_compile _ USE_DISTANCE_FIELD
+#pragma multi_compile _ USE_BOM
 #pragma multi_compile _ USE_ROMA
 
 float4 _ScreenResolution;
@@ -66,6 +67,7 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     
 #if USE_ROMA
     VoxelRayTracingHitPayload hit = OccupancyMapRaytracing(clipmapInfo, _BaseOccupancyMap, _BaseOMViewProjMatArray, _BaseOMInvViewProjMatArray, sampler_linearClamp, RTRequest);
+    //VoxelRayTracingHitPayload hit = ROMARaytracing(clipmapInfo, _ROMA, _DirectionParamsArray, 0, sampler_linearClamp, RTRequest);
 #elif USE_DISTANCE_FIELD
     VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
 #else
@@ -143,7 +145,7 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     {
         if (_VisualizeMode == 3)  // emissive
         {
-            color = hit.position;
+            color = float3(1, 1, 0);
         }
     }
     

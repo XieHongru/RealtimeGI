@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using Unity.Mathematics;
 using UnityEditor;
 using UnityEngine;
@@ -819,8 +820,8 @@ public class MiraiGIClipmap
         m_BaseOMInvViewProjMat[cascadeId] = m_BaseOMViewProjMat[cascadeId].inverse;
 
         // 2. Get ROMA direction params
-        int updateFrame = scene.frameNumber % 4;
-        int updateOMPerFrame = (GlobalSettings.Instance.occupancyMapXCount * GlobalSettings.Instance.occupancyMapYCount) / 4;
+        int updateFrame = scene.frameNumber % 1;
+        int updateOMPerFrame = (GlobalSettings.Instance.occupancyMapXCount * GlobalSettings.Instance.occupancyMapYCount) / 1;
 
         CameraParams[] cameraParamsArray = new CameraParams[updateOMPerFrame];
         for (int omId = 0; omId < updateOMPerFrame; omId++)
