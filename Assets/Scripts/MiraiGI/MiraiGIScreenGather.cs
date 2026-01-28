@@ -773,6 +773,23 @@ public class MiraiGIScreenGather
                 cmd.DisableShaderKeyword("TRACE_SPECULAR_RAY");
             }
 
+            int useROMA = GlobalSettings.Instance.useROMA;
+            if (useROMA == 1)
+            {
+                cmd.EnableShaderKeyword("USE_BOM");
+                cmd.DisableShaderKeyword("USE_ROMA");
+            }
+            else if (useROMA == 2)
+            {
+                cmd.DisableShaderKeyword("USE_BOM");
+                cmd.EnableShaderKeyword("USE_ROMA");
+            }
+            else
+            {
+                cmd.DisableShaderKeyword("USE_BOM");
+                cmd.DisableShaderKeyword("USE_ROMA");
+            }
+
             clipmap.SetupVoxelRaytracingParameters(cmd, m_ScreenGatherCS, kernel, scene);
             radianceCache.SetupProbeVolumeParameters(cmd, m_ScreenGatherCS, kernel, scene);
 

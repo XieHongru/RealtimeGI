@@ -1,9 +1,10 @@
 #include "../VoxelLighting/VoxelLightingParameters.hlsl"
+#include "../RayTracing/ROMA.hlsl"
 #pragma kernel VisualizeClipmap
 
 #pragma multi_compile _ USE_DISTANCE_FIELD
-#pragma multi_compile _ USE_BOM
-#pragma multi_compile _ USE_ROMA
+#pragma multi_compile _ VISUALIZE_BOM
+#pragma multi_compile _ VISUALIZE_ROMA
 
 float4 _ScreenResolution;
 float4 _CameraPosition;
@@ -65,9 +66,10 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     RTRequest.maxStepNum = 1000;
     RTRequest.maxDistance = 100000;
     
-#if USE_ROMA
+#if VISUALIZE_BOM
     VoxelRayTracingHitPayload hit = OccupancyMapRaytracing(clipmapInfo, _BaseOccupancyMap, _BaseOMViewProjMatArray, _BaseOMInvViewProjMatArray, sampler_linearClamp, RTRequest);
-    //VoxelRayTracingHitPayload hit = ROMARaytracing(clipmapInfo, _ROMA, _DirectionParamsArray, 0, sampler_linearClamp, RTRequest);
+#elif VISUALIZE_ROMA
+    VoxelRayTracingHitPayload hit = ROMARaytracing(clipmapInfo, _ROMA, _DirectionParamsArray, sampler_linearClamp, RTRequest);
 #elif USE_DISTANCE_FIELD
     VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
 #else

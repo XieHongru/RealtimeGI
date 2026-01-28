@@ -3,8 +3,11 @@
 #include "../RayTracing/SSRTRayCast.hlsl"
 #include "ReservoirSampling.hlsl"
 #include "../RayTracing/BRDF.hlsl"
+#include "../RayTracing/ROMA.hlsl"
 
 #pragma multi_compile _ TRACE_SPECULAR_RAY
+#pragma multi_compile _ USE_BOM
+#pragma multi_compile _ USE_ROMA
 
 // -------------------------------------------------------------------------------- //
 #define SPECULAR_USE_CLAMPED_BRDF 0
@@ -409,7 +412,11 @@ void InitialSampleVoxelTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupTh
     RTRequest.maxStepNum = 114514;
     RTRequest.maxDistance = 191981000;
 
-#if USE_DISTANCE_FIELD
+#if USE_BOM
+    VoxelRayTracingHitPayload hit = OccupancyMapRaytracing(clipmapInfo, _BaseOccupancyMap, _BaseOMViewProjMatArray, _BaseOMInvViewProjMatArray, sampler_linearClamp, RTRequest);
+#elif USE_ROMA
+    VoxelRayTracingHitPayload hit = ROMARaytracing(clipmapInfo, _ROMA, _DirectionParamsArray, sampler_linearClamp, RTRequest);
+#elif USE_DISTANCE_FIELD
     VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
 #else
     VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _VoxelBitOccupyClipmap, RTRequest);

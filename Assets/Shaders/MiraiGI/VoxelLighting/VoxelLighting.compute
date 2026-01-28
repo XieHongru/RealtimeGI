@@ -1,5 +1,9 @@
 #include "../RayTracing/MonteCarlo.hlsl"
+#include "../RayTracing/ROMA.hlsl"
 #include "VoxelLightingParameters.hlsl"
+
+#pragma multi_compile _ USE_BOM
+#pragma multi_compile _ USE_ROMA
 
 // -------------------------------------------------------------------------------- //
 #pragma kernel PickValidVoxel
@@ -87,10 +91,6 @@ void BuildVoxelLightingIndirectArgs(uint3 threadId : SV_DispatchThreadID, uint3 
 // -------------------------------------------------------------------------------- //
 #pragma kernel VoxelLighting
 
-#ifndef USE_DISTANCE_FIELD
-#define USE_DISTANCE_FIELD 0
-#endif
-
 float4x4 _CameraViewProjectionMatrix;
 float3 _MainLightDirection;
 float4 _MainLightColor;
@@ -146,7 +146,12 @@ float GetMainLightShadow(in ClipmapInfo clipmapInfo, float3 worldPosition, float
         RTRequest.maxStepNum = 1000;
         RTRequest.maxDistance = 100000;
 
-#if USE_DISTANCE_FIELD
+    // use ROMA to trace shadow ray is not accurate
+#if USE_BOM || USE_ROMA
+        VoxelRayTracingHitPayload hit = OccupancyMapRaytracing(clipmapInfo, _BaseOccupancyMap, _BaseOMViewProjMatArray, _BaseOMInvViewProjMatArray, sampler_linearClamp, RTRequest);
+//#elif USE_ROMA
+//        VoxelRayTracingHitPayload hit = ROMARaytracing(clipmapInfo, _ROMA, _DirectionParamsArray, sampler_linearClamp, RTRequest);
+#elif USE_DISTANCE_FIELD
         VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
 #else
         VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _VoxelBitOccupyClipmap, RTRequest);
@@ -867,8 +872,12 @@ void IrradianceProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
 #if USE_RADIANCE_PROBE_AS_FALLBACK
         RTRequest.maxDistance = GetRadianceProbeSize(cascadeInfo);
 #endif
-
-#if USE_DISTANCE_FIELD
+        
+#if USE_BOM
+        VoxelRayTracingHitPayload hit = OccupancyMapRaytracing(clipmapInfo, _BaseOccupancyMap, _BaseOMViewProjMatArray, _BaseOMInvViewProjMatArray, sampler_linearClamp, RTRequest);
+#elif USE_ROMA
+        VoxelRayTracingHitPayload hit = ROMARaytracing(clipmapInfo, _ROMA, _DirectionParamsArray, sampler_linearClamp, RTRequest);
+#elif USE_DISTANCE_FIELD
         VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
 #else
         VoxelRayTracingHitPayload hit = VoxelRaytracing(clipmapInfo, _VoxelBitOccupyClipmap, RTRequest);

@@ -413,6 +413,23 @@ public class MiraiGIRadianceCache
             GetMainLightShadowInfos(mainLight, ref renderingData, out worldToShadowMatrices, out shadowBounds, out shadowDepthTexture);
         }
 
+        int useROMA = GlobalSettings.Instance.useROMA;
+        if (useROMA == 1)
+        {
+            cmd.EnableShaderKeyword("USE_BOM");
+            cmd.DisableShaderKeyword("USE_ROMA");
+        }
+        else if (useROMA == 2)
+        {
+            cmd.DisableShaderKeyword("USE_BOM");
+            cmd.EnableShaderKeyword("USE_ROMA");
+        }
+        else
+        {
+            cmd.DisableShaderKeyword("USE_BOM");
+            cmd.DisableShaderKeyword("USE_ROMA");
+        }
+
         // 1. build indirect args cause valid voxel num is unpredictable
         {
             int kernel = m_VoxelLightingCS.FindKernel("BuildVoxelLightingIndirectArgs");

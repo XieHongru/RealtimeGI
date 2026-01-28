@@ -900,7 +900,7 @@ public class MiraiGIClipmap
         }
 
         bool useDistanceField = GlobalSettings.Instance.useDistanceField > 0;
-        bool useROMA = GlobalSettings.Instance.useROMA > 0;
+        int visualizeUseROMA = GlobalSettings.Instance.visualizeUseROMA;
         if (useDistanceField)
         {
             cmd.EnableShaderKeyword("USE_DISTANCE_FIELD");
@@ -909,13 +909,20 @@ public class MiraiGIClipmap
         {
             cmd.DisableShaderKeyword("USE_DISTANCE_FIELD");
         }
-        if (useROMA)
+        if (visualizeUseROMA == 1)
         {
-            cmd.EnableShaderKeyword("USE_ROMA");
+            cmd.EnableShaderKeyword("VISUALIZE_BOM");
+            cmd.DisableShaderKeyword("VISUALIZE_ROMA");
+        }
+        else if (visualizeUseROMA == 2)
+        {
+            cmd.DisableShaderKeyword("VISUALIZE_BOM");
+            cmd.EnableShaderKeyword("VISUALIZE_ROMA");
         }
         else
         {
-            cmd.DisableShaderKeyword("USE_ROMA");
+            cmd.DisableShaderKeyword("VISUALIZE_BOM");
+            cmd.DisableShaderKeyword("VISUALIZE_ROMA");
         }
 
         MiraiGIRadianceCache radianceCache = scene.miraiGIRadianceCache;
@@ -1109,22 +1116,4 @@ public class MiraiGIClipmap
         float sinTheta = r * Mathf.Sqrt(2.0f - r * r);
         return new Vector3(Mathf.Cos(phi) * sinTheta, Mathf.Sin(phi) * sinTheta, 1 - r * r);
     }
-
-    //void GenerateUniformHemisphereDirections(List<Vector3> directions)
-    //{
-    //    float goldenAngle = Mathf.PI * (3.0f - Mathf.Sqrt(5.0f));
-
-    //    for (int i = 0; i < GlobalSettings.Instance.occupancyMapCount; i++)
-    //    {
-    //        // Fibonacci Hemisphere Sample
-    //        float y = 1.0f - (i / (float)(GlobalSettings.Instance.occupancyMapCount - 1)); // y ¡Ê [0, 1]
-    //        float radius = Mathf.Sqrt(1.0f - y * y);
-    //        float theta = goldenAngle * i;
-
-    //        float x = Mathf.Cos(theta) * radius;
-    //        float z = Mathf.Sin(theta) * radius;
-
-    //        directions.Add(math.normalize(new Vector3(x, y, z)));
-    //    }
-    //}
 }
