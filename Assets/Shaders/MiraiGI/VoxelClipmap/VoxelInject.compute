@@ -36,14 +36,14 @@ Texture2D _SurfaceCacheAtlasDepth;
 SamplerState sampler_LinearClamp;
 
 RWTexture3D<uint2> _RWVoxelBitOccupyClipmap;
-RWTexture3D<float> _RWVoxelOccupy;
+//RWTexture3D<float> _RWVoxelOccupy;
 
 RWTexture3D<int> _RWVoxelPageClipmap;
 RWStructuredBuffer<int> _RWVoxelPageFreeList;
 RWStructuredBuffer<int> _RWVoxelPageReleaseList;
 RWTexture3D<float3> _RWVoxelPoolBaseColor;
 RWTexture3D<float3> _RWVoxelPoolNormal;
-//RWTexture3D<float3> _RWVoxelPoolEmissive;
+RWTexture3D<float3> _RWVoxelPoolEmissive;
 
 RWTexture2DArray<uint> _RWScrollingBOM;
 RWTexture3D<float> _RWDistanceFieldClipmap;
@@ -191,7 +191,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         uint bitMask = ~(1u << (15 - bitIndex));
         InterlockedAnd(_RWScrollingBOM[uint3(scrollingIndex.xy, arrayIndex + _CascadeIndex * BASE_OM_SIZE / 16)], bitMask);
     }
-    _RWVoxelOccupy[scrollingIndex + uint3(0, 0, (int) _CascadeResolution.x * _CascadeIndex)] = hasVoxel ? 1.0f : 0.0f;
+    //_RWVoxelOccupy[scrollingIndex + uint3(0, 0, (int) _CascadeResolution.x * _CascadeIndex)] = hasVoxel ? 1.0f : 0.0f;
 
     // 3. single head thread encode ThreadVoxelOccupy to uint64, write into bit occupy volume
     uint2 bitOccupyBlock = uint2(0, 0);
@@ -256,7 +256,7 @@ void VoxelInject(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_
         int3 writeIndex = PageAddressMapping(gs_VoxelPageId, _VoxelPageCountInXYZ, voxelIndex);
         _RWVoxelPoolBaseColor[writeIndex] = baseColor;
         _RWVoxelPoolNormal[writeIndex] = worldNormal;
-        //_RWVoxelPoolEmissive[writeIndex] = emissive;
+        _RWVoxelPoolEmissive[writeIndex] = emissive;
     }
     
     // 6. write to distance field
@@ -351,7 +351,7 @@ void GenerateROMA(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV
     
     const uint2 pixelIndex = threadId.xy;
     const uint arrayIndex = _UpdateFrame * _UpdateOMPerFrame + threadId.z;
-    const float4x4 invViewProjMat = _DirectionParamsArray[arrayIndex + _CascadeIndex * ROMA_COUNT].invViewProjMat;
+    const float4x4 invViewProjMat = _DirectionParamsArray[arrayIndex].invViewProjMat;
     
     const float2 uv = (pixelIndex + 0.5f) / occupancyMapSize;
 
@@ -368,30 +368,86 @@ void GenerateROMA(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV
     // Clear data for previous frame
     for (int i = 0; i < occupancyMapClipCount; i++)
     {
-        _RWROMA[uint3(pixelIndex, occupancyMapClipCount * arrayIndex + _CascadeIndex * BASE_OM_SIZE / 32 * ROMA_COUNT + i)] = 0;
+        for (int cascadeId = 0; cascadeId < 4; cascadeId++)
+            _RWROMA[uint3(pixelIndex, occupancyMapClipCount * arrayIndex + cascadeId * BASE_OM_SIZE / 32 * ROMA_COUNT + i)] = 0;
     }
 
     for (int i = 0; i < occupancyMapSize; i++, curPosBaseUV += rayStep)
     {
         if (any(curPosBaseUV < 0) || any(curPosBaseUV > 1))
             continue;
-        const uint3 baseVoxelIndex = (floor(curPosBaseUV * occupancyMapSize));
-        // Get ombits from base om
+        const uint3 baseVoxelIndex = floor(curPosBaseUV * occupancyMapSize);
+        // Get ombits from base om, Check if the bit is occupied
         uint baseClipIndex = baseVoxelIndex.z / 32;
-        uint OMbits = _BaseOccupancyMap[uint3(baseVoxelIndex.xy, baseClipIndex + _CascadeIndex * BASE_OM_SIZE / 32)];
-        
-        // Check if the bit is occupied
         uint bitBase = baseVoxelIndex.z % 32;
-        uint occupied = (OMbits << bitBase) >> 31;
-
-        // Save result
-        if (occupied > 0)
+        
+        for (int cascadeId = 0; cascadeId < 4; cascadeId++)
         {
-            uint clipIndex = i / 32;
-            uint remainder = i % 32;
-            uint result = 1 << (31 - remainder);
-            uint currentValue = _RWROMA[uint3(pixelIndex, occupancyMapClipCount * arrayIndex + _CascadeIndex * BASE_OM_SIZE / 32 * ROMA_COUNT + clipIndex)] | result;
-            _RWROMA[uint3(pixelIndex, occupancyMapClipCount * arrayIndex + _CascadeIndex * BASE_OM_SIZE / 32 * ROMA_COUNT + clipIndex)] = currentValue;
+            uint OMbits = _BaseOccupancyMap[uint3(baseVoxelIndex.xy, baseClipIndex + cascadeId * BASE_OM_SIZE / 32)];
+            uint occupied = (OMbits << bitBase) >> 31;
+
+            // Save result
+            if (occupied > 0)
+            {
+                uint clipIndex = i / 32;
+                uint remainder = i % 32;
+                uint result = 1 << (31 - remainder);
+                uint currentValue = _RWROMA[uint3(pixelIndex, occupancyMapClipCount * arrayIndex + cascadeId * BASE_OM_SIZE / 32 * ROMA_COUNT + clipIndex)] | result;
+                _RWROMA[uint3(pixelIndex, occupancyMapClipCount * arrayIndex + cascadeId * BASE_OM_SIZE / 32 * ROMA_COUNT + clipIndex)] = currentValue;
+            }
         }
     }
 }
+
+//[numthreads(16, 16, 1)]
+//void GenerateROMA(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+//{
+//    const uint occupancyMapSize = (uint) _CascadeResolution.z;
+//    const uint occupancyMapClipCount = occupancyMapSize / 32;
+    
+//    const uint2 pixelIndex = threadId.xy;
+//    const uint arrayIndex = _UpdateFrame * _UpdateOMPerFrame + threadId.z;
+//    const float4x4 invViewProjMat = _DirectionParamsArray[arrayIndex + _CascadeIndex * ROMA_COUNT].invViewProjMat;
+    
+//    const float2 uv = (pixelIndex + 0.5f) / occupancyMapSize;
+
+//    // Setup a bunch of samples and transform them to base om space
+//    const float3 startPosUV = float3(uv, 0.5f / occupancyMapSize);
+//    const float3 endPosUV = float3(uv, 1.0f - 0.5f / occupancyMapSize);
+//    const float3 startPosWS = positionUVToWS(startPosUV, invViewProjMat);
+//    const float3 endPosWS = positionUVToWS(endPosUV, invViewProjMat);
+
+//    float3 curPosBaseUV = positionWSToUV(startPosWS, _BaseOMViewProjMat);
+//    const float3 endPosBaseUV = positionWSToUV(endPosWS, _BaseOMViewProjMat);
+//    const float3 rayStep = (endPosBaseUV - curPosBaseUV) / (occupancyMapSize - 1.f);
+    
+//    // Clear data for previous frame
+//    for (int i = 0; i < occupancyMapClipCount; i++)
+//    {
+//        _RWROMA[uint3(pixelIndex, occupancyMapClipCount * arrayIndex + _CascadeIndex * BASE_OM_SIZE / 32 * ROMA_COUNT + i)] = 0;
+//    }
+
+//    for (int i = 0; i < occupancyMapSize; i++, curPosBaseUV += rayStep)
+//    {
+//        if (any(curPosBaseUV < 0) || any(curPosBaseUV > 1))
+//            continue;
+//        const uint3 baseVoxelIndex = ((floor(curPosBaseUV * occupancyMapSize)) + _CascadeScrolling) % BASE_OM_SIZE;
+//        // Get ombits from base om
+//        uint baseClipIndex = baseVoxelIndex.z / 32;
+//        uint OMbits = _BaseOccupancyMap[uint3(baseVoxelIndex.xy, baseClipIndex + _CascadeIndex * BASE_OM_SIZE / 32)];
+        
+//        // Check if the bit is occupied
+//        uint bitBase = baseVoxelIndex.z % 32;
+//        uint occupied = (OMbits << bitBase) >> 31;
+
+//        // Save result
+//        if (occupied > 0)
+//        {
+//            uint clipIndex = i / 32;
+//            uint remainder = i % 32;
+//            uint result = 1 << (31 - remainder);
+//            uint currentValue = _RWROMA[uint3(pixelIndex, occupancyMapClipCount * arrayIndex + _CascadeIndex * BASE_OM_SIZE / 32 * ROMA_COUNT + clipIndex)] | result;
+//            _RWROMA[uint3(pixelIndex, occupancyMapClipCount * arrayIndex + _CascadeIndex * BASE_OM_SIZE / 32 * ROMA_COUNT + clipIndex)] = currentValue;
+//        }
+//    }
+//}

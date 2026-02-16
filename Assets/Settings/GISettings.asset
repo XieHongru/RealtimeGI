@@ -21,9 +21,9 @@ MonoBehaviour:
   adaptiveSurfaceCacheCount: 8
   chunkCountToUpdatePerFrame: 64
   cullingObjectCountPerChunk: 64
-  voxelSize: 0.25
+  voxelSize: 0.5
   voxelResolution: 128
-  voxelVisualizeMode: 1
+  voxelVisualizeMode: 0
   voxelVisualizeCascadeLevel: 0
   voxelVisualizeUpdateChunk: 0
   voxelLightingCheckerBoardSize: 2
@@ -40,7 +40,7 @@ MonoBehaviour:
   irradianceProbeTemporalWeight: 0.75
   diffuseIndirectEnable: 1
   specularIndirectEnable: 0
-  visualizeScreenGather: 0
+  visualizeScreenGather: 1
   screenGatherDownsampleFactor: 2
   useReservoirSpatialReuse: 1
   spatialReuseSampleCount: 8
@@ -61,6 +61,7 @@ MonoBehaviour:
   specularResolveSearchRange: 4
   specularFilterSearchRange: 4
   useDistanceField: 0
-  useROMA: 1
+  useROMA: 0
+  visualizeUseROMA: 0
   occupancyMapXCount: 4
   occupancyMapYCount: 4

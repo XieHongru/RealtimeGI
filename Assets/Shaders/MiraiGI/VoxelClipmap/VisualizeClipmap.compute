@@ -20,7 +20,7 @@ int _VisualizeUpdateChunk;
 Texture2D<float> _SceneDepthTexture;
 RWTexture2D<float4> _RWSceneColorTexture;
 
-Texture3D<float> _VoxelOccupy;
+//Texture3D<float> _VoxelOccupy;
 
 int _UpdateChunkCount;
 float3 _UpdateChunkResolution;
@@ -56,7 +56,7 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     
     float3 rayDir = normalize(pixelWorldPosition - _CameraPosition.xyz);
     float3 rayEnd = rayDir * 1000;
-    float3 color = float3(0, 0, 0) + _VoxelOccupy[uint3(0, 0, 0)];
+    float3 color = float3(0, 0, 0) /*+ _VoxelOccupy[uint3(0, 0, 0)]*/;
     
     VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
     RTRequest.rayStart = _CameraPosition;
@@ -104,35 +104,20 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
             }
             if (_VisualizeMode == 3)  // emissive
             {
-                //debugColor = _VoxelPoolEmissive.Load(uint4(indexInPool, 0)).rgb;
-                debugColor = hit.voxelIndex;
+                debugColor = _VoxelPoolEmissive.Load(uint4(indexInPool, 0)).rgb;
+                //debugColor = hit.voxelIndex;
             }
             if (_VisualizeMode == 4)  // radiance
             {
                 float3 worldNormal = _VoxelPoolNormal.Load(uint4(indexInPool, 0)).rgb * 2 - 1;
                 int isBackFace = dot(worldNormal, -rayDir) < 0;
                 int3 twoSideIndex = TwoSideAddressMapping(indexInPool, isBackFace);
-                debugColor = _VoxelPoolRadiance.Load(uint4(twoSideIndex, 0)).rgb;
+                //debugColor = _VoxelPoolRadiance.Load(uint4(twoSideIndex, 0)).rgb;
+                debugColor = _VoxelPoolRadiance.Load(uint4(twoSideIndex, 0)).rgb - _VoxelPoolBaseColor.Load(uint4(indexInPool, 0)).rgb;
             }
             if (_VisualizeMode == 5)
             {
-                switch (hit.cascadeIndex)
-                {
-                    case 0:
-                        debugColor = float3(0.2, 0.6, 0.4);
-                        break;
-                    case 1:
-                        debugColor = float3(0.4, 0.3, 0.7);
-                        break;
-                    case 2:
-                        debugColor = float3(0.7, 0.9, 0.2);
-                        break;
-                    case 3:
-                        debugColor = float3(0.1, 0.8, 0.5);
-                        break;
-                    default:
-                        break;
-                }
+                debugColor = hit.position;
             }
         }
         // for invalid page maybe runout of space, we just give it a warning color

@@ -140,6 +140,14 @@ public class MiraiGIRadianceCache
         int cascadeIdMax = MiraiGIClipmap.CASCADE_COUNT - 1;
         for (int cascadeId = cascadeIdMax; cascadeId >= 0; cascadeId -= 1)
         {
+            // --------------------------------------------
+            // Flush data per frame
+            // --------------------------------------------
+            m_ValidVoxelCounter.SetData(m_ValidVoxelCounterInitData);
+            m_ValidVoxelBuffer.SetData(m_ValidVoxelBufferInitData);
+            m_ValidProbeCounter.SetData(m_ValidProbeCounterInitData);
+            m_ValidProbeBuffer.SetData(m_ValidProbeBufferInitData);
+
             if (GlobalSettings.Instance.freezeLightingForDebug > 0)
             {
                 continue;
@@ -188,6 +196,7 @@ public class MiraiGIRadianceCache
             m_VoxelPoolRadiance.dimension = TextureDimension.Tex3D;
             m_VoxelPoolRadiance.volumeDepth = voxelRadiancePoolSize.z;
             m_VoxelPoolRadiance.enableRandomWrite = true;
+            m_VoxelPoolRadiance.name = "VoxelPoolRadiance";
             m_VoxelPoolRadiance.Create();
 
             cmd.SetComputeTextureParam(m_VoxelPoolInitCS, 1, Shader.PropertyToID("_RWVoxelPoolRadiance"), m_VoxelPoolRadiance);
@@ -197,6 +206,7 @@ public class MiraiGIRadianceCache
         if (m_ValidVoxelCounter == null)
         {
             m_ValidVoxelCounter = new ComputeBuffer(1, sizeof(int));
+            m_ValidVoxelCounter.name = "ValidVoxelCounter";
             m_ValidVoxelCounterInitData = new int[1] { 0 };
         }
 
@@ -205,6 +215,7 @@ public class MiraiGIRadianceCache
         if (m_ValidVoxelBuffer == null)
         {
             m_ValidVoxelBuffer = new ComputeBuffer(blockCountToLight1D * GlobalShared.VOXEL_COUNT_PER_BLOCK, sizeof(int), ComputeBufferType.Structured);
+            m_ValidVoxelBuffer.name = "ValidVoxelBuffer";
             m_ValidVoxelBufferInitData = new int[blockCountToLight1D * GlobalShared.VOXEL_COUNT_PER_BLOCK];
             for (int i = 0; i < blockCountToLight1D * GlobalShared.VOXEL_COUNT_PER_BLOCK; i++)
             {
@@ -223,12 +234,14 @@ public class MiraiGIRadianceCache
         if (m_ValidProbeCounter == null)
         {
             m_ValidProbeCounter = new ComputeBuffer(1, sizeof(int));
+            m_ValidProbeCounter.name = "ValidProbeCounter";
             m_ValidProbeCounterInitData = new int[1] { 0 };
         }
 
         if (m_ValidProbeBuffer == null)
         {
             m_ValidProbeBuffer = new ComputeBuffer(blockCountToLight1D, sizeof(int), ComputeBufferType.Structured);
+            m_ValidProbeBuffer.name = "ValidProbeBuffer";
             m_ValidProbeBufferInitData = new int[blockCountToLight1D];
             for (int i = 0; i < blockCountToLight1D; i++)
             {
@@ -254,6 +267,7 @@ public class MiraiGIRadianceCache
             m_IrradianceProbeClipmap.dimension = TextureDimension.Tex3D;
             m_IrradianceProbeClipmap.volumeDepth = irradianceVolumeResolution.z;
             m_IrradianceProbeClipmap.enableRandomWrite = true;
+            m_IrradianceProbeClipmap.name = "IrradianceProbeClipmap";
             m_IrradianceProbeClipmap.Create();
 
             // TODO: init
@@ -266,6 +280,7 @@ public class MiraiGIRadianceCache
             m_ProbeOffsetClipmap.dimension = TextureDimension.Tex3D;
             m_ProbeOffsetClipmap.volumeDepth = clipmapResolution.z;
             m_ProbeOffsetClipmap.enableRandomWrite = true;
+            m_ProbeOffsetClipmap.name = "ProbeOffsetClipmap";
             m_ProbeOffsetClipmap.Create();
         }
 
@@ -278,6 +293,7 @@ public class MiraiGIRadianceCache
         {
             m_RadianceProbeAtlas = new RenderTexture(atlasResolution.x, atlasResolution.y, 0, RenderTextureFormat.RGB111110Float);
             m_RadianceProbeAtlas.enableRandomWrite = true;
+            m_RadianceProbeAtlas.name = "RadianceProbeAtlas";
             m_RadianceProbeAtlas.Create();
         }
 
@@ -285,6 +301,7 @@ public class MiraiGIRadianceCache
         {
             m_RadianceProbeDistanceAtlas = new RenderTexture(atlasResolution.x, atlasResolution.y, 0, RenderTextureFormat.R16);
             m_RadianceProbeDistanceAtlas.enableRandomWrite = true;
+            m_RadianceProbeDistanceAtlas.name = "RadianceProbeDistanceAtlas";
             m_RadianceProbeDistanceAtlas.Create();
         }
 
@@ -292,6 +309,7 @@ public class MiraiGIRadianceCache
         {
             m_RadianceProbeOutput = new RenderTexture(atlasResolution.x, atlasResolution.y, 0, RenderTextureFormat.RGB111110Float);
             m_RadianceProbeOutput.enableRandomWrite = true;
+            m_RadianceProbeOutput.name = "RadianceProbeOutput";
             m_RadianceProbeOutput.Create();
         }
 
@@ -299,6 +317,7 @@ public class MiraiGIRadianceCache
         {
             m_RadianceProbeDistanceOutput = new RenderTexture(atlasResolution.x, atlasResolution.y, 0, RenderTextureFormat.RFloat);
             m_RadianceProbeDistanceOutput.enableRandomWrite = true;
+            m_RadianceProbeDistanceOutput.name = "RadianceProbeDistanceOutput";
             m_RadianceProbeDistanceOutput.Create();
         }
 
@@ -308,6 +327,7 @@ public class MiraiGIRadianceCache
             m_RadianceProbeIdClipmap.dimension = TextureDimension.Tex3D;
             m_RadianceProbeIdClipmap.volumeDepth = clipmapResolution.z;
             m_RadianceProbeIdClipmap.enableRandomWrite = true;
+            m_RadianceProbeIdClipmap.name = "RadianceProbeIdClipmap";
             m_RadianceProbeIdClipmap.Create();
 
             int kernel = m_VoxelLightingCS.FindKernel("RadianceProbeIdClipmapInit");
@@ -350,14 +370,6 @@ public class MiraiGIRadianceCache
         {
             m_RadianceProbeOutputMergeIndirectArgs = new ComputeBuffer(3, sizeof(int), ComputeBufferType.IndirectArguments);
         }
-
-        // --------------------------------------------
-        // Flush data per frame
-        // --------------------------------------------
-        m_ValidVoxelCounter.SetData(m_ValidVoxelCounterInitData);
-        m_ValidVoxelBuffer.SetData(m_ValidVoxelBufferInitData);
-        m_ValidProbeCounter.SetData(m_ValidProbeCounterInitData);
-        m_ValidProbeBuffer.SetData(m_ValidProbeBufferInitData);
     }
 
     public void PickValidVoxel(CommandBuffer cmd, MiraiGIGPUScene scene, int cascadeId)
@@ -402,7 +414,7 @@ public class MiraiGIRadianceCache
         GameObject mainLightObject = GameObject.Find("Directional Light");
         Light mainLight = mainLightObject.GetComponent<Light>();
         Vector3 mainLightDirection = mainLight.transform.forward * -1;
-        Color mainLightColor = mainLight.color * mainLight.intensity;
+        Color mainLightColor = mainLight.color * Mathf.Max(mainLight.intensity, 1e-2f);
 
         // get main light shadow
         Matrix4x4[] worldToShadowMatrices = new Matrix4x4[4];

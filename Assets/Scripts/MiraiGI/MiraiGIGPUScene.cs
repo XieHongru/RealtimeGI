@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using Unity.Mathematics;
+using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
@@ -15,6 +16,8 @@ public class MiraiGIGPUScene
     public SurfaceCache surfaceCache;
     public OccupancyMap occupancyMap;
     public int frameNumber;
+
+    public Texture envMap;
 
     public RenderTargetIdentifier sceneColorTarget;
 
@@ -46,6 +49,9 @@ public class MiraiGIGPUScene
         // 6. init screen gather;
         miraiGIScreenGather = new MiraiGIScreenGather();
         miraiGIScreenGather.Init();
+
+        // 7. envMap
+        envMap = AssetDatabase.LoadAssetAtPath<Texture>("Assets/Textures/kloppenheim_06_puresky_4k.hdr");
 
         frameNumber = 0;
         sceneColorTarget = cameraTarget;

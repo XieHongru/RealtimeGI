@@ -423,6 +423,7 @@ public class MiraiGIScreenGather
         {
             m_InitialSampleRadiance = new RenderTexture(m_ScreenGatherRTSize.x, m_ScreenGatherRTSize.y, 0, RenderTextureFormat.ARGBHalf);
             m_InitialSampleRadiance.enableRandomWrite = true;
+            m_InitialSampleRadiance.name = "InitialSampleRadiance";
             m_InitialSampleRadiance.Create();
         }
 
@@ -430,6 +431,7 @@ public class MiraiGIScreenGather
         {
             m_InitialSampleHitInfo = new RenderTexture(m_ScreenGatherRTSize.x, m_ScreenGatherRTSize.y, 0, RenderTextureFormat.ARGBHalf);
             m_InitialSampleHitInfo.enableRandomWrite = true;
+            m_InitialSampleHitInfo.name = "InitialSampleHitInfo";
             m_InitialSampleHitInfo.Create();
         }
 
@@ -437,6 +439,7 @@ public class MiraiGIScreenGather
         {
             m_InitialSampleRayInfo = new RenderTexture(m_ScreenGatherRTSize.x, m_ScreenGatherRTSize.y, 0, RenderTextureFormat.ARGBHalf);
             m_InitialSampleRayInfo.enableRandomWrite = true;
+            m_InitialSampleRayInfo.name = "InitialSampleRayInfo";
             m_InitialSampleRayInfo.Create();
         }
 
@@ -812,6 +815,8 @@ public class MiraiGIScreenGather
             cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWInitialSampleRayInfo"), m_InitialSampleRayInfo);
             cmd.SetComputeBufferParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_VoxelTraceRayCounter"), m_VoxelTraceRayCounter);
             cmd.SetComputeBufferParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_VoxelTraceRayCompactBuffer"), m_VoxelTraceRayCompactBuffer);
+
+            cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_EnvMap"), scene.envMap);
 
             cmd.DispatchCompute(m_ScreenGatherCS, kernel, m_VoxelTraceIndirectArgs, 0);
         }

@@ -398,8 +398,9 @@ public class MiraiGIClipmap
             VoxelInject(cmd, gpuScene, cascadeIndex);
             DistanceFieldPropagate(cmd, gpuScene, cascadeIndex);
             BaseOccupancyMapProject(cmd, gpuScene, cascadeIndex);
-            GenerateROMA(cmd, gpuScene, cascadeIndex);
+            //GenerateROMA(cmd, gpuScene, cascadeIndex);
         }
+        GenerateROMA(cmd, gpuScene);
 
         ReleaseVoxelPage(cmd);
 
@@ -787,6 +788,7 @@ public class MiraiGIClipmap
 
         int kernel = m_VoxelInjectCS.FindKernel("BaseOccupancyMapProject");
 
+        cmd.SetComputeIntParam(m_VoxelInjectCS, Shader.PropertyToID("_CascadeIndex"), cascadeId);
         cmd.SetComputeVectorParam(m_VoxelInjectCS, Shader.PropertyToID("_CascadeResolution"), (Vector3)voxelResolution);
         cmd.SetComputeVectorParam(m_VoxelInjectCS, Shader.PropertyToID("_CascadeScrolling"), (Vector3)cascadeInfo.scrolling);
         cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_ScrollingBOM"), m_ScrollingBOM);
@@ -848,6 +850,9 @@ public class MiraiGIClipmap
         // 3. Generate ROMA
         int kernel = m_VoxelInjectCS.FindKernel("GenerateROMA");
 
+        cmd.SetComputeIntParam(m_VoxelInjectCS, Shader.PropertyToID("_CascadeIndex"), cascadeId);
+        cmd.SetComputeVectorParam(m_VoxelInjectCS, Shader.PropertyToID("_CascadeResolution"), (Vector3)voxelResolution);
+        cmd.SetComputeVectorParam(m_VoxelInjectCS, Shader.PropertyToID("_CascadeScrolling"), (Vector3)cascadeInfo.scrolling);
         cmd.SetComputeIntParam(m_VoxelInjectCS, Shader.PropertyToID("_UpdateFrame"), updateFrame);
         cmd.SetComputeIntParam(m_VoxelInjectCS, Shader.PropertyToID("_UpdateOMPerFrame"), updateOMPerFrame);
         cmd.SetComputeMatrixParam(m_VoxelInjectCS, Shader.PropertyToID("_BaseOMViewProjMat"), m_BaseOMViewProjMat[cascadeId]);
@@ -859,6 +864,74 @@ public class MiraiGIClipmap
         cmd.DispatchCompute(m_VoxelInjectCS, kernel, voxelResolution.x / 16, voxelResolution.y / 16, updateOMPerFrame);
 
         cmd.EndSample($"Generate ROMA Cascade {cascadeId}");
+    }
+
+    void GenerateROMA(CommandBuffer cmd, MiraiGIGPUScene scene)
+    {
+        cmd.BeginSample($"Generate ROMA");
+
+        int updateFrame = scene.frameNumber % 8;
+        int updateOMPerFrame = (GlobalSettings.Instance.occupancyMapXCount * GlobalSettings.Instance.occupancyMapYCount) / 8;
+
+        for (int cascadeId = 0; cascadeId < 4; cascadeId++)
+        {
+            MiraiGICascadeInfo cascadeInfo = cascadeInfos[cascadeId];
+
+            // 1. Get clipmap bounds camera params
+            Vector3 center = cascadeInfo.cascadeCenter;
+
+            float halfSize = cascadeInfo.cascadeSize.x * 0.5f;
+
+            Vector3 baseViewDir = Vector3.forward;
+            Vector3 baseUp = Vector3.up;
+            Matrix4x4 baseViewMatrix = Matrix4x4.LookAt(center, center + baseViewDir, baseUp).inverse;
+            Matrix4x4 baseProjectionMatrix = Matrix4x4.Ortho(-halfSize, halfSize, -halfSize, halfSize, -halfSize, halfSize);
+            if (SystemInfo.usesReversedZBuffer)
+            {
+                baseProjectionMatrix = Matrix4x4.Ortho(-halfSize, halfSize, -halfSize, halfSize, halfSize, -halfSize);
+            }
+            m_BaseOMViewProjMat[cascadeId] = baseProjectionMatrix * baseViewMatrix;
+            m_BaseOMInvViewProjMat[cascadeId] = m_BaseOMViewProjMat[cascadeId].inverse;
+
+            // 2. Get ROMA direction params
+            CameraParams[] cameraParamsArray = new CameraParams[updateOMPerFrame];
+            for (int omId = 0; omId < updateOMPerFrame; omId++)
+            {
+                cameraParamsArray[omId] = new CameraParams();
+
+                Vector3 viewDir = m_ROMADirection[updateOMPerFrame * updateFrame + omId];
+                Vector3 up = Vector3.up;
+                Matrix4x4 viewMatrix = Matrix4x4.LookAt(center, center + viewDir, up).inverse;
+                Matrix4x4 projectionMatrix = Matrix4x4.Ortho(-halfSize, halfSize, -halfSize, halfSize, -halfSize, halfSize);
+                if (SystemInfo.usesReversedZBuffer)
+                {
+                    projectionMatrix = Matrix4x4.Ortho(-halfSize, halfSize, -halfSize, halfSize, halfSize, -halfSize);
+                }
+                Matrix4x4 viewProjMatrix = projectionMatrix * viewMatrix;
+
+                cameraParamsArray[omId].viewProjMat = viewProjMatrix;
+                cameraParamsArray[omId].invViewProjMat = viewProjMatrix.inverse;
+                cameraParamsArray[omId].viewDir = viewDir;
+            }
+            m_DirectionParamsBuffer.SetData(cameraParamsArray, 0,
+                cascadeId * (GlobalSettings.Instance.occupancyMapXCount * GlobalSettings.Instance.occupancyMapYCount) + updateFrame * updateOMPerFrame, updateOMPerFrame);
+        }
+
+        // 3. Generate ROMA
+        int kernel = m_VoxelInjectCS.FindKernel("GenerateROMA");
+
+        cmd.SetComputeVectorParam(m_VoxelInjectCS, Shader.PropertyToID("_CascadeResolution"), (Vector3)voxelResolution);
+        cmd.SetComputeIntParam(m_VoxelInjectCS, Shader.PropertyToID("_UpdateFrame"), updateFrame);
+        cmd.SetComputeIntParam(m_VoxelInjectCS, Shader.PropertyToID("_UpdateOMPerFrame"), updateOMPerFrame);
+        cmd.SetComputeMatrixParam(m_VoxelInjectCS, Shader.PropertyToID("_BaseOMViewProjMat"), m_BaseOMViewProjMat[0]);
+        cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_DirectionParamsArray"), m_DirectionParamsBuffer);
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_BaseOccupancyMap"), m_BaseOccupancyMap);
+        cmd.SetComputeTextureParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWROMA"), m_ROMA);
+        cmd.SetComputeBufferParam(m_VoxelInjectCS, kernel, Shader.PropertyToID("_RWROMACenter"), m_ROMACenter);
+
+        cmd.DispatchCompute(m_VoxelInjectCS, kernel, voxelResolution.x / 16, voxelResolution.y / 16, updateOMPerFrame);
+
+        cmd.EndSample($"Generate ROMA");
     }
 
     void ReleaseVoxelPage(CommandBuffer cmd)
