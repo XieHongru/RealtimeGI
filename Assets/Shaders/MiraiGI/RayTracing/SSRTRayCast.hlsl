@@ -36,14 +36,14 @@ struct SSRTRay
 
 /** Compile a ray for screen space ray casting. */
 SSRTRay InitScreenSpaceRayFromWorldSpace(
-    float4x4 TranslatedWorldToClipMatrix,
+    float4x4 WorldToClipMatrix,
     float4x4 ViewToClipMatrix,
-	float3 RayOriginTranslatedWorld,
+	float3 RayOrigin,
 	float3 WorldRayDirection,
 	float SceneDepth)
 {
-    float4 RayStartClip = mul(TranslatedWorldToClipMatrix, float4(RayOriginTranslatedWorld, 1));
-    float4 RayEndClip = mul(TranslatedWorldToClipMatrix, float4(RayOriginTranslatedWorld + WorldRayDirection * SceneDepth, 1));
+    float4 RayStartClip = mul(WorldToClipMatrix, float4(RayOrigin, 1));
+    float4 RayEndClip = mul(WorldToClipMatrix, float4(RayOrigin + WorldRayDirection * SceneDepth, 1));
 
     float3 RayStartScreen = RayStartClip.xyz * rcp(RayStartClip.w);
     float3 RayEndScreen = RayEndClip.xyz * rcp(RayEndClip.w);
@@ -91,8 +91,6 @@ bool CastScreenSpaceRay(
     float LastDiff = 0;
     Level = 1;
 
-	//StepOffset = View.GeneralPurposeTweak;
-
     RayStepUVz *= Step;
     float3 RayUVz = RayStartUVz + RayStepUVz * StepOffset;
 	
@@ -130,7 +128,7 @@ bool CastScreenSpaceRay(
             [unroll(SSRT_SAMPLE_BATCH_SIZE)]
             for (uint j = 0; j < SSRT_SAMPLE_BATCH_SIZE; j++)
             {
-                SampleDepth[j] = Texture.SampleLevel(Sampler, SamplesUV[j], SamplesMip[j]).r;
+                SampleDepth[j] = 1.0f - Texture.SampleLevel(Sampler, SamplesUV[j], SamplesMip[j]).r;
             }
         }
 
@@ -205,18 +203,18 @@ bool CastScreenSpaceRay(
 
 bool RayCast(
 	Texture2D Texture, SamplerState Sampler,
-	float3 RayOriginTranslatedWorld, float3 RayDirection,
+	float3 RayOrigin, float3 RayDirection,
 	float Roughness, float SceneDepth,
 	uint NumSteps, float StepOffset,
 	float4 HZBUvFactorAndInvFactor,
 	bool bDebugPrint,
-    float4x4 TranslatedWorldToClipMatrix,
+    float4x4 WorldToClipMatrix,
     float4x4 ViewToClipMatrix,
     float4 ScreenPositionScaleBias,
 	out float3 OutHitUVz,
 	out float Level)
 {
-    SSRTRay Ray = InitScreenSpaceRayFromWorldSpace(TranslatedWorldToClipMatrix, ViewToClipMatrix, RayOriginTranslatedWorld, RayDirection, SceneDepth);
+    SSRTRay Ray = InitScreenSpaceRayFromWorldSpace(WorldToClipMatrix, ViewToClipMatrix, RayOrigin, RayDirection, SceneDepth);
 
     return CastScreenSpaceRay(
 		Texture, Sampler,

@@ -38,7 +38,6 @@ float4 _CameraPosition;
 float4x4 _ViewMat;
 float4x4 _ProjMat;
 float4x4 _TranslatedWorldToView;
-float4x4 _TranslatedWorldToClip;
 float4 _ZBufferParam;
 float4x4 _InvProjMat;
 float4x4 _InvViewMat;
@@ -106,7 +105,7 @@ float4 SetupSpecularRay(float3 worldPosition, float3 worldNormal, float2 E, floa
 #endif
 
     float3x3 tangentBasis = GetTangentBasis(worldNormal);
-    float3 V = normalize(_CameraPosition - worldPosition);
+    float3 V = normalize(worldPosition - _CameraPosition);
     float3 tangentV = mul(tangentBasis, V);
 
     float a2 = roughness * roughness * roughness * roughness;
@@ -262,18 +261,17 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
     const int numSteps = 32;
     float3 hitUVz = float3(0, 0, 0);
     float hitLevel = 0;
-    float3 rayOriginTranslatedWorld = pixelCtx.worldPosition - _CameraPosition;
 
     bool isHit = RayCast(
         _HZB, sampler_PointClamp,
-        rayOriginTranslatedWorld, rayDirectionAndPDF.xyz,
+        pixelCtx.worldPosition, rayDirectionAndPDF.xyz,
         0.05, // roughness 
         pixelCtx.sceneDepth,
         numSteps,
         pixelCtx.randomVector.z, // SSRStepOffset
         _HZBUvFactorAndInvFactor,
         false, // debug print
-        _TranslatedWorldToClip, _ProjMat,
+        _WorldToClip, _ProjMat,
         _ScreenPositionScaleBias,
         hitUVz, hitLevel
     );
@@ -308,9 +306,13 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
             isHit = false;
         }
     }
+    
+    float4 rayStartClip = mul(_WorldToClip, float4(pixelCtx.worldPosition, 1));
+    float3 rayStartScreen = rayStartClip.xyz * rcp(rayStartClip.w);
 
     _RWInitialSampleRadiance[pixelCoord] = isValidPixel ? float4(hitRadiance, isHit) : 0;
-    _RWInitialSampleHitInfo[pixelCoord] = isValidPixel ? float4(hitNormal * 0.5 + 0.5, rayDistance) : float4(0, 0, 1, 1);
+    //_RWInitialSampleHitInfo[pixelCoord] = isValidPixel ? float4(hitNormal * 0.5 + 0.5, rayDistance) : float4(0, 0, 1, 1);
+    _RWInitialSampleHitInfo[pixelCoord] = float4(float3((rayStartScreen.xy * float2(0.5, -0.5) + 0.5) * _HZBUvFactorAndInvFactor.xy, rayStartScreen.z), pixelCtx.sceneDepth);
     _RWInitialSampleRayInfo[pixelCoord] = isValidPixel ? float4(rayDirectionAndPDF.xyz * 0.5 + 0.5, rayDirectionAndPDF.w) : float4(0, 0, 1, 1);
     
     gs_PixelValidMask[groupThreadIndex] = isValidPixel;
@@ -400,7 +402,7 @@ void InitialSampleVoxelTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupTh
     
     // prevent self intersection at graze angle
     float NoL = saturate(dot(pixelCtx.worldNormal, rayDirectionAndPDF.xyz));
-    float3 normalOffset = pixelCtx.worldNormal * voxelCellSize * lerp(1, 0.05, NoL);
+    float3 normalOffset = pixelCtx.worldNormal * 2 * voxelCellSize * lerp(1, 0.05, NoL);
     rayStart += normalOffset;
 
     // 2. trace ray
@@ -696,10 +698,9 @@ float Vignette(float2 uv)
 float4 SSRayCastShortRange(in PixelContext pixelCtx, float2 uv, float3 rayDir, float maxDistance, int stepCount, float stepOffset)
 {
     maxDistance = min(maxDistance, pixelCtx.sceneDepth);
-
-    float3 rayOriginTranslatedWorld = pixelCtx.worldPosition - _CameraPosition;
-    float4 rayStartClip = mul(_TranslatedWorldToClip, float4(rayOriginTranslatedWorld, 1));
-    float4 rayDirClip = mul(_TranslatedWorldToClip, float4(rayDir * maxDistance, 0));
+    
+    float4 rayStartClip = mul(_WorldToClip, float4(pixelCtx.worldPosition, 1));
+    float4 rayDirClip = mul(_WorldToClip, float4(rayDir * maxDistance, 0));
     float4 rayEndClip = rayStartClip + rayDirClip;
 
     float3 rayStartScreen = rayStartClip.xyz / rayStartClip.w;

@@ -40,7 +40,7 @@ MonoBehaviour:
   irradianceProbeTemporalWeight: 0.75
   diffuseIndirectEnable: 1
   specularIndirectEnable: 0
-  visualizeScreenGather: 0
+  visualizeScreenGather: 1
   screenGatherDownsampleFactor: 2
   useReservoirSpatialReuse: 1
   spatialReuseSampleCount: 8
