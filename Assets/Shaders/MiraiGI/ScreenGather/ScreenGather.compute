@@ -10,7 +10,7 @@
 #pragma multi_compile _ USE_ROMA
 
 // -------------------------------------------------------------------------------- //
-#define SPECULAR_USE_CLAMPED_BRDF 0
+#define SPECULAR_USE_CLAMPED_BRDF 1
 #define SPECULAR_BRDF_BIAS (0.6f)
 
 #define FORCE_VOXEL_TRACE 0
@@ -27,6 +27,8 @@ Texture2D<float4> _NormalDepthTexture;
 Texture2D<float4> _NormalDepthHistory;
 TextureCube<float4> _EnvMap;
 
+Texture2D<float4> _GBufferBaseColor;
+Texture2D<float4> _GBufferSpecular;
 Texture2D<float4> _GBufferNormal;
 Texture2D _MotionVectors;
 
@@ -66,7 +68,7 @@ float3 WorldToScreen(float3 worldPosition)
     float4 clipPos = mul(_WorldToClip, float4(worldPosition, 1));
     clipPos.xyz /= clipPos.w;
 
-    float2 sceneUV = float2((clipPos.x + 1) * 0.5, 1 - (clipPos.y + 1) * 0.5);
+    float2 sceneUV = float2((clipPos.x + 1) * 0.5, (clipPos.y + 1) * 0.5);
 
     return float3(sceneUV, clipPos.z);
 }
@@ -311,8 +313,7 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
     float3 rayStartScreen = rayStartClip.xyz * rcp(rayStartClip.w);
 
     _RWInitialSampleRadiance[pixelCoord] = isValidPixel ? float4(hitRadiance, isHit) : 0;
-    //_RWInitialSampleHitInfo[pixelCoord] = isValidPixel ? float4(hitNormal * 0.5 + 0.5, rayDistance) : float4(0, 0, 1, 1);
-    _RWInitialSampleHitInfo[pixelCoord] = float4(float3((rayStartScreen.xy * float2(0.5, -0.5) + 0.5) * _HZBUvFactorAndInvFactor.xy, rayStartScreen.z), pixelCtx.sceneDepth);
+    _RWInitialSampleHitInfo[pixelCoord] = isValidPixel ? float4(hitNormal * 0.5 + 0.5, rayDistance) : float4(0, 0, 1, 1);
     _RWInitialSampleRayInfo[pixelCoord] = isValidPixel ? float4(rayDirectionAndPDF.xyz * 0.5 + 0.5, rayDirectionAndPDF.w) : float4(0, 0, 1, 1);
     
     gs_PixelValidMask[groupThreadIndex] = isValidPixel;
@@ -443,9 +444,6 @@ void InitialSampleVoxelTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupTh
 
     _RWInitialSampleRadiance[pixelCoord] = float4(hitRadiance, hit.isHit);
     _RWInitialSampleHitInfo[pixelCoord] = float4(hitNormal * 0.5 + 0.5, rayDistance);
-    
-    //_RWInitialSampleRayInfo[pixelCoord] = float4(hit.position, hit.isHit);
-    //_RWInitialSampleHitInfo[pixelCoord] = float4(pixelCtx.worldPosition, rayDistance);
 }
 
 // -------------------------------------------------------------------------------- //
@@ -1188,7 +1186,6 @@ void DiffuseSpatialFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThrea
 float _AOIntensity;
 float _IndirectShadowSharpness;
 float _IndirectShadowIntensity;
-Texture2D<float4> _GBufferBaseColor;
 Texture2D<float4> _SceneColor;
 RWTexture2D<float4> _RWDiffuseCompositeTexture;
 
@@ -1252,11 +1249,11 @@ void DiffuseComposite(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
 
 float _SpecularResolveSearchRange;
 
-Texture2D<float4> _GBufferSpecular;
 RWTexture2D<float4> _RWSpecularResolveOutputTexture;
 
 // https://www.ea.com/frostbite/news/stochastic-screen-space-reflections
-float3 EvaluateRatioEstimatorBRDF(float3 curPixelWorldPosition, in float4 normalRoughness, in float3 specularColor, float3 rayHitPosition, float rayPDF)
+float3 EvaluateRatioEstimatorBRDF(float3 curPixelWorldPosition, in float4 baseColor, in float4 normalRoughness, in float specular, 
+                                    float3 rayHitPosition, float rayPDF)
 {
     // reconnect neighbor ray's hit point with current pixel 
     float3 L = normalize(rayHitPosition - curPixelWorldPosition);
@@ -1273,6 +1270,7 @@ float3 EvaluateRatioEstimatorBRDF(float3 curPixelWorldPosition, in float4 normal
     float a2 = Pow4(normalRoughness.w);
     float D = D_GGX(a2, NoH);
     float Vis = Vis_SmithJointApprox(a2, NoV, NoL);
+    float3 specularColor = specular * baseColor;
     float3 F = F_Schlick(specularColor, VoH);
 
 #if SIMPLIFY_RESOLVE_BRDF
@@ -1298,7 +1296,8 @@ void SpecularResolve(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId :
     uint2 randomSeed = Rand3DPCG16(uint3(uv * 11451.514, _FrameNumber + 1919)).xy;
     
     float4 GBufferNormalRoughness = _GBufferNormal.SampleLevel(sampler_PointClamp, uv, 0);
-    float3 GBufferSpecular = _GBufferSpecular.SampleLevel(sampler_PointClamp, uv, 0);
+    float4 GBufferBaseColor = _GBufferBaseColor.SampleLevel(sampler_PointClamp, uv, 0);
+    float GBufferSpecular = _GBufferSpecular.SampleLevel(sampler_PointClamp, uv, 0).x;
     
     // bug ??
     float3 worldPosition = ReconstructWorldPositionFromDepth(uv, _SceneDepthTexture.SampleLevel(sampler_PointClamp, uv, 0));
@@ -1328,11 +1327,11 @@ void SpecularResolve(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId :
         float3 rayHitPosition = rayStartPosition + rayDirectionAndPDF.xyz * rayDistance;
 
         // 2.2. calculate local BRDF for reused ray and apply ratio estimator
-        float3 weight = EvaluateRatioEstimatorBRDF(worldPosition, GBufferNormalRoughness, GBufferSpecular, rayHitPosition, rayDirectionAndPDF.w);
+        float3 weight = EvaluateRatioEstimatorBRDF(worldPosition, GBufferBaseColor, GBufferNormalRoughness, GBufferSpecular, rayHitPosition, rayDirectionAndPDF.w);
         weight *= exp(length(rayStartPosition - worldPosition) * -0.01);
 
 #if RADIANCE_TONEMAPPING
-        hitRadiance = hitRadiance / (1.0 + Luma(hitRadiance));
+        //hitRadiance = hitRadiance / (1.0 + Luma(hitRadiance));
 #endif
 
         radianceSum += hitRadiance * weight;
@@ -1425,7 +1424,7 @@ void SpecularTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThr
         return;
     }
     
-    float rawDepth = _SceneDepthTexture.SampleLevel(sampler_PointClamp, uv, 0);
+    float rawDepth = _NormalDepthTexture.SampleLevel(sampler_PointClamp, uv, 0).w;
     float3 worldPosition = ReconstructWorldPositionFromDepth(uv, rawDepth);
     
     float4 GBufferNormalRoughness = _GBufferNormal.SampleLevel(sampler_PointClamp, uv, 0);
@@ -1472,7 +1471,8 @@ void SpecularTemporalFilter(uint3 threadId : SV_DispatchThreadID, uint3 groupThr
     historyColor.rgb = ClampHistoryYCoCg(colorSamples, currentColor, historyColor.rgb);
     float3 filteredColor = lerp(currentColor, historyColor.rgb, historyWeight);
     _RWSpecularTemporalFilterOutput[pixelCoord] = float4(filteredColor, 1);
-    _RWTestOutput[pixelCoord] = float4(historyColor.a / 255.0f, 0, 0, 1);
+    //_RWTestOutput[pixelCoord] = float4(historyColor.a / 255.0f, 0, 0, 1);
+    _RWTestOutput[pixelCoord] = historyColor;
     
     // 7. output accumulated frame
     _RWAccumulatedFrameTexture[pixelCoord] = clamp(accumulatedFrame + 1, 0, _MaxAccumulatedFrame) / 255.0;
@@ -1573,8 +1573,10 @@ void SpecularComposite(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId
     }
     float rawDepth = _SceneDepthTexture.SampleLevel(sampler_PointClamp, uv, 0);
     
+    float4 GBufferBaseColor = _GBufferBaseColor.SampleLevel(sampler_PointClamp, uv, 0);
     float4 GBufferNormalRoughness = _GBufferNormal.SampleLevel(sampler_PointClamp, uv, 0);
-    float3 GBufferSpecular = _GBufferSpecular.SampleLevel(sampler_PointClamp, uv, 0);
+    float GBufferSpecular = _GBufferSpecular.SampleLevel(sampler_PointClamp, uv, 0).x;
+    float3 GBufferSpecularColor = GBufferSpecular * GBufferBaseColor;
     
     float3 worldPosition = ReconstructWorldPositionFromDepth(uv, rawDepth);
     float3 irradiance = _SpecularIndirectTexture.SampleLevel(sampler_linearClamp, uv, 0).rgb;

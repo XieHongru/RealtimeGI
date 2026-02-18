@@ -252,7 +252,7 @@ public class MiraiGIScreenGather
             cmd.BeginSample("Specular Indirect");
 
             InitialSampleScreenTrace(ref renderingData, cmd, scene, TraceMode.TM_Specular);
-            InitialSampleVoxelTrace(cmd, scene, TraceMode.TM_Specular);
+            //InitialSampleVoxelTrace(cmd, scene, TraceMode.TM_Specular);
             SpecularResolve(cmd, scene);
             SpecularTemporalFilter(cmd, scene);
             SpecularSpatialFilter(cmd, scene);
@@ -319,6 +319,7 @@ public class MiraiGIScreenGather
 
         cmd.SetComputeVectorParam(m_ScreenGatherCS, Shader.PropertyToID("_SceneTextureRTSize"), (Vector2)m_SceneTextureRTSize);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_NormalDepthTexture"), m_NormalDepthTexture);
+        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_GBufferBaseColor"), Shader.GetGlobalTexture("_GBuffer0"));
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_GBufferSpecular"), Shader.GetGlobalTexture("_GBuffer1"));
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_GBufferNormal"), Shader.GetGlobalTexture("_GBuffer2"));
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_SceneColor"), m_DiffuseCompositeTexture);
@@ -1166,6 +1167,7 @@ public class MiraiGIScreenGather
         cmd.SetComputeMatrixParam(m_ScreenGatherCS, Shader.PropertyToID("_InvProjMat"), Camera.main.projectionMatrix.inverse);
         cmd.SetComputeMatrixParam(m_ScreenGatherCS, Shader.PropertyToID("_InvViewMat"), Camera.main.cameraToWorldMatrix);
 
+        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_GBufferBaseColor"), Shader.GetGlobalTexture("_GBuffer0"));
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_GBufferSpecular"), Shader.GetGlobalTexture("_GBuffer1"));
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_GBufferNormal"), Shader.GetGlobalTexture("_GBuffer2"));
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_SceneDepthTexture"), Shader.GetGlobalTexture("_CameraDepthTexture"));
