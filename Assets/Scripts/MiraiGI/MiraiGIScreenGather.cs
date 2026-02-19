@@ -31,6 +31,7 @@ public class MiraiGIScreenGather
     RenderTexture m_MiniDepthTexture;
     RenderTexture m_NormalDepthHistory;
     RenderTexture m_DirectLightingTexture;
+    RenderTexture m_SceneColorHistory;
 
     RenderTexture m_InitialSampleRadiance;
     RenderTexture m_InitialSampleHitInfo;
@@ -111,6 +112,7 @@ public class MiraiGIScreenGather
         m_MiniDepthTexture?.Release();
         m_NormalDepthHistory?.Release();
         m_DirectLightingTexture?.Release();
+        m_SceneColorHistory?.Release();
 
         m_InitialSampleRadiance?.Release();
         m_InitialSampleHitInfo?.Release();
@@ -160,6 +162,7 @@ public class MiraiGIScreenGather
         m_MiniDepthTexture = null;
         m_NormalDepthHistory = null;
         m_DirectLightingTexture = null;
+        m_SceneColorHistory = null;
 
         m_InitialSampleRadiance = null;
         m_InitialSampleHitInfo = null;
@@ -252,7 +255,7 @@ public class MiraiGIScreenGather
             cmd.BeginSample("Specular Indirect");
 
             InitialSampleScreenTrace(ref renderingData, cmd, scene, TraceMode.TM_Specular);
-            //InitialSampleVoxelTrace(cmd, scene, TraceMode.TM_Specular);
+            InitialSampleVoxelTrace(cmd, scene, TraceMode.TM_Specular);
             SpecularResolve(cmd, scene);
             SpecularTemporalFilter(cmd, scene);
             SpecularSpatialFilter(cmd, scene);
@@ -271,6 +274,7 @@ public class MiraiGIScreenGather
         {
             cmd.Blit(Shader.GetGlobalTexture("_CameraOpaqueTexture"), m_DiffuseCompositeTexture);
             cmd.Blit(Shader.GetGlobalTexture("_CameraOpaqueTexture"), m_SpecularCompositeTexture);
+            cmd.Blit(Shader.GetGlobalTexture("_CameraOpaqueTexture"), m_SceneColorHistory);
         }
 
         Graphics.ExecuteCommandBuffer(cmd);
@@ -303,6 +307,8 @@ public class MiraiGIScreenGather
 
         cmd.DispatchCompute(m_ScreenGatherCS, kernel, Mathf.CeilToInt((float)m_SceneTextureRTSize.x / 8), Mathf.CeilToInt((float)m_SceneTextureRTSize.y / 8), 1);
 
+        cmd.Blit(m_DiffuseCompositeTexture, m_SceneColorHistory);
+
         cmd.EndSample("Diffuse Composite");
 
         Graphics.ExecuteCommandBuffer(cmd);
@@ -331,6 +337,8 @@ public class MiraiGIScreenGather
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("PreIntegratedGF"), new RenderTexture(m_SceneTextureRTSize.x, m_SceneTextureRTSize.y, 0));
 
         cmd.DispatchCompute(m_ScreenGatherCS, kernel, Mathf.CeilToInt((float)m_SceneTextureRTSize.x / 8), Mathf.CeilToInt((float)m_SceneTextureRTSize.y / 8), 1);
+
+        cmd.Blit(m_SpecularCompositeTexture, m_SceneColorHistory);
 
         cmd.EndSample("Specular Composite");
 
@@ -418,6 +426,14 @@ public class MiraiGIScreenGather
             m_DirectLightingTexture = new RenderTexture(m_ScreenGatherRTSize.x, m_ScreenGatherRTSize.y, 0, RenderTextureFormat.ARGBFloat);
             m_DirectLightingTexture.enableRandomWrite = true;
             m_DirectLightingTexture.Create();
+        }
+
+        if (m_SceneColorHistory == null)
+        {
+            m_SceneColorHistory = new RenderTexture(m_SceneTextureRTSize.x, m_SceneTextureRTSize.y, 0, RenderTextureFormat.ARGBFloat);
+            m_SceneColorHistory.enableRandomWrite = true;
+            m_SceneColorHistory.useMipMap = true;
+            m_SceneColorHistory.Create();
         }
 
         if (m_InitialSampleRadiance == null)
@@ -700,6 +716,8 @@ public class MiraiGIScreenGather
             cmd.DisableShaderKeyword("TRACE_SPECULAR_RAY");
         }
 
+        //m_SceneColorHistory.GenerateMips();
+
         Matrix4x4 worldToClip = Camera.main.projectionMatrix * Camera.main.worldToCameraMatrix;
 
         cmd.SetComputeVectorParam(m_ScreenGatherCS, Shader.PropertyToID("_CameraPosition"), Camera.main.transform.position);
@@ -730,7 +748,7 @@ public class MiraiGIScreenGather
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_NormalDepthTexture"), m_NormalDepthTexture);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_NormalDepthHistory"), m_NormalDepthHistory);
         //cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_SceneColorHistory"), m_DirectLightingTexture); 
-        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_SceneColorHistory"), m_DiffuseCompositeTexture);
+        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_SceneColorHistory"), m_SceneColorHistory);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWInitialSampleRadiance"), m_InitialSampleRadiance);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWInitialSampleHitInfo"), m_InitialSampleHitInfo);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWInitialSampleRayInfo"), m_InitialSampleRayInfo);

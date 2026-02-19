@@ -158,6 +158,7 @@ PixelContext ResolvePixelContext(float2 uv)
     pixelCtx.worldPosition = ReconstructWorldPositionFromDepth(uv, pixelCtx.rawDepth);
     pixelCtx.worldNormal = normalDepth.rgb * 2 - 1;
     pixelCtx.randomVector = SetupPixelRandom(uv);
+    pixelCtx.roughness = _GBufferNormal.SampleLevel(sampler_PointClamp, uv, 0).w;
 
     return pixelCtx;
 }
@@ -300,7 +301,7 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
     float3 hitNormal = float3(0, 0, 0);
     if (isHit)
     {
-        hitRadiance = _SceneColorHistory.SampleLevel(sampler_linearClamp, reprojectRayHitUV, 0).rgb;
+        hitRadiance = _SceneColorHistory.SampleLevel(sampler_linearClamp, reprojectRayHitUV, hitLevel).rgb;
         hitNormal = _NormalDepthHistory.SampleLevel(sampler_PointClamp, reprojectRayHitUV, 0).rgb * 2 - 1;
         
         if (dot(hitNormal, rayDirectionAndPDF.xyz) > 0)
@@ -1295,9 +1296,10 @@ void SpecularResolve(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId :
     }
     uint2 randomSeed = Rand3DPCG16(uint3(uv * 11451.514, _FrameNumber + 1919)).xy;
     
-    float4 GBufferNormalRoughness = _GBufferNormal.SampleLevel(sampler_PointClamp, uv, 0);
     float4 GBufferBaseColor = _GBufferBaseColor.SampleLevel(sampler_PointClamp, uv, 0);
+    float4 GBufferNormalRoughness = _GBufferNormal.SampleLevel(sampler_PointClamp, uv, 0);
     float GBufferSpecular = _GBufferSpecular.SampleLevel(sampler_PointClamp, uv, 0).x;
+    float3 GBufferSpecularColor = GBufferSpecular * GBufferBaseColor;
     
     // bug ??
     float3 worldPosition = ReconstructWorldPositionFromDepth(uv, _SceneDepthTexture.SampleLevel(sampler_PointClamp, uv, 0));
@@ -1331,7 +1333,7 @@ void SpecularResolve(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId :
         weight *= exp(length(rayStartPosition - worldPosition) * -0.01);
 
 #if RADIANCE_TONEMAPPING
-        //hitRadiance = hitRadiance / (1.0 + Luma(hitRadiance));
+        hitRadiance = hitRadiance / (1.0 + Luma(hitRadiance));
 #endif
 
         radianceSum += hitRadiance * weight;
@@ -1356,7 +1358,7 @@ void SpecularResolve(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId :
 #if !APPLY_BRDF_AFTER_TAA
     float3 V = normalize(_CameraPosition - worldPosition);
     float NoV = saturate(dot(GBufferNormalRoughness.xyz, V));
-    float3 preIntegratedGF = EnvBRDFApprox(GBufferSpecular, GBufferNormalRoughness.w, NoV);
+    float3 preIntegratedGF = EnvBRDFApprox(GBufferSpecularColor, GBufferNormalRoughness.w, NoV);
     float3 specularIndirect = resolveRadiance * preIntegratedGF;
 #else
     float3 specularIndirect = resolveRadiance;
@@ -1584,7 +1586,7 @@ void SpecularComposite(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId
 #if APPLY_BRDF_AFTER_TAA
     float3 V = normalize(_CameraPosition - worldPosition);
     float NoV = saturate(dot(GBufferNormalRoughness.xyz, V));
-    float3 preIntegratedGF = EnvBRDFApprox(GBufferSpecular, GBufferNormalRoughness.w, NoV);
+    float3 preIntegratedGF = EnvBRDFApprox(GBufferSpecularColor, GBufferNormalRoughness.w, NoV);
     float3 specularIndirect = irradiance * preIntegratedGF;
 #else
     float3 specularIndirect = irradiance;
