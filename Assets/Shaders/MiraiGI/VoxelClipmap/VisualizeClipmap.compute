@@ -117,7 +117,7 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
             }
             if (_VisualizeMode == 5)
             {
-                debugColor = hit.position;
+                debugColor = float3(hit.stepCount, 0, 0);
             }
         }
         // for invalid page maybe runout of space, we just give it a warning color

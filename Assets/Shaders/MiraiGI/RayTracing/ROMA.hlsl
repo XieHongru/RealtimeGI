@@ -9,10 +9,10 @@ float2 mapConcentricHemisphereBackToSquare(float3 dir)
 {
     if (dir.z == 1.f)
         return float2(0.5f, 0.5f);
-    const float absR = sqrt(1 - dir.z);
-    const float absSinTheta = absR * sqrt(2.f - absR * absR);
-    const float absCosPhi = abs(dir.x) / absSinTheta;
-    const float absSinPhi = abs(dir.y) / absSinTheta;
+    float absR = sqrt(1 - dir.z);
+    float absSinTheta = absR * sqrt(2.f - absR * absR);
+    float absCosPhi = clamp(abs(dir.x) / absSinTheta, -1, 1);
+    float absSinPhi = clamp(abs(dir.y) / absSinTheta, -1, 1);
     float2 u;
     float r, phi;
     if (dir.x > 0)
@@ -201,6 +201,7 @@ VoxelRayTracingHitPayload BaseOMRaytracingSingleCascade(in CascadeInfo cascadeIn
                 payload.voxelCellSize = cascadeInfo.voxelSize.x;
                 payload.cascadeIndex = cascadeInfo.cascadeIndex;
                 payload.clipmapAccessIndex = clipmapAccessIndex;
+                payload.stepCount = numIteration;
                 return payload;
             }
         }
@@ -333,6 +334,7 @@ VoxelRayTracingHitPayload ROMARaytracingSingleCascade(in CascadeInfo cascadeInfo
                 payload.voxelCellSize = cascadeInfo.voxelSize.x;
                 payload.cascadeIndex = cascadeInfo.cascadeIndex;
                 payload.clipmapAccessIndex = clipmapAccessIndex;
+                payload.stepCount = numIteration;
                 return payload;
             }
         }
@@ -376,8 +378,8 @@ VoxelRayTracingHitPayload ROMARaytracing(in ClipmapInfo clipmapInfo, in Texture2
 {
     float3 rayDirection = RTRequest.rayDir;
     float2 u = mapConcentricHemisphereBackToSquare((rayDirection.z < 0 ? -rayDirection : rayDirection));
-    int2 squareIndex = u * int2(ROMA_AXIS_COUNT_X, ROMA_AXIS_COUNT_Y);
-    int ROMAIndex = squareIndex.y * ROMA_AXIS_COUNT_X + squareIndex.x;
+    int2 squareIndex = clamp(int2(floor(u * float2(ROMA_AXIS_COUNT_X, ROMA_AXIS_COUNT_Y))), 0, 3);
+    int ROMAIndex = squareIndex.y * ROMA_AXIS_COUNT_Y + squareIndex.x;
     
     for (int cascadeId = RTRequest.minCascadeIndex; cascadeId <= RTRequest.maxCascadeIndex; cascadeId++)
     {

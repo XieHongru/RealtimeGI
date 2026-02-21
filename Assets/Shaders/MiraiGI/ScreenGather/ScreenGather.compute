@@ -156,7 +156,7 @@ PixelContext ResolvePixelContext(float2 uv)
     pixelCtx.rawDepth = normalDepth.w;
     pixelCtx.sceneDepth = ConvertFromDeviceZ(pixelCtx.rawDepth);
     pixelCtx.worldPosition = ReconstructWorldPositionFromDepth(uv, pixelCtx.rawDepth);
-    pixelCtx.worldNormal = normalDepth.rgb * 2 - 1;
+    pixelCtx.worldNormal = normalize(normalDepth.rgb * 2 - 1);
     pixelCtx.randomVector = SetupPixelRandom(uv);
     pixelCtx.roughness = _GBufferNormal.SampleLevel(sampler_PointClamp, uv, 0).w;
 
@@ -167,7 +167,7 @@ float GetPixelPositionAndNormal(float2 uv, inout float3 outPosition, inout float
 {
     float4 normalDepth = _NormalDepthTexture.SampleLevel(sampler_PointClamp, uv, 0);
     outPosition = ReconstructWorldPositionFromDepth(uv, normalDepth.w);
-    outNormal = normalDepth.xyz * 2 - 1;
+    outNormal = normalize(normalDepth.xyz * 2 - 1);
     return ConvertFromDeviceZ(normalDepth.w);
 }
 
@@ -419,6 +419,7 @@ void InitialSampleVoxelTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupTh
 #if USE_BOM
     VoxelRayTracingHitPayload hit = OccupancyMapRaytracing(clipmapInfo, _BaseOccupancyMap, _BaseOMViewProjMatArray, _BaseOMInvViewProjMatArray, sampler_linearClamp, RTRequest);
 #elif USE_ROMA
+    RTRequest.maxStepNum = 10;
     VoxelRayTracingHitPayload hit = ROMARaytracing(clipmapInfo, _ROMA, _DirectionParamsArray, sampler_linearClamp, RTRequest);
 #elif USE_DISTANCE_FIELD
     VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
@@ -445,6 +446,9 @@ void InitialSampleVoxelTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupTh
 
     _RWInitialSampleRadiance[pixelCoord] = float4(hitRadiance, hit.isHit);
     _RWInitialSampleHitInfo[pixelCoord] = float4(hitNormal * 0.5 + 0.5, rayDistance);
+    //_RWInitialSampleRadiance[pixelCoord] = float4(hitRadiance, hit.stepCount);
+    //_RWInitialSampleRayInfo[pixelCoord] = float4(rayDirectionAndPDF.xyz, 1);
+    //_RWInitialSampleHitInfo[pixelCoord] = float4(hit.romaDirection, 1);
 }
 
 // -------------------------------------------------------------------------------- //
@@ -1402,7 +1406,7 @@ float4 SpecularIndirectFetchHistory(float3 worldPosition, float2 currentUV, bool
         float depthThreshold = GetTemporalDepthThreshold(historySceneDepth);
 
         float4 currentNormalDepth = _NormalDepthTexture.SampleLevel(sampler_PointClamp, currentUV, 0);
-        float3 currentNormal = currentNormalDepth.xyz * 2 - 1;
+        float3 currentNormal = normalize(currentNormalDepth.xyz * 2 - 1);
         float currentSceneDepth = ConvertFromDeviceZ(currentNormalDepth.w);
         
         if (dot(historyNormal, currentNormal) < 0.5 || abs(historySceneDepth - currentSceneDepth) > depthThreshold)

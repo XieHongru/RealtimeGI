@@ -1170,6 +1170,8 @@ public class MiraiGIClipmap
 
     Vector3 SampleUniformConcentricHemisphere(float2 u)
     {
+        const float PI_2 = 1.5707963268f;
+        const float PI_4 = 0.7853981634f;
         u = 2.0f * u - 1.0f;
         if (u.x == 0.0f && u.y == 0.0f) 
         { 
@@ -1179,12 +1181,12 @@ public class MiraiGIClipmap
         if (Mathf.Abs(u.x) > Mathf.Abs(u.y))
         {
             r = u.x;
-            phi = Mathf.PI / 4.0f * (u.y / u.x);
+            phi = PI_4 * (u.y / u.x);
         }
         else
         {
             r = u.y;
-            phi = Mathf.PI / 2.0f - Mathf.PI / 4.0f * (u.x / u.y);
+            phi = PI_2 - PI_4 * (u.x / u.y);
         }
         float sinTheta = r * Mathf.Sqrt(2.0f - r * r);
         return new Vector3(Mathf.Cos(phi) * sinTheta, Mathf.Sin(phi) * sinTheta, 1 - r * r);

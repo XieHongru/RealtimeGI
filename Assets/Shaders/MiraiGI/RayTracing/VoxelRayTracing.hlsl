@@ -43,6 +43,7 @@ struct VoxelRayTracingHitPayload
     float voxelCellSize;
     int cascadeIndex;
     int3 clipmapAccessIndex;
+    int stepCount;
 };
 
 struct RayBoxHitInfo
@@ -217,8 +218,9 @@ VoxelRayTracingHitPayload VoxelRaytracingSingleCascade(CascadeInfo cascadeInfo, 
     bool hitMask = false;
     bool needReadBitOccupy = true;
     int3 clipmapAccessIndex = int3(0, 0, 0);
+    int stepCount = 0;
 
-    for (int i = 0; i < 128; i++, RTRequest.maxStepNum--)
+    for (int i = 0; i < 128; i++, RTRequest.maxStepNum--, stepCount++)
     {
         voxelIndex = CalcVoxelIndexFromPosition(cascadeInfo, samplePoint);
 
@@ -259,6 +261,7 @@ VoxelRayTracingHitPayload VoxelRaytracingSingleCascade(CascadeInfo cascadeInfo, 
     payload.voxelCellSize = cascadeInfo.voxelSize.x;
     payload.cascadeIndex = cascadeInfo.cascadeIndex;
     payload.clipmapAccessIndex = clipmapAccessIndex;
+    payload.stepCount = stepCount;
 
     return payload;
 }
@@ -291,8 +294,9 @@ VoxelRayTracingHitPayload DistanceFieldRaytracingSingleCascade(in CascadeInfo ca
     float3 samplePoint = RTRequest.rayStart - cascadeInfo.center;
     bool hitMask = false;
     float tolerance = cascadeInfo.voxelSize * 0.5001; // distance is 0 in voxel center, so half the radius
+    int stepCount = 0;
 
-    for (int i = 0; i < 128; i++, RTRequest.maxStepNum--)
+    for (int i = 0; i < 128; i++, RTRequest.maxStepNum--, stepCount++)
     {
         if (any(samplePoint <= cascadeMin) || any(samplePoint >= cascadeMax) || RTRequest.maxStepNum <= 0 || RTRequest.rayDistance > RTRequest.maxDistance)
         {
@@ -357,6 +361,7 @@ VoxelRayTracingHitPayload DistanceFieldRaytracingSingleCascade(in CascadeInfo ca
     payload.voxelCellSize = cascadeInfo.voxelSize.x;
     payload.cascadeIndex = cascadeInfo.cascadeIndex;
     payload.clipmapAccessIndex = clipmapAccessIndex;
+    payload.stepCount = stepCount;
 
     return payload;
 }
