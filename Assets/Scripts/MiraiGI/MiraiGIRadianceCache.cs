@@ -24,7 +24,6 @@ public class MiraiGIRadianceCache
     RenderTexture m_VoxelPoolRadiance;
 
     // radiance and irradiance probe share same probe placement
-    int m_ProbeUpdateCheckerBoardSize = 2;
     ComputeBuffer m_ValidProbeCounter;
     ComputeBuffer m_ValidProbeBuffer;
     RenderTexture m_ProbeOffsetClipmap;
@@ -161,14 +160,6 @@ public class MiraiGIRadianceCache
 
             PickValidProbe(cmd, scene, cascadeId);
 
-            /*
-            if (cascadeId >= GlobalSettings.Instance.radianceProbeMinCascadeLevel)
-            {
-                RadianceProbeCapture(cmd, scene, cascadeId);
-                RadianceToIrradiance(cmd, scene, cascadeId);
-            }
-            else
-            */
             if (cascadeId >= GlobalSettings.Instance.irradianceProbeMinCascadeLevel)
             {
                 IrradianceProbeGather(cmd, scene, cascadeId);
@@ -330,11 +321,11 @@ public class MiraiGIRadianceCache
             m_RadianceProbeIdClipmap.name = "RadianceProbeIdClipmap";
             m_RadianceProbeIdClipmap.Create();
 
-            int kernel = m_VoxelLightingCS.FindKernel("RadianceProbeIdClipmapInit");
+            //int kernel = m_VoxelLightingCS.FindKernel("RadianceProbeIdClipmapInit");
 
-            // TODO: init from radianceProbeMinCascadeLevel, but if do this, need re-init when param radianceProbeMinCascadeLevel changed
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeIdClipmap"), m_RadianceProbeIdClipmap);
-            cmd.DispatchCompute(m_VoxelLightingCS, kernel, clipmapResolution.x / 4, clipmapResolution.y / 4, clipmapResolution.z / 4);
+            //// TODO: init from radianceProbeMinCascadeLevel, but if do this, need re-init when param radianceProbeMinCascadeLevel changed
+            //cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeIdClipmap"), m_RadianceProbeIdClipmap);
+            //cmd.DispatchCompute(m_VoxelLightingCS, kernel, clipmapResolution.x / 4, clipmapResolution.y / 4, clipmapResolution.z / 4);
         }
 
         int radianceProbeCount = m_RadianceProbeCountInAtlasXY.x * m_RadianceProbeCountInAtlasXY.y;
@@ -534,166 +525,6 @@ public class MiraiGIRadianceCache
         cmd.DispatchCompute(m_VoxelLightingCS, kernel, probeCountToUpdateInXYZ.x / 4, probeCountToUpdateInXYZ.y / 4, probeCountToUpdateInXYZ.z / 4);
 
         cmd.EndSample("Pick Valid Probe");
-    }
-
-    void RadianceProbeCapture(CommandBuffer cmd, MiraiGIGPUScene scene, int cascadeId)
-    {
-        MiraiGIClipmap clipmap = scene.miraiGIClipmap;
-        MiraiGICascadeInfo[] cascadeInfos = clipmap.cascadeInfos;
-        MiraiGICascadeInfo cascadeInfo = clipmap.cascadeInfos[cascadeId];
-
-        int checkerBoardSize = m_ProbeUpdateCheckerBoardSize;
-        int maxFrameNum = checkerBoardSize * checkerBoardSize * checkerBoardSize;
-        Vector3Int checkerBoardOffset = GlobalShared.Index1DTo3DLinear((int)scene.frameNumber % maxFrameNum, 
-                                                                        new Vector3Int(checkerBoardSize, checkerBoardSize, checkerBoardSize));
-
-        int maxRadianceProbeNum = m_RadianceProbeCountInAtlasXY.x * m_RadianceProbeCountInAtlasXY.y;
-        Vector3Int probeCountInXYZ = clipmap.voxelResolution / GlobalShared.VOXEL_BLOCK_SIZE;
-        Vector3Int probeCountToUpdateInXYZ = probeCountInXYZ / checkerBoardSize;
-
-        m_ProbeCountToReleaseCounter?.Release();
-        m_ProbeCountToReleaseCounter = new ComputeBuffer(1, sizeof(int));
-        m_ProbeCountToReleaseCounter.SetData(new int[1] { 0 });
-
-        // 1. allocate atlas space for radiance probe
-        {
-            cmd.BeginSample("Radiance Probe Allocate");
-
-            int kernel = m_VoxelLightingCS.FindKernel("RadianceProbeAllocate");
-
-            clipmap.SetupVoxelRaytracingParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
-
-            cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_CheckerBoardInfo"),
-                                        new Vector4(checkerBoardOffset.x, checkerBoardOffset.y, checkerBoardOffset.z, checkerBoardSize));
-            cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_MaxRadianceProbeNum"), maxRadianceProbeNum);
-
-            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeFreeList"), m_RadianceProbeFreeList);
-            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeReleaseList"), m_RadianceProbeReleaseList);
-
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ProbeOffsetClipmap"), m_ProbeOffsetClipmap);
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeIdClipmap"), m_RadianceProbeIdClipmap);
-
-            cmd.DispatchCompute(m_VoxelLightingCS, kernel, probeCountToUpdateInXYZ.x / 4, probeCountToUpdateInXYZ.y / 4, probeCountToUpdateInXYZ.z / 4 );
-
-            cmd.EndSample("Radiance Probe Allocate");
-        }
-
-        // 2. build indirect args for probe release and probe capture
-        {
-            int kernel = m_VoxelLightingCS.FindKernel("BuildRadianceProbeReleaseAndCaptureIndirectArgs");
-
-            cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_MaxRadianceProbeNum"), maxRadianceProbeNum);
-            cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_CascadeResolution"), (Vector3) clipmap.voxelResolution);
-            cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_RadianceProbeResolution"), m_RadianceProbeResolution);
-            cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_ThreadCountForProbeRelease"), 8);
-            cmd.SetComputeVectorParam(m_VoxelLightingCS, Shader.PropertyToID("_ThreadCountForProbeCapture"), new Vector2(32, 1));
-            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ValidProbeCounter"), m_ValidProbeCounter);
-            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWProbeCountToReleaseCounter"), m_ProbeCountToReleaseCounter);
-            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeFreeList"), m_RadianceProbeFreeList);
-            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeReleaseList"), m_RadianceProbeReleaseList);
-            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWProbeReleaseIndirectArgs"), m_RadianceProbeReleaseIndirectArgs);
-            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWProbeCaptureIndirectArgs"), m_RadianceProbeCaptureIndirectArgs);
-            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWProbeOutputMergeIndirectArgs"), m_RadianceProbeOutputMergeIndirectArgs);
-
-            cmd.DispatchCompute(m_VoxelLightingCS, kernel, 1, 1, 1);
-        }
-
-        // 3. probe release
-        {
-            cmd.BeginSample("Radiance Probe Release");
-
-            int kernel = m_VoxelLightingCS.FindKernel("RadianceProbeRelease");
-
-            cmd.SetComputeIntParam(m_VoxelLightingCS, Shader.PropertyToID("_MaxRadianceProbeNum"), maxRadianceProbeNum);
-            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ProbeCountToReleaseCounter"), m_ProbeCountToReleaseCounter);
-            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeFreeList"), m_RadianceProbeFreeList);
-            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeReleaseList"), m_RadianceProbeReleaseList);
-
-            cmd.DispatchCompute(m_VoxelLightingCS, kernel, m_RadianceProbeReleaseIndirectArgs, 0);
-
-            cmd.EndSample("Radiance Probe Release");
-        }
-
-        // 4. probe capture
-        {
-            cmd.BeginSample("Radiance Probe Capture");
-
-            int kernel = m_VoxelLightingCS.FindKernel("RadianceProbeCapture");
-
-            bool useDistanceField = GlobalSettings.Instance.useDistanceField > 0;
-            if (useDistanceField)
-            {
-                m_VoxelLightingCS.EnableKeyword("USE_DISTANCE_FIELD");
-            }
-            else
-            {
-                m_VoxelLightingCS.DisableKeyword("USE_DISTANCE_FIELD");
-            }
-
-            clipmap.SetupVoxelRaytracingParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
-            SetupProbeVolumeParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
-            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ValidProbeBuffer"), m_ValidProbeBuffer);
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeAtlas"), m_RadianceProbeOutput);
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeDistanceAtlas"), m_RadianceProbeDistanceOutput);
-
-            cmd.DispatchCompute(m_VoxelLightingCS, kernel, m_RadianceProbeCaptureIndirectArgs, 0);
-
-            cmd.EndSample("Radiance Probe Capture");
-        }
-
-        // 5. output merge
-        {
-            cmd.BeginSample("Radiance Probe Output Merge");
-
-            int kernel = m_VoxelLightingCS.FindKernel("RadianceProbeOutputMerge");
-
-            clipmap.SetupVoxelRaytracingParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
-            SetupProbeVolumeParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
-            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ValidProbeBuffer"), m_ValidProbeBuffer);
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RadianceProbeOutput"), m_RadianceProbeOutput);
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RadianceProbeDistanceOutput"), m_RadianceProbeDistanceOutput);
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeAtlas"), m_RadianceProbeAtlas);
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWRadianceProbeDistanceAtlas"), m_RadianceProbeDistanceAtlas);
-
-            cmd.DispatchCompute(m_VoxelLightingCS, kernel, m_RadianceProbeOutputMergeIndirectArgs, 0);
-
-            cmd.EndSample("Radiance Probe Output Merge");
-        }
-    }
-
-    void RadianceToIrradiance(CommandBuffer cmd, MiraiGIGPUScene scene, int cascadeId)
-    {
-        MiraiGIClipmap clipmap = scene.miraiGIClipmap;
-        MiraiGICascadeInfo[] cascadeInfos = clipmap.cascadeInfos;
-
-        // 1. build indirect args
-        {
-            int kernel = m_VoxelLightingCS.FindKernel("BuildIrradianceProbeGatherIndirectArgs");
-
-            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ValidProbeCounter"), m_ValidProbeCounter);
-            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWIndirectArgs"), m_IrradianceProbeGatherIndirectArgs);
-
-            cmd.DispatchCompute(m_VoxelLightingCS, kernel, 1, 1, 1);
-        }
-
-        // 2.
-        {
-            cmd.BeginSample("Radiance To Irradiance");
-
-            int kernel = m_VoxelLightingCS.FindKernel("RadianceToIrradiance");
-
-            // voxel RT
-            clipmap.SetupVoxelRaytracingParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
-            SetupProbeVolumeParameters(cmd, m_VoxelLightingCS, kernel, scene, cascadeId);
-            cmd.SetComputeBufferParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_ValidProbeBuffer"), m_ValidProbeBuffer);
-
-            // out 
-            cmd.SetComputeTextureParam(m_VoxelLightingCS, kernel, Shader.PropertyToID("_RWIrradianceProbeClipmap"), m_IrradianceProbeClipmap);
-
-            cmd.DispatchCompute(m_VoxelLightingCS, kernel, m_IrradianceProbeGatherIndirectArgs, 0);
-
-            cmd.EndSample("Radiance To Irradiance");
-        }
     }
 
     void IrradianceProbeGather(CommandBuffer cmd, MiraiGIGPUScene scene, int cascadeId)
