@@ -152,6 +152,8 @@ public class GlobalSettings : ScriptableObject
     [Header("ROMA Settings")]
     [ChineseLabel("启用ROMA")]
     public int useROMA = 0;
+    [ChineseLabel("启用RaySnap")]
+    public int enableSnap = 0;
     [ChineseLabel("可视化模式")]
     public int visualizeUseROMA = 0;
     [ChineseLabel("占用图X方向数")]

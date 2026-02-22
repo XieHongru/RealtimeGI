@@ -719,6 +719,7 @@ public class MiraiGIRadianceCache
             bool sampleRadianceProbe = GlobalSettings.Instance.reuseRadianceProbe > 0;
             bool useProbeOcclusionTest = GlobalSettings.Instance.useProbeOcclusionTest > 0;
             bool useDistanceField = GlobalSettings.Instance.useDistanceField > 0;
+            int useROMA = GlobalSettings.Instance.useROMA;
             if (sampleRadianceProbe)
             {
                 m_VoxelLightingCS.EnableKeyword("USE_RADIANCE_PROBE_AS_FALLBACK");
@@ -742,6 +743,30 @@ public class MiraiGIRadianceCache
             else
             {
                 m_VoxelLightingCS.DisableKeyword("USE_DISTANCE_FIELD");
+            }
+            if (useROMA == 1)
+            {
+                cmd.EnableShaderKeyword("USE_BOM");
+                cmd.DisableShaderKeyword("USE_ROMA");
+            }
+            else if (useROMA == 2)
+            {
+                cmd.DisableShaderKeyword("USE_BOM");
+                cmd.EnableShaderKeyword("USE_ROMA");
+                bool enableSnap = GlobalSettings.Instance.enableSnap > 0;
+                if (enableSnap)
+                {
+                    cmd.EnableShaderKeyword("RAY_SNAP");
+                }
+                else
+                {
+                    cmd.DisableShaderKeyword("RAY_SNAP");
+                }
+            }
+            else
+            {
+                cmd.DisableShaderKeyword("USE_BOM");
+                cmd.DisableShaderKeyword("USE_ROMA");
             }
 
             int kernel = m_VoxelLightingCS.FindKernel("IrradianceProbeGather");

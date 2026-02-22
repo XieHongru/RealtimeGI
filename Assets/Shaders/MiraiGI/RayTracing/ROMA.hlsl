@@ -84,7 +84,7 @@ inline uint foremostBitDistance(uint bits)
 
 VoxelRayTracingHitPayload BaseOMRaytracingSingleCascade(in CascadeInfo cascadeInfo, in Texture2DArray<uint> baseOM,
                                                         in float4x4 baseOMViewProjMat, in float4x4 baseOMInvViewProjMat,
-                                                        in SamplerState linearSampler, inout VoxelRaytracingRequest RTRequest)
+                                                        in SamplerState linearSampler, inout VoxelRaytracingRequest RTRequest, bool anyHit)
 {
     VoxelRayTracingHitPayload payload = (VoxelRayTracingHitPayload) 0;
     
@@ -189,20 +189,28 @@ VoxelRayTracingHitPayload BaseOMRaytracingSingleCascade(in CascadeInfo cascadeIn
             occluded = omBit << (insecMin - amin) >> (insecMin - amin + amax - insecMax) << (amax - insecMax);
             if (occluded != 0)
             {
-                uint3 hitIndex = uint3(prevTexelIndex.xy, index * 32 + ((startZIndex >= endZIndex) ? lowBitDistance(occluded) : foremostBitDistance(occluded)));
-                float3 hitUV = (hitIndex + 0.5f) / float(BASE_OM_SIZE);
-                payload.isHit = true;
-                payload.position = positionUVToWS(hitUV, baseOMInvViewProjMat);
-                int3 hitVoxel = CalcVoxelIndexFromPosition(cascadeInfo, payload.position - cascadeInfo.center);
-                int3 blockIndex = hitVoxel / VOXEL_BLOCK_SIZE;
-                int3 clipmapAccessIndex = BlockClipmapAddressMapping(blockIndex, cascadeInfo.resolution, cascadeInfo.scrolling, cascadeInfo.cascadeIndex);
-                payload.voxelIndex = hitVoxel;
-                payload.voxelPosition = CalcVoxelCenterPos(hitVoxel, cascadeInfo.resolution, cascadeInfo.center, cascadeInfo.size);
-                payload.voxelCellSize = cascadeInfo.voxelSize.x;
-                payload.cascadeIndex = cascadeInfo.cascadeIndex;
-                payload.clipmapAccessIndex = clipmapAccessIndex;
-                payload.stepCount = numIteration;
-                return payload;
+                if (anyHit)
+                {
+                    payload.isHit = true;
+                    return payload;
+                }
+                else
+                {
+                    uint3 hitIndex = uint3(prevTexelIndex.xy, index * 32 + ((startZIndex >= endZIndex) ? lowBitDistance(occluded) : foremostBitDistance(occluded)));
+                    float3 hitUV = (hitIndex + 0.5f) / float(BASE_OM_SIZE);
+                    payload.isHit = true;
+                    payload.position = positionUVToWS(hitUV, baseOMInvViewProjMat);
+                    int3 hitVoxel = CalcVoxelIndexFromPosition(cascadeInfo, payload.position - cascadeInfo.center);
+                    int3 blockIndex = hitVoxel / VOXEL_BLOCK_SIZE;
+                    int3 clipmapAccessIndex = BlockClipmapAddressMapping(blockIndex, cascadeInfo.resolution, cascadeInfo.scrolling, cascadeInfo.cascadeIndex);
+                    payload.voxelIndex = hitVoxel;
+                    payload.voxelPosition = CalcVoxelCenterPos(hitVoxel, cascadeInfo.resolution, cascadeInfo.center, cascadeInfo.size);
+                    payload.voxelCellSize = cascadeInfo.voxelSize.x;
+                    payload.cascadeIndex = cascadeInfo.cascadeIndex;
+                    payload.clipmapAccessIndex = clipmapAccessIndex;
+                    payload.stepCount = numIteration;
+                    return payload;
+                }
             }
         }
         
@@ -217,7 +225,7 @@ VoxelRayTracingHitPayload BaseOMRaytracingSingleCascade(in CascadeInfo cascadeIn
 
 VoxelRayTracingHitPayload ROMARaytracingSingleCascade(in CascadeInfo cascadeInfo, in Texture2DArray<uint> ROMA,
                                                         in DirectionParams directionParams, in int OMIndex,
-                                                        in SamplerState linearSampler, inout VoxelRaytracingRequest RTRequest)
+                                                        in SamplerState linearSampler, inout VoxelRaytracingRequest RTRequest, bool anyHit)
 {
     VoxelRayTracingHitPayload payload = (VoxelRayTracingHitPayload) 0;
     
@@ -322,20 +330,29 @@ VoxelRayTracingHitPayload ROMARaytracingSingleCascade(in CascadeInfo cascadeInfo
             occluded = omBit << (insecMin - amin) >> (insecMin - amin + amax - insecMax) << (amax - insecMax);
             if (occluded != 0)
             {
-                uint3 hitIndex = uint3(prevTexelIndex.xy, index * 32 + ((startZIndex >= endZIndex) ? lowBitDistance(occluded) : foremostBitDistance(occluded)));
-                float3 hitUV = (hitIndex + 0.5f) / float(BASE_OM_SIZE);
-                payload.isHit = true;
-                payload.position = positionUVToWS(hitUV, directionParams.invViewProjMat);
-                int3 hitVoxel = CalcVoxelIndexFromPosition(cascadeInfo, payload.position - cascadeInfo.center);
-                int3 blockIndex = hitVoxel / VOXEL_BLOCK_SIZE;
-                int3 clipmapAccessIndex = BlockClipmapAddressMapping(blockIndex, cascadeInfo.resolution, cascadeInfo.scrolling, cascadeInfo.cascadeIndex);
-                payload.voxelIndex = hitVoxel;
-                payload.voxelPosition = CalcVoxelCenterPos(hitVoxel, cascadeInfo.resolution, cascadeInfo.center, cascadeInfo.size);
-                payload.voxelCellSize = cascadeInfo.voxelSize.x;
-                payload.cascadeIndex = cascadeInfo.cascadeIndex;
-                payload.clipmapAccessIndex = clipmapAccessIndex;
-                payload.stepCount = numIteration;
-                return payload;
+                if (anyHit)
+                {
+                    payload.isHit = true;
+                    return payload;
+                }
+                else
+                {
+                    
+                    uint3 hitIndex = uint3(prevTexelIndex.xy, index * 32 + ((startZIndex >= endZIndex) ? lowBitDistance(occluded) : foremostBitDistance(occluded)));
+                    float3 hitUV = (hitIndex + 0.5f) / float(BASE_OM_SIZE);
+                    payload.isHit = true;
+                    payload.position = positionUVToWS(hitUV, directionParams.invViewProjMat);
+                    int3 hitVoxel = CalcVoxelIndexFromPosition(cascadeInfo, payload.position - cascadeInfo.center);
+                    int3 blockIndex = hitVoxel / VOXEL_BLOCK_SIZE;
+                    int3 clipmapAccessIndex = BlockClipmapAddressMapping(blockIndex, cascadeInfo.resolution, cascadeInfo.scrolling, cascadeInfo.cascadeIndex);
+                    payload.voxelIndex = hitVoxel;
+                    payload.voxelPosition = CalcVoxelCenterPos(hitVoxel, cascadeInfo.resolution, cascadeInfo.center, cascadeInfo.size);
+                    payload.voxelCellSize = cascadeInfo.voxelSize.x;
+                    payload.cascadeIndex = cascadeInfo.cascadeIndex;
+                    payload.clipmapAccessIndex = clipmapAccessIndex;
+                    payload.stepCount = numIteration;
+                    return payload;
+                }
             }
         }
         
@@ -350,7 +367,7 @@ VoxelRayTracingHitPayload ROMARaytracingSingleCascade(in CascadeInfo cascadeInfo
 
 VoxelRayTracingHitPayload OccupancyMapRaytracing(in ClipmapInfo clipmapInfo, in Texture2DArray<uint> occupancyMap,
                                                     in float4x4 baseOMViewProjMatArray[MAX_CASCADE_COUNT], in float4x4 baseOMInvViewProjMatArray[MAX_CASCADE_COUNT],
-                                                    in SamplerState linearSampler, inout VoxelRaytracingRequest RTRequest)
+                                                    in SamplerState linearSampler, inout VoxelRaytracingRequest RTRequest, bool anyHit)
 {
     float3 rayDirection = RTRequest.rayDir;
     
@@ -359,7 +376,7 @@ VoxelRayTracingHitPayload OccupancyMapRaytracing(in ClipmapInfo clipmapInfo, in 
         CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, cascadeId);
 
         VoxelRayTracingHitPayload hit = BaseOMRaytracingSingleCascade(cascadeInfo, occupancyMap, baseOMViewProjMatArray[cascadeId], baseOMInvViewProjMatArray[cascadeId],
-                                                                            linearSampler, RTRequest);
+                                                                            linearSampler, RTRequest, anyHit);
         
         if (hit.isHit)
         {
@@ -374,7 +391,7 @@ VoxelRayTracingHitPayload OccupancyMapRaytracing(in ClipmapInfo clipmapInfo, in 
 }
 
 VoxelRayTracingHitPayload ROMARaytracing(in ClipmapInfo clipmapInfo, in Texture2DArray<uint> ROMA, in StructuredBuffer<DirectionParams> directionParamsArray,
-                                            in SamplerState linearSampler, inout VoxelRaytracingRequest RTRequest)
+                                            in SamplerState linearSampler, inout VoxelRaytracingRequest RTRequest, bool anyHit)
 {
     float3 rayDirection = RTRequest.rayDir;
     float2 u = mapConcentricHemisphereBackToSquare((rayDirection.z < 0 ? -rayDirection : rayDirection));
@@ -386,7 +403,7 @@ VoxelRayTracingHitPayload ROMARaytracing(in ClipmapInfo clipmapInfo, in Texture2
         CascadeInfo cascadeInfo = ResolveCascadeInfo(clipmapInfo, cascadeId);
 
         VoxelRayTracingHitPayload hit = ROMARaytracingSingleCascade(cascadeInfo, ROMA, directionParamsArray[cascadeId * ROMA_COUNT + ROMAIndex],
-                                                                    ROMAIndex, linearSampler, RTRequest);
+                                                                    ROMAIndex, linearSampler, RTRequest, anyHit);
         
         if (hit.isHit)
         {

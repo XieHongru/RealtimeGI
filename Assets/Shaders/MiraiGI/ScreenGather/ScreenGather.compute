@@ -417,10 +417,10 @@ void InitialSampleVoxelTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupTh
     RTRequest.maxDistance = 191981000;
 
 #if USE_BOM
-    VoxelRayTracingHitPayload hit = OccupancyMapRaytracing(clipmapInfo, _BaseOccupancyMap, _BaseOMViewProjMatArray, _BaseOMInvViewProjMatArray, sampler_linearClamp, RTRequest);
+    VoxelRayTracingHitPayload hit = OccupancyMapRaytracing(clipmapInfo, _BaseOccupancyMap, _BaseOMViewProjMatArray, _BaseOMInvViewProjMatArray, sampler_linearClamp, RTRequest, false);
 #elif USE_ROMA
     RTRequest.maxStepNum = 10;
-    VoxelRayTracingHitPayload hit = ROMARaytracing(clipmapInfo, _ROMA, _DirectionParamsArray, sampler_linearClamp, RTRequest);
+    VoxelRayTracingHitPayload hit = ROMARaytracing(clipmapInfo, _ROMA, _DirectionParamsArray, sampler_linearClamp, RTRequest, false);
 #elif USE_DISTANCE_FIELD
     VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
 #else

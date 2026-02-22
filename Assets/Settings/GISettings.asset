@@ -38,8 +38,8 @@ MonoBehaviour:
   irradianceProbeMinCascadeLevel: 0
   irradianceProbeSampleCount: 1
   irradianceProbeTemporalWeight: 0.75
-  diffuseIndirectEnable: 1
-  specularIndirectEnable: 1
+  diffuseIndirectEnable: 0
+  specularIndirectEnable: 0
   visualizeScreenGather: 0
   screenGatherDownsampleFactor: 2
   useReservoirSpatialReuse: 1
@@ -61,7 +61,7 @@ MonoBehaviour:
   specularResolveSearchRange: 4
   specularFilterSearchRange: 4
   useDistanceField: 0
-  useROMA: 0
+  useROMA: 2
   visualizeUseROMA: 0
-  occupancyMapXCount: 8
-  occupancyMapYCount: 8
+  occupancyMapXCount: 4
+  occupancyMapYCount: 4

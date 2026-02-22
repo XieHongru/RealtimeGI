@@ -67,9 +67,9 @@ void VisualizeClipmap(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId 
     RTRequest.maxDistance = 100000;
     
 #if VISUALIZE_BOM
-    VoxelRayTracingHitPayload hit = OccupancyMapRaytracing(clipmapInfo, _BaseOccupancyMap, _BaseOMViewProjMatArray, _BaseOMInvViewProjMatArray, sampler_linearClamp, RTRequest);
+    VoxelRayTracingHitPayload hit = OccupancyMapRaytracing(clipmapInfo, _BaseOccupancyMap, _BaseOMViewProjMatArray, _BaseOMInvViewProjMatArray, sampler_linearClamp, RTRequest, false);
 #elif VISUALIZE_ROMA
-    VoxelRayTracingHitPayload hit = ROMARaytracing(clipmapInfo, _ROMA, _DirectionParamsArray, sampler_linearClamp, RTRequest);
+    VoxelRayTracingHitPayload hit = ROMARaytracing(clipmapInfo, _ROMA, _DirectionParamsArray, sampler_linearClamp, RTRequest, false);
 #elif USE_DISTANCE_FIELD
     VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
 #else
