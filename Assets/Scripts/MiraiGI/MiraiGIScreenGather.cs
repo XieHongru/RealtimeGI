@@ -48,8 +48,10 @@ public class MiraiGIScreenGather
     RenderTexture[] m_SpatialReservoirDataC;
     RenderTexture[] m_SpatialReservoirDataD;
 
-    ComputeBuffer m_VoxelTraceRayCounter;
-    ComputeBuffer m_VoxelTraceRayCompactBuffer;
+    ComputeBuffer m_VoxelTraceDiffuseRayCounter;
+    ComputeBuffer m_VoxelTraceDiffuseRayCompactBuffer;
+    ComputeBuffer m_VoxelTraceSpecularRayCounter;
+    ComputeBuffer m_VoxelTraceSpecularRayCompactBuffer;
     ComputeBuffer m_VoxelTraceIndirectArgs;
 
     // for diffuse
@@ -80,6 +82,11 @@ public class MiraiGIScreenGather
 
     Matrix4x4 m_PrevClipMatrix;
     Matrix4x4 m_CurClipMatrix;
+
+    int[] m_VoxelTraceDiffuseRayCounterData;
+    int[] m_VoxelTraceDiffuseRayCompactBufferData;
+    int[] m_VoxelTraceSpecularRayCounterData;
+    int[] m_VoxelTraceSpecularRayCompactBufferData;
 
     ComputeShader m_HiZBufferGenerateCS;
     ComputeShader m_ScreenGatherCS;
@@ -130,8 +137,10 @@ public class MiraiGIScreenGather
             m_SpatialReservoirDataD[i]?.Release();
         }
 
-        m_VoxelTraceRayCounter?.Release();
-        m_VoxelTraceRayCompactBuffer?.Release();
+        m_VoxelTraceDiffuseRayCounter?.Release();
+        m_VoxelTraceDiffuseRayCompactBuffer?.Release();
+        m_VoxelTraceSpecularRayCounter?.Release();
+        m_VoxelTraceSpecularRayCompactBuffer?.Release();
         m_VoxelTraceIndirectArgs?.Release();
 
         // for diffuse
@@ -180,8 +189,10 @@ public class MiraiGIScreenGather
             m_SpatialReservoirDataD[i] = null;
         }
 
-        m_VoxelTraceRayCounter = null;
-        m_VoxelTraceRayCompactBuffer = null;
+        m_VoxelTraceDiffuseRayCounter = null;
+        m_VoxelTraceDiffuseRayCompactBuffer = null;
+        m_VoxelTraceSpecularRayCounter = null;
+        m_VoxelTraceSpecularRayCompactBuffer = null;
         m_VoxelTraceIndirectArgs = null;
 
         // for diffuse
@@ -370,6 +381,7 @@ public class MiraiGIScreenGather
         }
         else if (visualizeMode == 4)
         {
+            //cmd.Blit(m_InitialSampleRadiance, clipmap.GetVisualizeColorTarget());
             cmd.Blit(m_SpecularResolveOutputTexture, clipmap.GetVisualizeColorTarget());
         }
         else if (visualizeMode == 5)
@@ -438,7 +450,7 @@ public class MiraiGIScreenGather
 
         if (m_InitialSampleRadiance == null)
         {
-            m_InitialSampleRadiance = new RenderTexture(m_ScreenGatherRTSize.x, m_ScreenGatherRTSize.y, 0, RenderTextureFormat.ARGBHalf);
+            m_InitialSampleRadiance = new RenderTexture(m_ScreenGatherRTSize.x, m_ScreenGatherRTSize.y, 0, RenderTextureFormat.ARGBFloat);
             m_InitialSampleRadiance.enableRandomWrite = true;
             m_InitialSampleRadiance.name = "InitialSampleRadiance";
             m_InitialSampleRadiance.Create();
@@ -659,14 +671,38 @@ public class MiraiGIScreenGather
             m_TestOutput.Create();
         }
 
-        if (m_VoxelTraceRayCounter == null)
+        if (m_VoxelTraceDiffuseRayCounter == null)
         {
-            m_VoxelTraceRayCounter = new ComputeBuffer(1, sizeof(int));
+            m_VoxelTraceDiffuseRayCounter = new ComputeBuffer(1, sizeof(int));
+            m_VoxelTraceDiffuseRayCounterData = new int[1] { 0 };
         }
 
-        if (m_VoxelTraceRayCompactBuffer == null)
+        if (m_VoxelTraceDiffuseRayCompactBuffer == null)
         {
-            m_VoxelTraceRayCompactBuffer = new ComputeBuffer(m_ScreenGatherRTSize.x * m_ScreenGatherRTSize.y, sizeof(int) * 2);
+            m_VoxelTraceDiffuseRayCompactBuffer = new ComputeBuffer(m_ScreenGatherRTSize.x * m_ScreenGatherRTSize.y, sizeof(int) * 2);
+            m_VoxelTraceDiffuseRayCompactBufferData = new int[m_ScreenGatherRTSize.x * m_ScreenGatherRTSize.y * 2];
+            for(int i = 0; i < m_ScreenGatherRTSize.x * m_ScreenGatherRTSize.y * 2; i++)
+            {
+                m_VoxelTraceDiffuseRayCompactBufferData[i] = 0;
+            }
+            m_VoxelTraceDiffuseRayCompactBuffer.SetData(m_VoxelTraceDiffuseRayCompactBufferData);
+        }
+
+        if (m_VoxelTraceSpecularRayCounter == null)
+        {
+            m_VoxelTraceSpecularRayCounter = new ComputeBuffer(1, sizeof(int));
+            m_VoxelTraceSpecularRayCounterData = new int[1] { 0 };
+        }
+
+        if (m_VoxelTraceSpecularRayCompactBuffer == null)
+        {
+            m_VoxelTraceSpecularRayCompactBuffer = new ComputeBuffer(m_ScreenGatherRTSize.x * m_ScreenGatherRTSize.y, sizeof(int) * 2);
+            m_VoxelTraceSpecularRayCompactBufferData = new int[m_ScreenGatherRTSize.x * m_ScreenGatherRTSize.y * 2];
+            for (int i = 0; i < m_ScreenGatherRTSize.x * m_ScreenGatherRTSize.y * 2; i++)
+            {
+                m_VoxelTraceSpecularRayCompactBufferData[i] = 0;
+            }
+            m_VoxelTraceSpecularRayCompactBuffer.SetData(m_VoxelTraceSpecularRayCompactBufferData);
         }
 
         if (m_VoxelTraceIndirectArgs == null)
@@ -698,22 +734,26 @@ public class MiraiGIScreenGather
 
     void InitialSampleScreenTrace(ref RenderingData renderingData, CommandBuffer cmd, MiraiGIGPUScene scene, TraceMode traceMode)
     {
-        m_VoxelTraceRayCounter.SetData(new int[1] { 0 });
-
         cmd.BeginSample("Screen Trace");
 
         MiraiGIClipmap clipmap = scene.miraiGIClipmap;
         MiraiGIRadianceCache radianceCache = scene.miraiGIRadianceCache;
 
-        int kernel = m_ScreenGatherCS.FindKernel("InitialSampleScreenTrace");
+        int kernel = 0; 
 
         if (traceMode == TraceMode.TM_Specular)
         {
-            cmd.EnableShaderKeyword("TRACE_SPECULAR_RAY");
+            m_VoxelTraceSpecularRayCounter.SetData(m_VoxelTraceSpecularRayCounterData);
+            m_VoxelTraceSpecularRayCompactBuffer.SetData(m_VoxelTraceSpecularRayCompactBufferData);
+            kernel = m_ScreenGatherCS.FindKernel("InitialSampleScreenTraceSpecular");
+            //cmd.EnableShaderKeyword("TRACE_SPECULAR_RAY");
         }
         else
         {
-            cmd.DisableShaderKeyword("TRACE_SPECULAR_RAY");
+            m_VoxelTraceDiffuseRayCounter.SetData(m_VoxelTraceDiffuseRayCounterData);
+            m_VoxelTraceDiffuseRayCompactBuffer.SetData(m_VoxelTraceDiffuseRayCompactBufferData);
+            kernel = m_ScreenGatherCS.FindKernel("InitialSampleScreenTraceDiffuse");
+            //cmd.DisableShaderKeyword("TRACE_SPECULAR_RAY");
         }
 
         //m_SceneColorHistory.GenerateMips();
@@ -752,8 +792,18 @@ public class MiraiGIScreenGather
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWInitialSampleRadiance"), m_InitialSampleRadiance);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWInitialSampleHitInfo"), m_InitialSampleHitInfo);
         cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWInitialSampleRayInfo"), m_InitialSampleRayInfo);
-        cmd.SetComputeBufferParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWVoxelTraceRayCounter"), m_VoxelTraceRayCounter);
-        cmd.SetComputeBufferParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWVoxelTraceRayCompactBuffer"), m_VoxelTraceRayCompactBuffer);
+        if (traceMode == TraceMode.TM_Specular)
+        {
+            cmd.SetComputeBufferParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWVoxelTraceRayCounter"), m_VoxelTraceSpecularRayCounter);
+            cmd.SetComputeBufferParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWVoxelTraceRayCompactBuffer"), m_VoxelTraceSpecularRayCompactBuffer);
+        }
+        else
+        {
+            cmd.SetComputeBufferParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWVoxelTraceRayCounter"), m_VoxelTraceDiffuseRayCounter);
+            cmd.SetComputeBufferParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWVoxelTraceRayCompactBuffer"), m_VoxelTraceDiffuseRayCompactBuffer);
+        }
+
+        cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_EnvMap"), scene.envMap);
 
         cmd.DispatchCompute(m_ScreenGatherCS, kernel, Mathf.CeilToInt((float)m_ScreenGatherRTSize.x / 8), Mathf.CeilToInt((float)m_ScreenGatherRTSize.y / 8), 1);
 
@@ -762,7 +812,8 @@ public class MiraiGIScreenGather
 
     void InitialSampleVoxelTrace(CommandBuffer cmd, MiraiGIGPUScene scene, TraceMode traceMode)
     {
-        cmd.BeginSample("Voxel Trace");
+        string mode = (traceMode == TraceMode.TM_Diffuse) ? "Diffuse" : "Specular";
+        cmd.BeginSample($"{mode} Voxel Trace");
 
         MiraiGIClipmap clipmap = scene.miraiGIClipmap;
         MiraiGIRadianceCache radianceCache = scene.miraiGIRadianceCache;
@@ -772,7 +823,14 @@ public class MiraiGIScreenGather
             int kernel = m_ScreenGatherCS.FindKernel("BuildVoxelTraceIndirectArgs");
 
             cmd.SetComputeIntParam(m_ScreenGatherCS, Shader.PropertyToID("_NumThreadsForVoxelTrace"), 64);
-            cmd.SetComputeBufferParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_VoxelTraceRayCounter"), m_VoxelTraceRayCounter);
+            if (traceMode == TraceMode.TM_Specular)
+            {
+                cmd.SetComputeBufferParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_VoxelTraceRayCounter"), m_VoxelTraceSpecularRayCounter);
+            }
+            else
+            {
+                cmd.SetComputeBufferParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_VoxelTraceRayCounter"), m_VoxelTraceDiffuseRayCounter);
+            }
             cmd.SetComputeBufferParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWIndirectArgs"), m_VoxelTraceIndirectArgs);
 
             cmd.DispatchCompute(m_ScreenGatherCS, kernel, 1, 1, 1);
@@ -791,6 +849,15 @@ public class MiraiGIScreenGather
                 cmd.DisableShaderKeyword("TRACE_SPECULAR_RAY");
             }
 
+            if (GlobalSettings.Instance.useDistanceField > 0)
+            {
+                cmd.EnableShaderKeyword("USE_DISTANCE_FIELD");
+            }
+            else
+            {
+                cmd.DisableShaderKeyword("USE_DISTANCE_FIELD");
+            }
+
             int useROMA = GlobalSettings.Instance.useROMA;
             if (useROMA == 1)
             {
@@ -801,6 +868,15 @@ public class MiraiGIScreenGather
             {
                 cmd.DisableShaderKeyword("USE_BOM");
                 cmd.EnableShaderKeyword("USE_ROMA");
+                bool enableSnap = GlobalSettings.Instance.enableSnap > 0;
+                if (enableSnap && traceMode == TraceMode.TM_Diffuse)
+                {
+                    cmd.EnableShaderKeyword("RAY_SNAP");
+                }
+                else
+                {
+                    cmd.DisableShaderKeyword("RAY_SNAP");
+                }
             }
             else
             {
@@ -828,15 +904,23 @@ public class MiraiGIScreenGather
             cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWInitialSampleRadiance"), m_InitialSampleRadiance);
             cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWInitialSampleHitInfo"), m_InitialSampleHitInfo);
             cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_RWInitialSampleRayInfo"), m_InitialSampleRayInfo);
-            cmd.SetComputeBufferParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_VoxelTraceRayCounter"), m_VoxelTraceRayCounter);
-            cmd.SetComputeBufferParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_VoxelTraceRayCompactBuffer"), m_VoxelTraceRayCompactBuffer);
+            if (traceMode == TraceMode.TM_Specular)
+            {
+                cmd.SetComputeBufferParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_VoxelTraceRayCounter"), m_VoxelTraceSpecularRayCounter);
+                cmd.SetComputeBufferParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_VoxelTraceRayCompactBuffer"), m_VoxelTraceSpecularRayCompactBuffer);
+            }
+            else
+            {
+                cmd.SetComputeBufferParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_VoxelTraceRayCounter"), m_VoxelTraceDiffuseRayCounter);
+                cmd.SetComputeBufferParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_VoxelTraceRayCompactBuffer"), m_VoxelTraceDiffuseRayCompactBuffer);
+            }
 
             cmd.SetComputeTextureParam(m_ScreenGatherCS, kernel, Shader.PropertyToID("_EnvMap"), scene.envMap);
 
             cmd.DispatchCompute(m_ScreenGatherCS, kernel, m_VoxelTraceIndirectArgs, 0);
         }
 
-        cmd.EndSample("Voxel Trace");
+        cmd.EndSample($"{mode} Voxel Trace");
     }
 
     void ReservoirTemporalReuse(CommandBuffer cmd, MiraiGIGPUScene scene)

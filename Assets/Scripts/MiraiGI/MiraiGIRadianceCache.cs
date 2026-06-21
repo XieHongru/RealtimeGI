@@ -426,6 +426,7 @@ public class MiraiGIRadianceCache
         {
             cmd.DisableShaderKeyword("USE_BOM");
             cmd.EnableShaderKeyword("USE_ROMA");
+            cmd.DisableShaderKeyword("RAY_SNAP");
         }
         else
         {

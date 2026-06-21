@@ -135,7 +135,7 @@ public class MiraiGIClipmap
 
     public MiraiGICascadeInfo[] cascadeInfos;
 
-    List<Vector3> m_ROMADirection;
+    Vector3[] m_ROMADirection;
     Matrix4x4[] m_BaseOMViewProjMat;
     Matrix4x4[] m_BaseOMInvViewProjMat;
 
@@ -334,18 +334,11 @@ public class MiraiGIClipmap
         m_ROMA.Create();
 
         m_DirectionParamsBuffer = new ComputeBuffer((GlobalSettings.Instance.occupancyMapXCount * GlobalSettings.Instance.occupancyMapYCount) * 4, Marshal.SizeOf(typeof(DirectionParams)));
-
         m_ROMACenter = new ComputeBuffer((GlobalSettings.Instance.occupancyMapXCount * GlobalSettings.Instance.occupancyMapYCount), sizeof(float) * 4);
 
-        m_ROMADirection = new List<Vector3>();
+        m_ROMADirection = new Vector3[GlobalSettings.Instance.occupancyMapXCount * GlobalSettings.Instance.occupancyMapYCount];
         m_BaseOMViewProjMat = new Matrix4x4[4];
         m_BaseOMInvViewProjMat = new Matrix4x4[4];
-        List<Vector2> samples = new List<Vector2>();
-        StratifiedSample2D(samples, GlobalSettings.Instance.occupancyMapXCount, GlobalSettings.Instance.occupancyMapYCount, false);
-        for (int i = 0; i < samples.Count; i++)
-        {
-            m_ROMADirection.Add(SampleUniformConcentricHemisphere(samples[i]));
-        }
 
         CommandBuffer cmd = CommandBufferPool.Get("Init Voxel Page");
 
@@ -385,7 +378,7 @@ public class MiraiGIClipmap
     {
         CommandBuffer cmd = CommandBufferPool.Get("Update Clipmap");
 
-        PrepareRenderResources();
+        PrepareRenderResources(gpuScene);
 
         for (int cascadeIndex = 0; cascadeIndex < CASCADE_COUNT; cascadeIndex++)
         {
@@ -478,7 +471,7 @@ public class MiraiGIClipmap
         m_VoxelOccupy = null;
     }
 
-    void PrepareRenderResources()
+    void PrepareRenderResources(MiraiGIGPUScene scene)
     {
         m_ClipmapObjectCounter?.Release();
         m_ClipmapCullingResult?.Release();
@@ -511,6 +504,16 @@ public class MiraiGIClipmap
         m_UpdateChunkObjectCounter.SetData(chunkCounter);
         m_ClipmapCullingResult.SetData(clipmapCulling);
         m_UpdateChunkCullingResults.SetData(cullingResults);
+
+        if (scene.frameNumber % GlobalSettings.Instance.updateFrames == 0)
+        {
+            List<Vector2> samples = new List<Vector2>();
+            StratifiedSample2D(samples, GlobalSettings.Instance.occupancyMapXCount, GlobalSettings.Instance.occupancyMapYCount, GlobalSettings.Instance.enableJitter > 0);
+            for (int i = 0; i < samples.Count; i++)
+            {
+                m_ROMADirection[i] = SampleUniformConcentricHemisphere(samples[i]);
+            }
+        }
     }
 
     void UpdateCascadePosition(Camera camera, int cascadeIndex)
@@ -870,8 +873,8 @@ public class MiraiGIClipmap
     {
         cmd.BeginSample($"Generate ROMA");
 
-        int updateFrame = scene.frameNumber % 8;
-        int updateOMPerFrame = (GlobalSettings.Instance.occupancyMapXCount * GlobalSettings.Instance.occupancyMapYCount) / 8;
+        int updateFrame = scene.frameNumber % GlobalSettings.Instance.updateFrames;
+        int updateOMPerFrame = (GlobalSettings.Instance.occupancyMapXCount * GlobalSettings.Instance.occupancyMapYCount) / GlobalSettings.Instance.updateFrames;
 
         for (int cascadeId = 0; cascadeId < 4; cascadeId++)
         {
@@ -913,6 +916,7 @@ public class MiraiGIClipmap
                 cameraParamsArray[omId].invViewProjMat = viewProjMatrix.inverse;
                 cameraParamsArray[omId].viewDir = viewDir;
             }
+
             m_DirectionParamsBuffer.SetData(cameraParamsArray, 0,
                 cascadeId * (GlobalSettings.Instance.occupancyMapXCount * GlobalSettings.Instance.occupancyMapYCount) + updateFrame * updateOMPerFrame, updateOMPerFrame);
         }
@@ -1159,7 +1163,8 @@ public class MiraiGIClipmap
             for (int x = 0; x < nx; x++)
             {
                 Vector2 jitterXY = new Vector2(0.0f, 0.0f);
-                // @TODO: Jitter generate
+                if (jitter)
+                    jitterXY = GlobalShared.GetHaltonSamplerNext();
                 float jx = jitter ? jitterXY.x + 0.5f : 0.5f;
                 float jy = jitter ? jitterXY.y + 0.5f : 0.5f;
                 Vector2 sample = new Vector2((x + jx) * dx, (y + jy) * dy);

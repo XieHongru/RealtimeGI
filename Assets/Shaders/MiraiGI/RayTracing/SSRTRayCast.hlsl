@@ -46,10 +46,13 @@ SSRTRay InitScreenSpaceRayFromWorldSpace(
     float4 RayEndClip = mul(WorldToClipMatrix, float4(RayOrigin + WorldRayDirection * SceneDepth, 1));
 
     float3 RayStartScreen = RayStartClip.xyz * rcp(RayStartClip.w);
+    RayStartScreen.z = RayStartScreen.z * 0.5f + 0.5f;
     float3 RayEndScreen = RayEndClip.xyz * rcp(RayEndClip.w);
+    RayEndScreen.z = RayEndScreen.z * 0.5f + 0.5f;
 
-    float4 RayDepthClip = RayStartClip + mul(ViewToClipMatrix, float4(0, 0, SceneDepth, 0));
+    float4 RayDepthClip = RayStartClip - mul(ViewToClipMatrix, float4(0, 0, SceneDepth, 0));
     float3 RayDepthScreen = RayDepthClip.xyz * rcp(RayDepthClip.w);
+    RayDepthScreen.z = RayDepthScreen.z * 0.5f + 0.5f;
 
     SSRTRay Ray;
     Ray.RayStartScreen = RayStartScreen;
@@ -82,8 +85,8 @@ bool CastScreenSpaceRay(
     const float3 RayStartScreen = Ray.RayStartScreen;
     float3 RayStepScreen = Ray.RayStepScreen;
 
-    float3 RayStartUVz = float3((RayStartScreen.xy * float2(0.5, 0.5) + 0.5) * HZBUvFactorAndInvFactor.xy, RayStartScreen.z);
-    float3 RayStepUVz = float3(RayStepScreen.xy * float2(0.5, 0.5) * HZBUvFactorAndInvFactor.xy, RayStepScreen.z);
+    float3 RayStartUVz = float3((RayStartScreen.xy * float2(0.5, 0.5) + 0.5) * HZBUvFactorAndInvFactor.xy, 1.0f - RayStartScreen.z);
+    float3 RayStepUVz = float3(RayStepScreen.xy * float2(0.5, 0.5) * HZBUvFactorAndInvFactor.xy, -RayStepScreen.z);
 	
     const float Step = 1.0 / NumSteps;
     float CompareTolerance = Ray.CompareTolerance * Step;
@@ -128,7 +131,7 @@ bool CastScreenSpaceRay(
             [unroll(SSRT_SAMPLE_BATCH_SIZE)]
             for (uint j = 0; j < SSRT_SAMPLE_BATCH_SIZE; j++)
             {
-                SampleDepth[j] = 1.0f - Texture.SampleLevel(Sampler, SamplesUV[j], SamplesMip[j]).r;
+                SampleDepth[j] = /*1.0f - */Texture.SampleLevel(Sampler, SamplesUV[j], SamplesMip[j]).r;
             }
         }
 

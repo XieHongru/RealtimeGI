@@ -8,6 +8,8 @@
 #pragma multi_compile _ TRACE_SPECULAR_RAY
 #pragma multi_compile _ USE_BOM
 #pragma multi_compile _ USE_ROMA
+#pragma multi_compile _ RAY_SNAP
+#pragma multi_compile _ USE_DISTANCE_FIELD
 
 // -------------------------------------------------------------------------------- //
 #define SPECULAR_USE_CLAMPED_BRDF 1
@@ -47,7 +49,7 @@ float4x4 _WorldToClip;
 
 float ConvertFromDeviceZ(float rawDepth)
 {
-    float reverseDepth = 1 - rawDepth;
+    float reverseDepth = rawDepth;
     return 1.0 / (_ZBufferParam.z * reverseDepth + _ZBufferParam.w);
 }
 
@@ -93,6 +95,24 @@ float4 SetupDiffuseRay(float3 worldNormal, float2 E)
 #endif
     float3 rayDirection = mul(tangentL.xyz, tangentBasis);
     float samplePDF = max(tangentL.w, 1e-3);
+    
+    return float4(rayDirection, samplePDF);
+}
+
+float4 DiffuseRaySnap(float3 worldNormal, float3 rayDirection, out int ROMAIndex)
+{
+    float2 u = mapConcentricHemisphereBackToSquare((rayDirection.z < 0 ? -rayDirection : rayDirection));
+    int2 squareIndex = clamp(int2(floor(u * float2(ROMA_AXIS_COUNT_X, ROMA_AXIS_COUNT_Y))), 0, 3);
+    ROMAIndex = squareIndex.y * ROMA_AXIS_COUNT_Y + squareIndex.x;
+    float3 snapDirection = _DirectionParamsArray[ROMAIndex].viewDir;
+    rayDirection = (dot(worldNormal, snapDirection) > 0) ? snapDirection : -snapDirection;
+    
+#if TARGET_PDF_WITH_COSINE
+    float cosTheta = max(dot(worldNormal, rayDirection), 0.0);
+    float samplePDF = cosTheta * (1.0 / PI) / 2.0f;
+#else
+    float samplePDF = 1.0 / (2 * PI);
+#endif
     
     return float4(rayDirection, samplePDF);
 }
@@ -223,7 +243,7 @@ void NormalDepthDownsample(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
 }
 
 // -------------------------------------------------------------------------------- //
-#pragma kernel InitialSampleScreenTrace
+#pragma kernel InitialSampleScreenTraceDiffuse
 
 #define TILE_SIZE uint2(8, 8)
 
@@ -243,7 +263,7 @@ groupshared bool gs_ScreenHitMask[64];
 groupshared int gs_CompactBufferWriteIndex[64];
 
 [numthreads(8, 8, 1)]
-void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+void InitialSampleScreenTraceDiffuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
 {
     // 1. do some setup
     const int groupThreadIndex = Index2DTo1D(threadId.xy % TILE_SIZE, TILE_SIZE);
@@ -253,12 +273,7 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
     PixelContext pixelCtx = ResolvePixelContext(uv);
     const bool isValidPixel = all(threadId.xy < _ScreenGatherRTSize) && pixelCtx.rawDepth > 0;
     
-#if TRACE_SPECULAR_RAY
-    float roughness = max(_GBufferNormal.SampleLevel(sampler_linearClamp, uv, 0).w, 0.01);
-    float4 rayDirectionAndPDF = SetupSpecularRay(pixelCtx.worldPosition, pixelCtx.worldNormal, pixelCtx.randomVector.xy, roughness);
-#else
     float4 rayDirectionAndPDF = SetupDiffuseRay(pixelCtx.worldNormal, pixelCtx.randomVector.xy);
-#endif
 
     // 2. trace screen ray
     const int numSteps = 32;
@@ -268,7 +283,118 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
     bool isHit = RayCast(
         _HZB, sampler_PointClamp,
         pixelCtx.worldPosition, rayDirectionAndPDF.xyz,
-        0.05, // roughness 
+        /*0.05*/ pixelCtx.roughness, // roughness 
+        pixelCtx.sceneDepth,
+        numSteps,
+        pixelCtx.randomVector.z, // SSRStepOffset
+        _HZBUvFactorAndInvFactor,
+        false, // debug print
+        _WorldToClip, _ProjMat,
+        _ScreenPositionScaleBias,
+        hitUVz, hitLevel
+    );
+
+#if FORCE_VOXEL_TRACE
+    isHit = false;
+#endif
+    
+    float2 reprojectRayHitUV = ReprojectPixel(hitUVz);
+    float3 rayEndPosition = ReconstructWorldPositionFromDepth(hitUVz.xy, hitUVz.z);
+    float rayDistance = length(rayEndPosition - pixelCtx.worldPosition);
+
+    // 3. fetch radiance
+    float3 hitRadiance = float3(0, 0, 0);
+    float3 hitNormal = float3(0, 0, 0);
+    if (isHit)
+    {
+        hitRadiance = _SceneColorHistory.SampleLevel(sampler_linearClamp, reprojectRayHitUV, hitLevel).rgb;
+        hitNormal = _NormalDepthHistory.SampleLevel(sampler_PointClamp, reprojectRayHitUV, 0).rgb * 2 - 1;
+        
+        if (dot(hitNormal, rayDirectionAndPDF.xyz) > 0)
+        {
+            isHit = false;
+        }
+    }
+    else
+    {
+        //rayDistance = 191981000;
+        //hitRadiance = _EnvMap.SampleLevel(sampler_linearClamp, rayDirectionAndPDF.xyz, 0);
+        //hitNormal = rayDirectionAndPDF.xyz * -1;
+    }
+
+    _RWInitialSampleRadiance[pixelCoord] = isValidPixel ? float4(hitRadiance, isHit) : 0;
+    _RWInitialSampleHitInfo[pixelCoord] = isValidPixel ? float4(hitNormal * 0.5 + 0.5, rayDistance) : float4(0, 0, 1, 1);
+    _RWInitialSampleRayInfo[pixelCoord] = isValidPixel ? float4(rayDirectionAndPDF.xyz * 0.5 + 0.5, rayDirectionAndPDF.w) : float4(0, 0, 1, 1);
+    
+    gs_PixelValidMask[groupThreadIndex] = isValidPixel;
+    gs_ScreenHitMask[groupThreadIndex] = isHit;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // 4. single head thread count missing ray for off screen voxel trace
+    if (groupThreadIndex == 0)
+    {
+        // 4.1. count ray
+        int rayCounter = 0;
+        for (int i = 0; i < 64; i++)
+        {
+            if (!gs_ScreenHitMask[i] && gs_PixelValidMask[i])
+            {
+                rayCounter += 1;
+            }
+        }
+        
+        // 4.2. allocate space in compact buffer
+        int writeIndex = 0;
+        InterlockedAdd(_RWVoxelTraceRayCounter[0], rayCounter, writeIndex);
+
+        // 4.3. boardcast thread write index
+        for (int i = 0; i < 64; i++)
+        {
+            if (!gs_ScreenHitMask[i] && gs_PixelValidMask[i])
+            {
+                gs_CompactBufferWriteIndex[i] = writeIndex;
+                writeIndex += 1;
+            }
+        }
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // 5. write pixel info to buffer
+    if (!isHit && isValidPixel)
+    {
+        int writeIndex = gs_CompactBufferWriteIndex[groupThreadIndex];
+        _RWVoxelTraceRayCompactBuffer[writeIndex] = pixelCoord;
+    }
+}
+
+// -------------------------------------------------------------------------------- //
+#pragma kernel InitialSampleScreenTraceSpecular
+
+[numthreads(8, 8, 1)]
+void InitialSampleScreenTraceSpecular(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID, uint3 groupId : SV_GroupID)
+{
+    // 1. do some setup
+    const int groupThreadIndex = Index2DTo1D(threadId.xy % TILE_SIZE, TILE_SIZE);
+    const int2 pixelCoord = clamp(threadId.xy, 0, _ScreenGatherRTSize - 1);
+    const float2 uv = (float2(pixelCoord) + 0.5) / float2(_ScreenGatherRTSize);
+    
+    PixelContext pixelCtx = ResolvePixelContext(uv);
+    const bool isValidPixel = all(threadId.xy < _ScreenGatherRTSize) && pixelCtx.rawDepth > 0;
+    
+    float roughness = max(_GBufferNormal.SampleLevel(sampler_linearClamp, uv, 0).w, 0.01);
+    float4 rayDirectionAndPDF = SetupSpecularRay(pixelCtx.worldPosition, pixelCtx.worldNormal, pixelCtx.randomVector.xy, roughness);
+
+    // 2. trace screen ray
+    const int numSteps = 32;
+    float3 hitUVz = float3(0, 0, 0);
+    float hitLevel = 0;
+
+    bool isHit = RayCast(
+        _HZB, sampler_PointClamp,
+        pixelCtx.worldPosition, rayDirectionAndPDF.xyz,
+        /*0.05*/ pixelCtx.roughness, // roughness 
         pixelCtx.sceneDepth,
         numSteps,
         pixelCtx.randomVector.z, // SSRStepOffset
@@ -288,7 +414,7 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
     float rayDistance = length(rayEndPosition - pixelCtx.worldPosition);
 
     // calculate scene color sample mip level to simulate glossy reflection
-#if TRACE_SPECULAR_RAY && SPECULAR_USE_CLAMPED_BRDF
+#if SPECULAR_USE_CLAMPED_BRDF
     float3 V = normalize(_CameraPosition - pixelCtx.worldPosition);
     float NdotV = saturate(dot(pixelCtx.worldNormal, V));
     float coneTangent = lerp(0.0, pixelCtx.roughness * (1.0 - SPECULAR_BRDF_BIAS), NdotV * sqrt(pixelCtx.roughness));
@@ -309,9 +435,12 @@ void InitialSampleScreenTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupT
             isHit = false;
         }
     }
-    
-    float4 rayStartClip = mul(_WorldToClip, float4(pixelCtx.worldPosition, 1));
-    float3 rayStartScreen = rayStartClip.xyz * rcp(rayStartClip.w);
+    else
+    {
+        //rayDistance = 191981000;
+        //hitRadiance = _EnvMap.SampleLevel(sampler_linearClamp, rayDirectionAndPDF.xyz, 0);
+        //hitNormal = rayDirectionAndPDF.xyz * -1;
+    }
 
     _RWInitialSampleRadiance[pixelCoord] = isValidPixel ? float4(hitRadiance, isHit) : 0;
     _RWInitialSampleHitInfo[pixelCoord] = isValidPixel ? float4(hitNormal * 0.5 + 0.5, rayDistance) : float4(0, 0, 1, 1);
@@ -413,13 +542,19 @@ void InitialSampleVoxelTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupTh
     RTRequest.rayDir = rayDirectionAndPDF.xyz;
     RTRequest.minCascadeIndex = 0;
     RTRequest.maxCascadeIndex = clipmapInfo.cascadeCount - 1;
-    RTRequest.maxStepNum = 114514;
-    RTRequest.maxDistance = 191981000;
+    RTRequest.maxStepNum = 128;
+    RTRequest.maxDistance = 1000;
 
 #if USE_BOM
     VoxelRayTracingHitPayload hit = OccupancyMapRaytracing(clipmapInfo, _BaseOccupancyMap, _BaseOMViewProjMatArray, _BaseOMInvViewProjMatArray, sampler_linearClamp, RTRequest, false);
 #elif USE_ROMA
-    RTRequest.maxStepNum = 10;
+    //RTRequest.maxStepNum = 5;
+#if TRACE_SPECULAR_RAY == 0 && RAY_SNAP
+    int ROMAIndex = 0;
+    rayDirectionAndPDF = DiffuseRaySnap(pixelCtx.worldNormal, rayDirectionAndPDF.xyz, ROMAIndex);
+    RTRequest.rayDir = rayDirectionAndPDF.xyz;
+    _RWInitialSampleRayInfo[pixelCoord] = float4(rayDirectionAndPDF.xyz * 0.5 + 0.5, rayDirectionAndPDF.w);
+#endif
     VoxelRayTracingHitPayload hit = ROMARaytracing(clipmapInfo, _ROMA, _DirectionParamsArray, sampler_linearClamp, RTRequest, false);
 #elif USE_DISTANCE_FIELD
     VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);
@@ -440,7 +575,7 @@ void InitialSampleVoxelTrace(uint3 threadId : SV_DispatchThreadID, uint3 groupTh
     else
     {
         rayDistance = 191981000;
-        hitRadiance = _EnvMap.SampleLevel(sampler_linearClamp, rayDirectionAndPDF.xyz, 0);
+        hitRadiance = _EnvMap.SampleLevel(sampler_linearClamp, rayDirectionAndPDF.xyz, 0) * 0.4f;
         hitNormal = rayDirectionAndPDF.xyz * -1;
     }
 
@@ -559,7 +694,7 @@ void ReservoirTemporalReuse(uint3 threadId : SV_DispatchThreadID, uint3 groupThr
     
     UpdateReservoir(temporalReservoir, newSample, selectionWeight, pixelCtx.randomVector.w);
     
-    ClampSampleNumAndUpdateEstimatorWeight(temporalReservoir, pixelCtx.worldPosition, pixelCtx.worldNormal, 5);
+    ClampSampleNumAndUpdateEstimatorWeight(temporalReservoir, pixelCtx.worldPosition, pixelCtx.worldNormal, 20);
 
     // 6. write reservoir back to buffer
     float4 reservoirRawData[4];
@@ -1334,7 +1469,7 @@ void SpecularResolve(uint3 threadId : SV_DispatchThreadID, uint3 groupThreadId :
 
         // 2.2. calculate local BRDF for reused ray and apply ratio estimator
         float3 weight = EvaluateRatioEstimatorBRDF(worldPosition, GBufferBaseColor, GBufferNormalRoughness, GBufferSpecular, rayHitPosition, rayDirectionAndPDF.w);
-        weight *= exp(length(rayStartPosition - worldPosition) * -0.01);
+        weight *= exp(length(rayStartPosition - worldPosition) * -100);
 
 #if RADIANCE_TONEMAPPING
         hitRadiance = hitRadiance / (1.0 + Luma(hitRadiance));

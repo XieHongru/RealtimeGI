@@ -154,8 +154,12 @@ public class GlobalSettings : ScriptableObject
     public int useROMA = 0;
     [ChineseLabel("启用RaySnap")]
     public int enableSnap = 0;
+    [ChineseLabel("启用Jitter")]
+    public int enableJitter = 0;
     [ChineseLabel("可视化模式")]
     public int visualizeUseROMA = 0;
+    [ChineseLabel("ROMA分帧生成")]
+    public int updateFrames = 8;
     [ChineseLabel("占用图X方向数")]
     public int occupancyMapXCount = 4;
     [ChineseLabel("占用图Y方向数")]

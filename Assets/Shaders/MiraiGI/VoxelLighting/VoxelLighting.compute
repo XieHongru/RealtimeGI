@@ -418,21 +418,21 @@ void IrradianceProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
     //int sampleCountPerProbe = 64 * sampleCountPerThread;
     int sampleCountPerProbe = 32 * sampleCountPerThread;
     float uniformSampleSolidAngle = 4 * PI / float(sampleCountPerProbe);
-#if USE_ROMA == 0 || RAY_SNAP == 0
+//#if USE_ROMA == 0 || RAY_SNAP == 0
     uint2 randomSeed = Rand3DPCG16(uint3(groupId.x, 0, _FrameCountMod8)).xy;
-#endif
+//#endif
     
     ThreeBandSHVectorRGB SHRadianceSum = (ThreeBandSHVectorRGB) 0;
     for (int i = 0; i < sampleCountPerThread; i++)
     {
         int rayIndex = groupThreadIndex * sampleCountPerThread + i;
-#if USE_ROMA && RAY_SNAP
-        float sign = (rayIndex % 2 == 0) ? 1.0 : -1.0;
-        float3 rayDirection = normalize(_DirectionParamsArray[rayIndex / 2].viewDir * sign);
-#else
+//#if USE_ROMA && RAY_SNAP
+//        float sign = (rayIndex % 2 == 0) ? 1.0 : -1.0;
+ //       float3 rayDirection = normalize(_DirectionParamsArray[rayIndex / 2].viewDir * sign);
+//#else
         float2 E = Hammersley16(rayIndex, sampleCountPerProbe, randomSeed);
         float3 rayDirection = UniformSampleSphere(E).xyz;
-#endif
+//#endif
 
         VoxelRaytracingRequest RTRequest = (VoxelRaytracingRequest) 0;
         RTRequest.rayStart = gs_SharedProbePosition;
@@ -449,7 +449,7 @@ void IrradianceProbeGather(uint3 threadId : SV_DispatchThreadID, uint3 groupThre
 #if USE_BOM
         VoxelRayTracingHitPayload hit = OccupancyMapRaytracing(clipmapInfo, _BaseOccupancyMap, _BaseOMViewProjMatArray, _BaseOMInvViewProjMatArray, sampler_linearClamp, RTRequest, false);
 #elif USE_ROMA
-        RTRequest.maxStepNum = 20;
+        //RTRequest.maxStepNum = 20;
         VoxelRayTracingHitPayload hit = ROMARaytracing(clipmapInfo, _ROMA, _DirectionParamsArray, sampler_linearClamp, RTRequest, false);
 #elif USE_DISTANCE_FIELD
         VoxelRayTracingHitPayload hit = DistanceFieldRaytracing(clipmapInfo, _DistanceFieldClipmap, sampler_linearClamp, RTRequest);

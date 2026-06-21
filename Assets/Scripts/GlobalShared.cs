@@ -1,5 +1,7 @@
 using System;
+using Unity.Mathematics;
 using UnityEngine;
+using UnityEngine.Rendering.Universal;
 
 public class GlobalShared
 {
@@ -11,6 +13,9 @@ public class GlobalShared
     public static int PAGE_ID_INVALID = 0x3FFFFFFF;
     public static int PROBE_ID_INVALID = 0x3FFFFFFF;
     public static int MAX_HZB_LEVEL = 8;
+
+    public static int MAX_SAMPLE_COUNT = 16;
+    public static int curSample = 0;
 
     public static int Index3DTo1DLinear(Vector3Int index3D, Vector3Int size3D)
     {
@@ -36,9 +41,31 @@ public class GlobalShared
         return res;
     }
 
-    public static void InitTexture3D(RenderTexture texture, Vector3Int size, string kernel)
+    static float Halton(int index, int modulus)
     {
+        // Reversing digit order in the given modulus in floating point.
+        float result = 0.0f;
+        float factor = 1.0f;
 
+        for (; index > 0; index /= modulus)
+        {
+            factor /= modulus;
+            result += factor * (index % modulus);
+        }
+
+        return result;
+    }
+
+    public static Vector2 GetHaltonSamplerNext()
+    {
+        Vector2 value = new Vector2(Halton(curSample, 2), Halton(curSample, 3));
+
+        // Modular increment.
+        ++curSample;
+        curSample = curSample % MAX_SAMPLE_COUNT;
+
+        // Map the result so that [0, 1) maps to [-0.5, 0.5) and 0 maps to the origin.
+        return new Vector2((value.x + 0.5f) % 1.0f, (value.y + 0.5f) % 1.0f) - Vector2.one * 0.5f;
     }
 }
 
